@@ -12,6 +12,11 @@ import { handleQueueBatch as baseQueueHandler } from './queue';
 
 void DeviceStateDO;
 
+function maskId(id: string) {
+  if (!id) return id as any;
+  return id.length <= 5 ? `•••${id.slice(-2)}` : `${id.slice(0, 3)}…${id.slice(-2)}`;
+}
+
 type Ctx = { Bindings: Env; Variables: { auth?: AccessContext } };
 
 const app = new Hono<Ctx>();
@@ -307,7 +312,11 @@ app.get('/api/alerts', async (c) => {
 
   sql += ' GROUP BY a.alert_id ORDER BY a.opened_at DESC LIMIT 200';
   const rows = await DB.prepare(sql).bind(...bind).all();
-  return c.json(rows.results ?? []);
+  const results = rows.results ?? [];
+  const isClientOnly =
+    auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
+  const out = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
+  return c.json(out);
 });
 
 app.post('/api/alerts/:id/ack', async (c) => {
@@ -483,7 +492,11 @@ app.get('/api/devices', async (c) => {
 
   sql += ' GROUP BY d.device_id ORDER BY (d.last_seen_at IS NULL), d.last_seen_at DESC LIMIT 500';
   const rows = await DB.prepare(sql).bind(...bind).all();
-  return c.json(rows.results ?? []);
+  const results = rows.results ?? [];
+  const isClientOnly =
+    auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
+  const out = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
+  return c.json(out);
 });
 
 app.post('/api/commissioning/:deviceId/report', async (c) => {
@@ -577,7 +590,11 @@ app.get('/alerts', async (c) => {
 
   sql += ' GROUP BY a.alert_id ORDER BY a.opened_at DESC LIMIT 100';
   const rows = await DB.prepare(sql).bind(...bind).all();
-  return c.render(<AlertsPage alerts={rows.results ?? []} filters={{ state, severity, type, deviceId }} />);
+  const results = rows.results ?? [];
+  const isClientOnly =
+    auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
+  const alerts = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
+  return c.render(<AlertsPage alerts={alerts} filters={{ state, severity, type, deviceId }} />);
 });
 
 app.get('/devices', async (c) => {
@@ -612,7 +629,11 @@ app.get('/devices', async (c) => {
 
   sql += ' GROUP BY d.device_id ORDER BY (d.last_seen_at IS NULL), d.last_seen_at DESC LIMIT 500';
   const rows = await DB.prepare(sql).bind(...bind).all();
-  return c.render(<DevicesPage rows={rows.results ?? []} />);
+  const results = rows.results ?? [];
+  const isClientOnly =
+    auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
+  const out = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
+  return c.render(<DevicesPage rows={out} />);
 });
 
 app.get('/admin/sites', async (c) => {
