@@ -1,0 +1,64 @@
+name = "greenbro-app"
+main = "src/app.ts"
+compatibility_date = "2025-10-01"
+compatibility_flags = ["nodejs_compat"] # Hono + jose comfort
+
+# Custom domains / routes (adjust to your zones)
+routes = [
+  { pattern = "api.greenbro.co.za/*", custom_domain = true },
+  { pattern = "dash.greenbro.co.za/*", custom_domain = true }
+]
+
+# ---- D1 (hot relational) ----
+[[d1_databases]]
+binding = "DB"
+database_name = "GREENBRO_DB"
+database_id = "REPLACE_WITH_D1_ID"
+
+# ---- KV (configs, flags, RBAC masks) ----
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "REPLACE_WITH_KV_ID"
+
+# ---- R2 (reports, cold artifacts) ----
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "greenbro-reports"
+
+# ---- Queues (ingest fan-in → batch processing) ----
+# Producer (HTTP ingest → Queue)
+[[queues.producers]]
+queue = "greenbro-ingest"
+binding = "INGEST_QUEUE"
+
+# Consumer (same worker handles queue batches via `export default { queue }`)
+[[queues.consumers]]
+queue = "greenbro-ingest"
+max_batch_size = 64
+max_batch_timeout = 2
+
+# ---- Durable Object (per-device coordinator) ----
+[[durable_objects.bindings]]
+name = "DeviceState"
+class_name = "DeviceStateDO"
+
+[[migrations]]
+tag = "v1-device-state"
+new_classes = ["DeviceStateDO"]
+
+# ---- Cron jobs ----
+[triggers]
+crons = [
+  "*/5 * * * *",      # heartbeat escalation sweep
+  "0 1 * * *"         # retention / rollups / key rotation reminders
+]
+
+# ---- Environment secrets you set via `wrangler secret put ...` ----
+# ACCESS_JWKS_URL : Cloudflare Access JWKS endpoint
+# ACCESS_AUD      : Access policy AUD expected by the dashboard
+# WRITE_MIN_C     : min allowed setpoint (e.g., "40")
+# WRITE_MAX_C     : max allowed setpoint (e.g., "60")
+
+# ---- Node-style deploy (bundled by wrangler) ----
+[build]
+command = "npm run build"
