@@ -6,6 +6,8 @@ interface TelemetryPayload {
   deviceId: string;
   timestamp: string;
   metrics: Record<string, number>;
+  status?: Record<string, unknown>;
+  faults?: unknown;
 }
 
 interface CommandPayload {
@@ -15,7 +17,7 @@ interface CommandPayload {
 
 type QueueMessage =
   | ({ type: 'telemetry'; receivedAt: string } & TelemetryPayload)
-  | ({ type: 'command'; issuedAt: string } & { deviceId: string; setpointC: number; reason?: string });
+  | ({ type: 'command'; issuedAt: string; writeId: string } & { deviceId: string; setpointC: number; reason?: string });
 
 type Env = {
   DB: D1Database;
@@ -42,7 +44,7 @@ function parseTelemetry(body: unknown): TelemetryPayload {
     throw new Error('Body must be an object');
   }
 
-  const { deviceId, timestamp, metrics } = body as Record<string, unknown>;
+  const { deviceId, timestamp, metrics, status, faults } = body as Record<string, unknown>;
   if (typeof deviceId !== 'string' || deviceId.length === 0) {
     throw new Error('deviceId is required');
   }
@@ -61,10 +63,28 @@ function parseTelemetry(body: unknown): TelemetryPayload {
     normalizedMetrics[key] = value;
   }
 
+  let normalizedStatus: Record<string, unknown> | undefined;
+  if (status !== undefined) {
+    if (!status || typeof status !== 'object' || Array.isArray(status)) {
+      throw new Error('status must be an object when provided');
+    }
+    normalizedStatus = { ...(status as Record<string, unknown>) };
+  }
+
+  let normalizedFaults: unknown;
+  if (faults !== undefined) {
+    if (typeof faults !== 'object' || faults === null) {
+      throw new Error('faults must be an object or array when provided');
+    }
+    normalizedFaults = faults;
+  }
+
   return {
     deviceId,
     timestamp,
     metrics: normalizedMetrics,
+    status: normalizedStatus,
+    faults: normalizedFaults,
   };
 }
 
@@ -154,6 +174,8 @@ app.post('/v1/telemetry', async (c) => {
     deviceId: telemetry.deviceId,
     timestamp: telemetry.timestamp,
     metrics: telemetry.metrics,
+    status: telemetry.status,
+    faults: telemetry.faults,
     receivedAt: new Date().toISOString(),
   };
 
@@ -176,18 +198,61 @@ app.get('/v1/devices/:id/latest', requireAccessToken, async (c) => {
   const deviceId = c.req.param('id');
   try {
     const latest = await c.env.DB.prepare(
-      `SELECT device_id as deviceId, temperature_c as temperatureC, pressure_pa as pressurePa, humidity_percent as humidityPercent, updated_at as updatedAt
-       FROM device_latest
+      `SELECT
+         device_id as deviceId,
+         ts,
+         supplyC,
+         returnC,
+         tankC,
+         ambientC,
+         flowLps,
+         compCurrentA,
+         eevSteps,
+         powerKW,
+         deltaT,
+         thermalKW,
+         cop,
+         cop_quality as copQuality,
+         mode,
+         defrost,
+         online,
+         faults_json as faultsJson,
+         updated_at as updatedAt
+       FROM latest_state
        WHERE device_id = ?`
     )
       .bind(deviceId)
-      .first<Record<string, unknown>>();
+      .first<{
+        deviceId: string;
+        ts: string;
+        supplyC: number | null;
+        returnC: number | null;
+        tankC: number | null;
+        ambientC: number | null;
+        flowLps: number | null;
+        compCurrentA: number | null;
+        eevSteps: number | null;
+        powerKW: number | null;
+        deltaT: number | null;
+        thermalKW: number | null;
+        cop: number | null;
+        copQuality: string | null;
+        mode: string | null;
+        defrost: number | null;
+        online: number | null;
+        faultsJson: string | null;
+        updatedAt: string;
+      }>();
 
     if (!latest) {
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    return c.json(latest);
+    const { faultsJson, ...rest } = latest;
+    return c.json({
+      ...rest,
+      faults: faultsJson ? JSON.parse(faultsJson) : null,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Query failed';
     return c.json({ error: message }, 500);
@@ -205,32 +270,33 @@ app.post('/v1/devices/:id/setpoint', requireAccessToken, async (c) => {
     return c.json({ error: message }, 400);
   }
 
+  const issuedAt = new Date().toISOString();
+  const writeId = crypto.randomUUID();
   const queueMessage: QueueMessage = {
     type: 'command',
     deviceId,
     setpointC: command.setpointC,
     reason: command.reason,
-    issuedAt: new Date().toISOString(),
+    issuedAt,
+    writeId,
   };
 
   await c.env.INGEST_QUEUE.send(queueMessage);
 
-  const audit = JSON.stringify({
-    deviceId,
+  const actor = c.get('token')?.sub ?? 'unknown';
+  const afterJson = JSON.stringify({
     setpointC: command.setpointC,
     reason: command.reason ?? null,
-    issuedAt: queueMessage.issuedAt,
-    actor: c.get('token')?.sub ?? 'unknown',
   });
 
   await c.env.DB.prepare(
-    `INSERT INTO device_commands (device_id, setpoint_c, reason, actor_sub, created_at, payload_json)
-     VALUES (?, ?, ?, ?, datetime('now'), ?)`
+    `INSERT INTO writes (id, device_id, ts, actor, before_json, after_json, clamped_json, result)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(deviceId, command.setpointC, command.reason ?? null, c.get('token')?.sub ?? null, audit)
+    .bind(writeId, deviceId, issuedAt, actor, null, afterJson, null, 'queued')
     .run();
 
-  return c.json({ status: 'queued' }, 202);
+  return c.json({ status: 'queued', writeId }, 202);
 });
 
 app.get('/v1/devices/:id/state', requireAccessToken, async (c) => {
@@ -266,26 +332,91 @@ export default {
 };
 
 async function handleTelemetryMessage(message: Extract<QueueMessage, { type: 'telemetry' }>, env: Env, ctx: ExecutionContext) {
-  const payload = JSON.stringify({ metrics: message.metrics, timestamp: message.timestamp });
+  const metricsJson = JSON.stringify(message.metrics);
+  const statusJson = message.status ? JSON.stringify(message.status) : null;
+  const faultsJson = message.faults ? JSON.stringify(message.faults) : null;
+
+  const getMetric = (key: string): number | null => {
+    const value = (message.metrics as Record<string, unknown>)[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  };
+
+  const supplyC = getMetric('supplyC');
+  const returnC = getMetric('returnC');
+  const tankC = getMetric('tankC');
+  const ambientC = getMetric('ambientC');
+  const flowLps = getMetric('flowLps');
+  const compCurrentA = getMetric('compCurrentA');
+  const eevSteps = getMetric('eevSteps');
+  const powerKW = getMetric('powerKW');
+
+  const deltaT = supplyC !== null && returnC !== null ? supplyC - returnC : null;
+  const thermalKW = deltaT !== null && flowLps !== null ? flowLps * deltaT * 4.186 : null;
+  const cop = thermalKW !== null && powerKW !== null && powerKW > 0 ? thermalKW / powerKW : null;
+  const copQuality = cop !== null ? 'calculated' : 'insufficient_data';
+
+  const statusRecord = message.status as Record<string, unknown> | undefined;
+  const mode = typeof statusRecord?.mode === 'string' ? (statusRecord.mode as string) : null;
+  const deriveFlag = (value: unknown): number | null => {
+    if (typeof value === 'boolean') {
+      return value ? 1 : 0;
+    }
+    if (typeof value === 'number') {
+      return value !== 0 ? 1 : 0;
+    }
+    return null;
+  };
+  const defrost = deriveFlag(statusRecord?.defrost);
+  const online = deriveFlag(statusRecord?.online ?? statusRecord?.isOnline) ?? 1;
+
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO device_telemetry (device_id, observed_at, received_at, payload_json)
-       VALUES (?, datetime(?), datetime(?), ?)`
-    ).bind(message.deviceId, message.timestamp, message.receivedAt, payload),
+      `INSERT INTO telemetry (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(message.deviceId, message.timestamp, metricsJson, deltaT, thermalKW, cop, copQuality, statusJson, faultsJson),
     env.DB.prepare(
-      `INSERT INTO device_latest (device_id, temperature_c, humidity_percent, pressure_pa, updated_at)
-       VALUES (?, ?, ?, ?, datetime(?))
+      `INSERT INTO latest_state (
+         device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW, deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json, updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(device_id) DO UPDATE SET
-         temperature_c = excluded.temperature_c,
-         humidity_percent = excluded.humidity_percent,
-         pressure_pa = excluded.pressure_pa,
+         ts = excluded.ts,
+         supplyC = excluded.supplyC,
+         returnC = excluded.returnC,
+         tankC = excluded.tankC,
+         ambientC = excluded.ambientC,
+         flowLps = excluded.flowLps,
+         compCurrentA = excluded.compCurrentA,
+         eevSteps = excluded.eevSteps,
+         powerKW = excluded.powerKW,
+         deltaT = excluded.deltaT,
+         thermalKW = excluded.thermalKW,
+         cop = excluded.cop,
+         cop_quality = excluded.cop_quality,
+         mode = excluded.mode,
+         defrost = excluded.defrost,
+         online = excluded.online,
+         faults_json = excluded.faults_json,
          updated_at = excluded.updated_at`
     ).bind(
       message.deviceId,
-      message.metrics.temperature_c ?? null,
-      message.metrics.humidity_percent ?? null,
-      message.metrics.pressure_pa ?? null,
-      message.timestamp
+      message.timestamp,
+      supplyC,
+      returnC,
+      tankC,
+      ambientC,
+      flowLps,
+      compCurrentA,
+      eevSteps,
+      powerKW,
+      deltaT,
+      thermalKW,
+      cop,
+      copQuality,
+      mode,
+      defrost,
+      online,
+      faultsJson
     ),
   ]);
 
@@ -301,20 +432,34 @@ async function handleTelemetryMessage(message: Extract<QueueMessage, { type: 'te
 }
 
 async function handleCommandMessage(message: Extract<QueueMessage, { type: 'command' }>, env: Env, ctx: ExecutionContext) {
-  await env.DB.prepare(
-    `INSERT INTO device_command_queue (device_id, setpoint_c, reason, issued_at)
-     VALUES (?, ?, ?, datetime(?))`
-  ).bind(message.deviceId, message.setpointC, message.reason ?? null, message.issuedAt)
+  await env.DB.prepare(`UPDATE writes SET result = ? WHERE id = ?`)
+    .bind('dispatching', message.writeId)
     .run();
 
   const id = env.DeviceState.idFromName(message.deviceId);
   const stub = env.DeviceState.get(id);
+  const response = await stub.fetch('https://device-state.internal/commands', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      setpointC: message.setpointC,
+      reason: message.reason,
+      issuedAt: message.issuedAt,
+      writeId: message.writeId,
+    }),
+  });
+
+  if (!response.ok) {
+    await env.DB.prepare(`UPDATE writes SET result = ? WHERE id = ?`)
+      .bind(`failed:${response.status}`, message.writeId)
+      .run();
+    throw new Error(`Device command dispatch failed with status ${response.status}`);
+  }
+
   ctx.waitUntil(
-    stub.fetch('https://device-state.internal/commands', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ setpointC: message.setpointC, reason: message.reason, issuedAt: message.issuedAt }),
-    })
+    env.DB.prepare(`UPDATE writes SET result = ? WHERE id = ?`)
+      .bind('dispatched', message.writeId)
+      .run()
   );
 }
 
