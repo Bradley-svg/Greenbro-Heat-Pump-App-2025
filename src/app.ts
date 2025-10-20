@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import type { AccessContext } from './access';
+import { verifyAccessJWT } from './access';
 import type { Env as BaseEnv, TelemetryPayload } from './types';
 
 interface CommandPayload {
@@ -33,10 +34,8 @@ type Env = Omit<BaseEnv, 'INGEST_QUEUE' | 'DeviceState' | 'WRITE_MIN_C' | 'WRITE
 };
 
 type Variables = {
-  token?: JWTPayload;
+  access?: AccessContext;
 };
-
-const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -203,29 +202,14 @@ async function requireAccessToken(c: Context<{ Bindings: Env; Variables: Variabl
 
   const token = header.slice('Bearer '.length);
   try {
-    const jwks = await getJwks(c.env);
-    const { payload } = await jwtVerify(token, jwks, {
-      audience: c.env.ACCESS_AUD,
-    });
-    c.set('token', payload);
+    const access = await verifyAccessJWT(c.env, token);
+    c.set('access', access);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid token';
     return c.json({ error: message }, 401);
   }
 
   await next();
-}
-
-async function getJwks(env: Env) {
-  if (!env.ACCESS_JWKS_URL) {
-    throw new Error('ACCESS_JWKS_URL not configured');
-  }
-  let jwks = jwksCache.get(env.ACCESS_JWKS_URL);
-  if (!jwks) {
-    jwks = createRemoteJWKSet(new URL(env.ACCESS_JWKS_URL));
-    jwksCache.set(env.ACCESS_JWKS_URL, jwks);
-  }
-  return jwks;
 }
 
 app.get('/health', async (c) => {
@@ -358,7 +342,7 @@ app.post('/v1/devices/:id/setpoint', requireAccessToken, async (c) => {
 
   await c.env.INGEST_QUEUE.send(queueMessage);
 
-  const actor = c.get('token')?.sub ?? 'unknown';
+  const actor = c.get('access')?.sub ?? 'unknown';
   const afterJson = JSON.stringify({
     setpointC: command.setpointC,
     reason: command.reason ?? null,
