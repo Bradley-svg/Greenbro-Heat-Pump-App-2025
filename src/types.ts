@@ -4,15 +4,15 @@ export interface Env {
   DB: D1Database;
   CONFIG: KVNamespace;
   REPORTS: R2Bucket;
-  INGEST_QUEUE: Queue;
+  INGEST_QUEUE: Queue<IngestMessage>;
 
   DeviceState: DurableObjectNamespace;
 
   ACCESS_JWKS_URL: string;
   ACCESS_AUD: string;
 
-  WRITE_MIN_C: string;
-  WRITE_MAX_C: string;
+  WRITE_MIN_C?: string;
+  WRITE_MAX_C?: string;
 }
 
 export type TelemetryPayload = {
