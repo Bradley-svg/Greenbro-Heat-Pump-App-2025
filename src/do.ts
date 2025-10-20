@@ -1,4 +1,4 @@
-import type { TelemetryPayload } from './types';
+import type { Env, TelemetryPayload } from './types';
 
 interface TelemetrySnapshot {
   telemetry: TelemetryPayload;
@@ -39,11 +39,13 @@ type CommandEnvelope = {
 
 export class DeviceStateDO {
   private readonly state: DurableObjectState;
+  private readonly env: Env;
   private snapshot: DeviceStateSnapshot = { commands: [] };
   private readonly ready: Promise<void>;
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env: Env) {
     this.state = state;
+    this.env = env;
     this.ready = this.state.blockConcurrencyWhile(async () => {
       const stored = await this.state.storage.get<DeviceStateSnapshot>('snapshot');
       if (stored) {
@@ -82,8 +84,23 @@ export class DeviceStateDO {
 
     if (request.method === 'POST' && url.pathname === '/command') {
       const envelope = (await request.json()) as CommandEnvelope;
-      const issuedAt = new Date().toISOString();
+      const now = Date.now();
+
+      const writesKey = 'writes';
+      const lastWrites = (await this.state.storage.get<number[]>(writesKey)) ?? [];
+      const recent = lastWrites.filter((ts) => now - ts < 60_000);
+      if (recent.length >= 2) {
+        await this.state.storage.put(writesKey, recent);
+        return new Response(JSON.stringify({ result: 'rejected', reason: 'rate_limited' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      const before = await this.getLatestState(envelope.deviceId);
+      const issuedAt = new Date(now).toISOString();
       const { applied, clamped } = clampCommand(envelope.command, envelope.limits);
+
       const record: CommandSnapshot = {
         issuedAt,
         actor: envelope.actor,
@@ -96,10 +113,30 @@ export class DeviceStateDO {
         this.snapshot.commands.length = 20;
       }
       await this.persist();
-      return new Response(
-        JSON.stringify({ status: 'accepted', issuedAt, applied, clamped: clamped ?? null }),
-        { status: 202, headers: { 'content-type': 'application/json' } },
-      );
+
+      const auditId = crypto.randomUUID();
+      await this.env.DB.prepare(
+        `INSERT INTO writes (id, device_id, ts, actor, before_json, after_json, clamped_json, result)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          auditId,
+          envelope.deviceId,
+          issuedAt,
+          envelope.actor,
+          JSON.stringify(before),
+          JSON.stringify(applied),
+          JSON.stringify(clamped ?? {}),
+          'accepted',
+        )
+        .run();
+
+      recent.push(now);
+      await this.state.storage.put(writesKey, recent);
+
+      return new Response(JSON.stringify({ result: 'accepted', desired: applied, clamped: clamped ?? {} }), {
+        headers: { 'content-type': 'application/json' },
+      });
     }
 
     if (request.method === 'DELETE' && url.pathname === '/command') {
@@ -113,6 +150,13 @@ export class DeviceStateDO {
 
   private async persist(): Promise<void> {
     await this.state.storage.put('snapshot', this.snapshot);
+  }
+
+  private async getLatestState(deviceId: string): Promise<Record<string, unknown>> {
+    const row = await this.env.DB.prepare('SELECT * FROM latest_state WHERE device_id=?')
+      .bind(deviceId)
+      .first<Record<string, unknown>>();
+    return row ?? {};
   }
 }
 
