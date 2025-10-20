@@ -58,10 +58,11 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
 
 ## Alerts & Commissioning Enhancements
 
-1. Apply the new migration:
+1. Apply the new migrations:
    ```bash
    wrangler d1 migrations create GREENBRO_DB --name 002_alerts
-   # paste `migrations/002_alerts.sql` into the generated file or copy it directly
+   wrangler d1 migrations create GREENBRO_DB --name 003_sites
+   # paste the SQL from `migrations/002_alerts.sql` and `migrations/003_sites.sql` into the generated files or copy them directly
    wrangler d1 migrations apply GREENBRO_DB
    ```
 2. Rebuild and deploy:
@@ -69,11 +70,14 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
    npm run build
    wrangler deploy
    ```
-3. Core alert APIs:
+3. Core APIs:
    - `GET /api/alerts`
    - `POST /api/alerts/:id/ack`
    - `POST /api/alerts/:id/resolve`
    - `POST /api/alerts/:id/comment` with `{ "body": "..." }`
+   - `GET /api/devices`
+   - `GET|POST|DELETE /api/admin/sites`
+   - `GET|POST|DELETE /api/admin/site-clients`
 4. Generate a commissioning PDF and store it in R2:
    ```bash
    curl -X POST https://<worker>/api/commissioning/GBR-HP-12345/report \
@@ -97,3 +101,5 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
 5. SSR dashboard routes:
    - `GET /` – KPI overview cards
    - `GET /alerts` – Server-rendered alerts table with live refresh
+   - `GET /devices` – Server-rendered device roster with live refresh
+   - `GET /admin/sites` – Admin surface for site catalog and site↔client mapping

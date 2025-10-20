@@ -49,6 +49,11 @@ export async function evaluateTelemetryAlerts(env: Env, t: TelemetryPayload, d: 
   const online = t.status?.online ?? true;
   const compRunning = (t.metrics.compCurrentA ?? 0) > 0.5 || (t.metrics.powerKW ?? 0) > 0.3;
 
+  for (const [ruleName, cfg] of Object.entries(RULES) as Array<[RuleName, RuleConfig]>) {
+    if (!cfg.suppressWhenOffline) continue;
+    await setSuppress(env, deviceId, ruleName, online ? false : true);
+  }
+
   if (t.metrics.supplyC != null && t.metrics.supplyC >= THRESH.overheatC) {
     await maybeOpen(env, deviceId, ts, 'overheat', 'critical', { supplyC: t.metrics.supplyC });
   } else {
@@ -112,6 +117,11 @@ export async function evaluateHeartbeatAlerts(env: Env, nowISO: string) {
     const last = row.last_seen_at ? Date.parse(row.last_seen_at) : 0;
     const gap = now - last;
     const online = gap <= warnMs;
+
+    for (const [ruleName, cfg] of Object.entries(RULES) as Array<[RuleName, RuleConfig]>) {
+      if (!cfg.suppressWhenOffline) continue;
+      await setSuppress(env, row.device_id, ruleName, online ? false : true);
+    }
 
     if (gap > critMs) {
       await maybeOpen(env, row.device_id, nowISO, 'no_heartbeat_crit', 'critical', {
@@ -253,4 +263,18 @@ async function saveState(
   )
     .bind(deviceId, rule, st.last_trigger_ts, st.dwell_start_ts, st.cooldown_until_ts, st.suppress)
     .run();
+}
+
+async function setSuppress(env: Env, deviceId: string, rule: RuleName, shouldSuppress: boolean) {
+  const st = await loadState(env, deviceId, rule);
+  const suppress = shouldSuppress ? 1 : 0;
+  if (st.suppress === suppress) {
+    return;
+  }
+  await saveState(env, deviceId, rule, {
+    ...st,
+    suppress,
+    dwell_start_ts: shouldSuppress ? null : st.dwell_start_ts,
+    last_trigger_ts: shouldSuppress ? null : st.last_trigger_ts,
+  });
 }
