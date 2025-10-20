@@ -37,25 +37,82 @@ const devicesScript = `
 (function(){
   const form = document.getElementById('device-filters');
   const tbody = document.getElementById('devices-tbody');
-  async function load(){
+  const regionSelect = document.getElementById('region-select');
+  const clientSelect = document.getElementById('client-select');
+
+  if(!form || !tbody) return;
+
+  function renderRow(r){
+    return '<tr>'
+      + '<td>' + r.device_id + '</td>'
+      + '<td>' + (r.site_name ?? r.site_id ?? '') + '</td>'
+      + '<td>' + (r.region ?? '\u2014') + '</td>'
+      + '<td>' + (r.clients ?? '\u2014') + '</td>'
+      + '<td>' + (r.online ? 'Yes' : 'No') + '</td>'
+      + '<td>' + (r.last_seen_at ?? '\u2014') + '</td>'
+      + '</tr>';
+  }
+
+  async function loadDevices(){
     const params = new URLSearchParams(new FormData(form));
     const res = await fetch('/api/devices?' + params.toString());
     const data = await res.json();
-    tbody.innerHTML = data.map(function(r){
-      return '<tr>'
-        + '<td>' + r.device_id + '</td>'
-        + '<td>' + (r.site_name ?? r.site_id ?? '') + '</td>'
-        + '<td>' + (r.region ?? '—') + '</td>'
-        + '<td>' + (r.clients ?? '—') + '</td>'
-        + '<td>' + (r.online ? 'Yes' : 'No') + '</td>'
-        + '<td>' + (r.last_seen_at ?? '—') + '</td>'
-        + '</tr>';
-    }).join('');
+    tbody.innerHTML = data.map(renderRow).join('');
   }
-  form.addEventListener('change', function(e){ e.preventDefault(); load(); });
-  form.addEventListener('submit', function(e){ e.preventDefault(); load(); });
-  load();
-  setInterval(load, 15000);
+
+  function populateSelect(select, rows, placeholder){
+    if(!select) return;
+    const current = select.value;
+    select.innerHTML = '';
+    const base = document.createElement('option');
+    base.value = '';
+    base.textContent = placeholder;
+    select.appendChild(base);
+    rows.forEach(function(row){
+      if(!row.value) return;
+      const opt = document.createElement('option');
+      opt.value = row.value;
+      opt.textContent = row.label;
+      select.appendChild(opt);
+    });
+    if(current && Array.prototype.some.call(select.options, function(opt){ return opt.value === current; })){
+      select.value = current;
+    }
+  }
+
+  async function hydrateFilters(){
+    if(regionSelect){
+      try {
+        const res = await fetch('/api/admin/distinct/regions');
+        if(res.ok){
+          const rows = await res.json();
+          const mapped = rows.map(function(r){ return { value: r.region, label: r.region }; }).filter(function(r){ return !!r.value; });
+          populateSelect(regionSelect, mapped, 'All regions');
+        }
+      } catch (err) {
+        console.warn('Failed to load regions', err);
+      }
+    }
+    if(clientSelect){
+      try {
+        const res = await fetch('/api/admin/distinct/clients');
+        if(res.ok){
+          const rows = await res.json();
+          const mapped = rows.map(function(r){ return { value: r.client_id, label: r.name || r.client_id }; });
+          populateSelect(clientSelect, mapped, 'All clients');
+        }
+      } catch (err) {
+        console.warn('Failed to load clients', err);
+      }
+    }
+  }
+
+  form.addEventListener('change', function(e){ e.preventDefault(); loadDevices(); });
+  form.addEventListener('submit', function(e){ e.preventDefault(); loadDevices(); });
+
+  hydrateFilters();
+  loadDevices();
+  setInterval(loadDevices, 15000);
 })();
 `;
 
@@ -251,8 +308,16 @@ export function DevicesPage(props: { rows: any[] }) {
     <div class="card">
       <h2>Devices</h2>
       <form id="device-filters" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px">
-        <label>Region <input type="text" name="region" placeholder="Western Cape" /></label>
-        <label>Client <input type="text" name="client" placeholder="client_123" /></label>
+        <label>Region
+          <select id="region-select" name="region">
+            <option value="">All regions</option>
+          </select>
+        </label>
+        <label>Client
+          <select id="client-select" name="client">
+            <option value="">All clients</option>
+          </select>
+        </label>
         <label>Online
           <select name="online">
             <option value="">All</option>

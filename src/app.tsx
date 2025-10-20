@@ -359,6 +359,30 @@ app.post('/api/alerts/:id/comment', async (c) => {
   return c.json({ ok: true, id: cid });
 });
 
+app.get('/api/admin/distinct/regions', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const rows = await c.env.DB.prepare(
+    "SELECT DISTINCT region FROM sites WHERE region IS NOT NULL AND TRIM(region)<>'' ORDER BY region",
+  ).all();
+  return c.json(rows.results ?? []);
+});
+
+app.get('/api/admin/distinct/clients', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const rows = await c.env.DB.prepare(
+    'SELECT client_id, COALESCE(name, client_id) AS name FROM clients ORDER BY name',
+  ).all();
+  return c.json(rows.results ?? []);
+});
+
 app.get('/api/admin/site-clients', async (c) => {
   const auth = c.get('auth');
   if (!auth) {
