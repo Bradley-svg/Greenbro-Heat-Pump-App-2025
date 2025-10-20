@@ -90,50 +90,171 @@ app.post('/api/devices/:id/write', async (c) => {
   return new Response(res.body, { status: res.status, headers: res.headers });
 });
 
+// --- Ingest: Telemetry & Heartbeat ---
+// Simple shape guard (keep strict & small): 256KB max handled by Cloudflare automatically if set.
+type IngestStatus = {
+  mode?: string;
+  defrost?: boolean;
+  online?: boolean;
+  [key: string]: unknown;
+};
+
+type IngestBody = {
+  deviceId: string;
+  ts: string; // ISO
+  metrics?: Partial<Record<string, number>>;
+  status?: IngestStatus;
+  heartbeat?: { rssi?: number };
+  idempotencyKey?: string; // optional client-provided key
+};
+
 app.post('/api/ingest/:profileId', async (c) => {
-  const { DB, INGEST_QUEUE } = c.env;
-  const profileId = c.req.param('profileId');
-  const body = await c.req.json<TelemetryPayload>();
+  const body = await c.req.json<IngestBody>().catch(() => null);
+  if (!body?.deviceId || !body?.ts) return c.text('Bad Request', 400);
+  const ok = await verifyDeviceKey(c.env.DB, body.deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
+  if (!ok) return c.text('Forbidden', 403);
 
-  if (!body?.deviceId || !body?.ts) {
-    return c.text('Bad Request', 400);
-  }
+  const idemKey =
+    body.idempotencyKey ??
+    (await (async () => {
+      const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(body)));
+      return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    })());
 
-  const devKey = c.req.header('X-GREENBRO-DEVICE-KEY');
-  if (!devKey) {
-    return c.text('Unauthorized (device key missing)', 401);
-  }
-  const ok = await verifyDeviceKey(DB, body.deviceId, devKey);
-  if (!ok) {
-    return c.text('Unauthorized (device key invalid)', 401);
-  }
+  if (await isDuplicate(c.env.DB, idemKey)) return c.json({ ok: true, deduped: true });
 
-  const msg: IngestMessage = { kind: 'telemetry', profileId, body };
-  await INGEST_QUEUE.send(msg);
-  return c.text('Accepted', 202);
+  const rawMetrics: Partial<Record<string, number>> = body.metrics ?? {};
+  const rawStatus: IngestStatus = body.status ?? {};
+
+  const toNumber = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+  const telemetryMetrics: TelemetryPayload['metrics'] = {
+    tankC: toNumber(rawMetrics.tankC),
+    supplyC: toNumber(rawMetrics.supplyC),
+    returnC: toNumber(rawMetrics.returnC),
+    ambientC: toNumber(rawMetrics.ambientC),
+    flowLps: toNumber(rawMetrics.flowLps),
+    compCurrentA: toNumber(rawMetrics.compCurrentA),
+    eevSteps: toNumber(rawMetrics.eevSteps),
+    powerKW: toNumber(rawMetrics.powerKW),
+  };
+
+  const telemetryStatus: TelemetryPayload['status'] = {
+    mode: typeof rawStatus.mode === 'string' ? rawStatus.mode : undefined,
+    defrost: typeof rawStatus.defrost === 'boolean' ? rawStatus.defrost : undefined,
+    online: typeof rawStatus.online === 'boolean' ? rawStatus.online : undefined,
+  };
+
+  const telemetry: TelemetryPayload = {
+    deviceId: body.deviceId,
+    ts: body.ts,
+    metrics: telemetryMetrics,
+    status: telemetryStatus,
+  };
+
+  const derived = computeDerived(telemetryMetrics);
+  const onlineFlag = telemetryStatus.online === false ? 0 : 1;
+
+  const statusJson = Object.values(telemetryStatus ?? {}).some((v) => v !== undefined)
+    ? JSON.stringify(telemetryStatus)
+    : null;
+
+  await c.env.DB.prepare(
+    `INSERT INTO telemetry (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+  )
+    .bind(
+      telemetry.deviceId,
+      telemetry.ts,
+      JSON.stringify(telemetryMetrics),
+      derived.deltaT,
+      derived.thermalKW,
+      derived.cop,
+      derived.copQuality,
+      statusJson,
+    )
+    .run();
+
+  await c.env.DB.prepare(
+    `INSERT INTO latest_state
+      (device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW,
+       deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+     ON CONFLICT(device_id) DO UPDATE SET
+       ts = excluded.ts,
+       supplyC = excluded.supplyC,
+       returnC = excluded.returnC,
+       tankC = excluded.tankC,
+       ambientC = excluded.ambientC,
+       flowLps = excluded.flowLps,
+       compCurrentA = excluded.compCurrentA,
+       eevSteps = excluded.eevSteps,
+       powerKW = excluded.powerKW,
+       deltaT = excluded.deltaT,
+       thermalKW = excluded.thermalKW,
+       cop = excluded.cop,
+       cop_quality = excluded.cop_quality,
+       mode = excluded.mode,
+       defrost = excluded.defrost,
+       online = excluded.online,
+       faults_json = excluded.faults_json,
+       updated_at = datetime('now')`,
+  )
+    .bind(
+      body.deviceId,
+      body.ts,
+      telemetryMetrics.supplyC ?? null,
+      telemetryMetrics.returnC ?? null,
+      telemetryMetrics.tankC ?? null,
+      telemetryMetrics.ambientC ?? null,
+      telemetryMetrics.flowLps ?? null,
+      telemetryMetrics.compCurrentA ?? null,
+      telemetryMetrics.eevSteps ?? null,
+      telemetryMetrics.powerKW ?? null,
+      telemetryStatus.mode ?? null,
+      telemetryStatus.defrost ? 1 : 0,
+      onlineFlag,
+      derived.deltaT,
+      derived.thermalKW,
+      derived.cop,
+      derived.copQuality,
+    )
+    .run();
+
+  await c.env.DB.prepare('UPDATE devices SET last_seen_at=?, online=? WHERE device_id=?')
+    .bind(body.ts, onlineFlag, body.deviceId)
+    .run();
+
+  const latest = await c.env.DB
+    .prepare('SELECT deltaT, thermalKW, cop, cop_quality as copQuality FROM latest_state WHERE device_id=?')
+    .bind(body.deviceId)
+    .first<{ deltaT: number | null; thermalKW: number | null; cop: number | null; copQuality: string | null }>();
+
+  await evaluateTelemetryAlerts(
+    c.env,
+    telemetry,
+    latest ?? { deltaT: null, thermalKW: null, cop: null, copQuality: null },
+  );
+
+  return c.json({ ok: true });
 });
 
 app.post('/api/heartbeat/:profileId', async (c) => {
-  const { DB, INGEST_QUEUE } = c.env;
-  const profileId = c.req.param('profileId');
-  const body = await c.req.json<{ deviceId: string; ts: string; rssi?: number }>();
+  const body = await c.req.json<{ deviceId: string; ts: string; rssi?: number }>().catch(() => null);
+  if (!body?.deviceId || !body?.ts) return c.text('Bad Request', 400);
+  const ok = await verifyDeviceKey(c.env.DB, body.deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
+  if (!ok) return c.text('Forbidden', 403);
 
-  if (!body?.deviceId || !body?.ts) {
-    return c.text('Bad Request', 400);
-  }
+  await c.env.DB.prepare('INSERT INTO heartbeat (ts, device_id, rssi) VALUES (?, ?, ?)')
+    .bind(body.ts, body.deviceId, body.rssi ?? null)
+    .run();
+  await c.env.DB.prepare('UPDATE devices SET last_seen_at=?, online=1 WHERE device_id=?')
+    .bind(body.ts, body.deviceId)
+    .run();
 
-  const devKey = c.req.header('X-GREENBRO-DEVICE-KEY');
-  if (!devKey) {
-    return c.text('Unauthorized (device key missing)', 401);
-  }
-  const ok = await verifyDeviceKey(DB, body.deviceId, devKey);
-  if (!ok) {
-    return c.text('Unauthorized (device key invalid)', 401);
-  }
-
-  const msg: IngestMessage = { kind: 'heartbeat', profileId, body };
-  await INGEST_QUEUE.send(msg);
-  return c.text('Accepted', 202);
+  // Let the scheduled job handle “no heartbeat” open/close; we’re only refreshing last_seen_at here.
+  return c.json({ ok: true });
 });
 
 app.get('/api/alerts', async (c) => {
@@ -507,16 +628,57 @@ app.get('/admin/sites', async (c) => {
   return c.render(<AdminSitesPage />);
 });
 
-async function verifyDeviceKey(DB: D1Database, deviceId: string, providedKey: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const data = enc.encode(providedKey);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-
+async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | null | undefined) {
+  if (!key) return false;
   const row = await DB.prepare('SELECT device_key_hash FROM devices WHERE device_id=?')
     .bind(deviceId)
     .first<{ device_key_hash: string }>();
-  return row?.device_key_hash === hex;
+  if (!row?.device_key_hash) return false;
+  return crypto.subtle
+    .digest('SHA-256', new TextEncoder().encode(key))
+    .then((buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join(''))
+    .then((digest) => digest === row.device_key_hash);
+}
+
+async function isDuplicate(DB: D1Database, key: string) {
+  await DB.exec(`CREATE TABLE IF NOT EXISTS idem (k TEXT PRIMARY KEY, ts TEXT)`);
+  const hit = await DB.prepare('SELECT k FROM idem WHERE k=?').bind(key).first();
+  if (hit) return true;
+  await DB.prepare('INSERT OR IGNORE INTO idem (k, ts) VALUES (?, datetime(\'now\'))').bind(key).run();
+  return false;
+}
+
+function computeDerived(metrics: TelemetryPayload['metrics']): Derived {
+  const supply = metrics.supplyC ?? null;
+  const ret = metrics.returnC ?? null;
+  const flow = metrics.flowLps ?? null;
+  const power = metrics.powerKW ?? null;
+
+  const deltaT = supply != null && ret != null ? round1(supply - ret) : null;
+  const rho = 0.997;
+  const cp = 4.186;
+  const thermalKW = flow != null && deltaT != null ? round2((rho * cp * flow * deltaT) / 1_000) : null;
+
+  let cop: number | null = null;
+  let copQuality: 'measured' | 'estimated' | null = null;
+
+  if (thermalKW != null && power != null && power > 0.05) {
+    cop = round2(thermalKW / power);
+    copQuality = 'measured';
+  } else if (thermalKW != null) {
+    cop = null;
+    copQuality = 'estimated';
+  }
+
+  return { deltaT, thermalKW, cop, copQuality };
+}
+
+function round1(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function round2(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: ExecutionContext) {

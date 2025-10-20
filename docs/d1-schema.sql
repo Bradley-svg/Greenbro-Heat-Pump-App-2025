@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS telemetry (
   PRIMARY KEY (device_id, ts)
 );
 
+CREATE TABLE IF NOT EXISTS heartbeat (
+  device_id TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  rssi REAL,
+  PRIMARY KEY (device_id, ts)
+);
+
 -- Alerts
 CREATE TABLE IF NOT EXISTS alerts (
   alert_id TEXT PRIMARY KEY,
