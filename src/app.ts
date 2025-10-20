@@ -1,32 +1,33 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
-
-interface TelemetryPayload {
-  deviceId: string;
-  timestamp: string;
-  metrics: Record<string, number>;
-  status?: Record<string, unknown>;
-  faults?: unknown;
-}
+import type { Env as BaseEnv, TelemetryPayload } from './types';
 
 interface CommandPayload {
   setpointC: number;
   reason?: string;
 }
 
-type QueueMessage =
-  | ({ type: 'telemetry'; receivedAt: string } & TelemetryPayload)
-  | ({ type: 'command'; issuedAt: string; writeId: string } & { deviceId: string; setpointC: number; reason?: string });
+type TelemetryQueueMessage = {
+  kind: 'telemetry';
+  receivedAt: string;
+  body: TelemetryPayload;
+};
 
-type Env = {
-  DB: D1Database;
-  CONFIG: KVNamespace;
-  REPORTS: R2Bucket;
+type CommandQueueMessage = {
+  kind: 'command';
+  issuedAt: string;
+  writeId: string;
+  deviceId: string;
+  setpointC: number;
+  reason?: string;
+};
+
+type QueueMessage = TelemetryQueueMessage | CommandQueueMessage;
+
+type Env = Omit<BaseEnv, 'INGEST_QUEUE' | 'DeviceState' | 'WRITE_MIN_C' | 'WRITE_MAX_C'> & {
   INGEST_QUEUE: Queue<QueueMessage>;
   DeviceState: DurableObjectNamespace<DeviceStateDO>;
-  ACCESS_JWKS_URL: string;
-  ACCESS_AUD: string;
   WRITE_MIN_C?: string;
   WRITE_MAX_C?: string;
 };
@@ -44,47 +45,125 @@ function parseTelemetry(body: unknown): TelemetryPayload {
     throw new Error('Body must be an object');
   }
 
-  const { deviceId, timestamp, metrics, status, faults } = body as Record<string, unknown>;
-  if (typeof deviceId !== 'string' || deviceId.length === 0) {
+  const { deviceId, ts, timestamp, metrics, status, faults, derived } = body as Record<string, unknown>;
+  if (typeof deviceId !== 'string' || deviceId.trim().length === 0) {
     throw new Error('deviceId is required');
   }
-  if (typeof timestamp !== 'string' || Number.isNaN(Date.parse(timestamp))) {
-    throw new Error('timestamp must be an ISO string');
+  const tsValue = typeof ts === 'string' ? ts : typeof timestamp === 'string' ? timestamp : undefined;
+  const normalizedTs = typeof tsValue === 'string' ? tsValue.trim() : undefined;
+  if (!normalizedTs || normalizedTs.length === 0 || Number.isNaN(Date.parse(normalizedTs))) {
+    throw new Error('ts must be an ISO string');
   }
-  if (!metrics || typeof metrics !== 'object') {
+  if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics)) {
     throw new Error('metrics must be an object');
   }
 
-  const normalizedMetrics: Record<string, number> = {};
-  for (const [key, value] of Object.entries(metrics)) {
+  const metricKeys = ['tankC', 'supplyC', 'returnC', 'ambientC', 'flowLps', 'compCurrentA', 'eevSteps', 'powerKW'] as const;
+  const normalizedMetrics: TelemetryPayload['metrics'] = {};
+  for (const key of metricKeys) {
+    const value = (metrics as Record<string, unknown>)[key];
+    if (value === undefined) {
+      continue;
+    }
     if (typeof value !== 'number' || Number.isNaN(value)) {
       throw new Error(`metric ${key} must be a number`);
     }
     normalizedMetrics[key] = value;
   }
 
-  let normalizedStatus: Record<string, unknown> | undefined;
+  let normalizedStatus: TelemetryPayload['status'];
   if (status !== undefined) {
     if (!status || typeof status !== 'object' || Array.isArray(status)) {
       throw new Error('status must be an object when provided');
     }
-    normalizedStatus = { ...(status as Record<string, unknown>) };
+    const statusRecord = status as Record<string, unknown>;
+    const candidate: TelemetryPayload['status'] = {};
+    if (statusRecord.mode !== undefined) {
+      if (typeof statusRecord.mode !== 'string' || statusRecord.mode.trim().length === 0) {
+        throw new Error('status.mode must be a string when provided');
+      }
+      candidate.mode = statusRecord.mode;
+    }
+    if (statusRecord.defrost !== undefined) {
+      if (typeof statusRecord.defrost !== 'boolean') {
+        throw new Error('status.defrost must be a boolean when provided');
+      }
+      candidate.defrost = statusRecord.defrost;
+    }
+    if (statusRecord.online !== undefined) {
+      if (typeof statusRecord.online !== 'boolean') {
+        throw new Error('status.online must be a boolean when provided');
+      }
+      candidate.online = statusRecord.online;
+    }
+    if (Object.keys(candidate).length > 0) {
+      normalizedStatus = candidate;
+    }
   }
 
-  let normalizedFaults: unknown;
+  let normalizedFaults: TelemetryPayload['faults'];
   if (faults !== undefined) {
-    if (typeof faults !== 'object' || faults === null) {
-      throw new Error('faults must be an object or array when provided');
+    if (!Array.isArray(faults)) {
+      throw new Error('faults must be an array when provided');
     }
-    normalizedFaults = faults;
+    normalizedFaults = faults.map((fault, index) => {
+      if (!fault || typeof fault !== 'object') {
+        throw new Error(`faults[${index}] must be an object`);
+      }
+      const faultRecord = fault as Record<string, unknown>;
+      if (typeof faultRecord.code !== 'string' || faultRecord.code.trim().length === 0) {
+        throw new Error(`faults[${index}].code must be a string`);
+      }
+      if (typeof faultRecord.active !== 'boolean') {
+        throw new Error(`faults[${index}].active must be a boolean`);
+      }
+      return { code: faultRecord.code, active: faultRecord.active };
+    });
+  }
+
+  let normalizedDerived: TelemetryPayload['derived'];
+  if (derived !== undefined) {
+    if (!derived || typeof derived !== 'object' || Array.isArray(derived)) {
+      throw new Error('derived must be an object when provided');
+    }
+    const derivedRecord = derived as Record<string, unknown>;
+    const candidate: TelemetryPayload['derived'] = {};
+    if (derivedRecord.deltaT !== undefined) {
+      if (typeof derivedRecord.deltaT !== 'number' || Number.isNaN(derivedRecord.deltaT)) {
+        throw new Error('derived.deltaT must be a number when provided');
+      }
+      candidate.deltaT = derivedRecord.deltaT;
+    }
+    if (derivedRecord.thermalKW !== undefined) {
+      if (typeof derivedRecord.thermalKW !== 'number' || Number.isNaN(derivedRecord.thermalKW)) {
+        throw new Error('derived.thermalKW must be a number when provided');
+      }
+      candidate.thermalKW = derivedRecord.thermalKW;
+    }
+    if (derivedRecord.cop !== undefined) {
+      if (typeof derivedRecord.cop !== 'number' || Number.isNaN(derivedRecord.cop)) {
+        throw new Error('derived.cop must be a number when provided');
+      }
+      candidate.cop = derivedRecord.cop;
+    }
+    if (derivedRecord.copQuality !== undefined) {
+      if (derivedRecord.copQuality !== 'measured' && derivedRecord.copQuality !== 'estimated') {
+        throw new Error("derived.copQuality must be 'measured' or 'estimated' when provided");
+      }
+      candidate.copQuality = derivedRecord.copQuality;
+    }
+    if (Object.keys(candidate).length > 0) {
+      normalizedDerived = candidate;
+    }
   }
 
   return {
-    deviceId,
-    timestamp,
+    deviceId: deviceId.trim(),
+    ts: normalizedTs,
     metrics: normalizedMetrics,
     status: normalizedStatus,
     faults: normalizedFaults,
+    derived: normalizedDerived,
   };
 }
 
@@ -170,13 +249,9 @@ app.post('/v1/telemetry', async (c) => {
   }
 
   const queueMessage: QueueMessage = {
-    type: 'telemetry',
-    deviceId: telemetry.deviceId,
-    timestamp: telemetry.timestamp,
-    metrics: telemetry.metrics,
-    status: telemetry.status,
-    faults: telemetry.faults,
+    kind: 'telemetry',
     receivedAt: new Date().toISOString(),
+    body: telemetry,
   };
 
   await c.env.INGEST_QUEUE.send(queueMessage);
@@ -273,7 +348,7 @@ app.post('/v1/devices/:id/setpoint', requireAccessToken, async (c) => {
   const issuedAt = new Date().toISOString();
   const writeId = crypto.randomUUID();
   const queueMessage: QueueMessage = {
-    type: 'command',
+    kind: 'command',
     deviceId,
     setpointC: command.setpointC,
     reason: command.reason,
@@ -317,9 +392,9 @@ export default {
   async queue(batch: MessageBatch<QueueMessage>, env: Env, ctx: ExecutionContext) {
     for (const message of batch.messages) {
       try {
-        if (message.body.type === 'telemetry') {
+        if (message.body.kind === 'telemetry') {
           await handleTelemetryMessage(message.body, env, ctx);
-        } else if (message.body.type === 'command') {
+        } else if (message.body.kind === 'command') {
           await handleCommandMessage(message.body, env, ctx);
         }
         message.ack();
@@ -331,13 +406,14 @@ export default {
   },
 };
 
-async function handleTelemetryMessage(message: Extract<QueueMessage, { type: 'telemetry' }>, env: Env, ctx: ExecutionContext) {
-  const metricsJson = JSON.stringify(message.metrics);
-  const statusJson = message.status ? JSON.stringify(message.status) : null;
-  const faultsJson = message.faults ? JSON.stringify(message.faults) : null;
+async function handleTelemetryMessage(message: Extract<QueueMessage, { kind: 'telemetry' }>, env: Env, ctx: ExecutionContext) {
+  const telemetry = message.body;
+  const metricsJson = JSON.stringify(telemetry.metrics);
+  const statusJson = telemetry.status ? JSON.stringify(telemetry.status) : null;
+  const faultsJson = telemetry.faults ? JSON.stringify(telemetry.faults) : null;
 
-  const getMetric = (key: string): number | null => {
-    const value = (message.metrics as Record<string, unknown>)[key];
+  const getMetric = <K extends keyof TelemetryPayload['metrics']>(key: K): number | null => {
+    const value = telemetry.metrics[key];
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
   };
 
@@ -353,27 +429,18 @@ async function handleTelemetryMessage(message: Extract<QueueMessage, { type: 'te
   const deltaT = supplyC !== null && returnC !== null ? supplyC - returnC : null;
   const thermalKW = deltaT !== null && flowLps !== null ? flowLps * deltaT * 4.186 : null;
   const cop = thermalKW !== null && powerKW !== null && powerKW > 0 ? thermalKW / powerKW : null;
-  const copQuality = cop !== null ? 'calculated' : 'insufficient_data';
+  const copQuality = cop !== null ? telemetry.derived?.copQuality ?? 'estimated' : telemetry.derived?.copQuality ?? null;
 
-  const statusRecord = message.status as Record<string, unknown> | undefined;
-  const mode = typeof statusRecord?.mode === 'string' ? (statusRecord.mode as string) : null;
-  const deriveFlag = (value: unknown): number | null => {
-    if (typeof value === 'boolean') {
-      return value ? 1 : 0;
-    }
-    if (typeof value === 'number') {
-      return value !== 0 ? 1 : 0;
-    }
-    return null;
-  };
-  const defrost = deriveFlag(statusRecord?.defrost);
-  const online = deriveFlag(statusRecord?.online ?? statusRecord?.isOnline) ?? 1;
+  const statusRecord = telemetry.status;
+  const mode = statusRecord?.mode ?? null;
+  const defrost = typeof statusRecord?.defrost === 'boolean' ? (statusRecord.defrost ? 1 : 0) : null;
+  const online = typeof statusRecord?.online === 'boolean' ? (statusRecord.online ? 1 : 0) : 1;
 
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO telemetry (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(message.deviceId, message.timestamp, metricsJson, deltaT, thermalKW, cop, copQuality, statusJson, faultsJson),
+    ).bind(telemetry.deviceId, telemetry.ts, metricsJson, deltaT, thermalKW, cop, copQuality, statusJson, faultsJson),
     env.DB.prepare(
       `INSERT INTO latest_state (
          device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW, deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json, updated_at
@@ -399,8 +466,8 @@ async function handleTelemetryMessage(message: Extract<QueueMessage, { type: 'te
          faults_json = excluded.faults_json,
          updated_at = excluded.updated_at`
     ).bind(
-      message.deviceId,
-      message.timestamp,
+      telemetry.deviceId,
+      telemetry.ts,
       supplyC,
       returnC,
       tankC,
@@ -420,18 +487,18 @@ async function handleTelemetryMessage(message: Extract<QueueMessage, { type: 'te
     ),
   ]);
 
-  const id = env.DeviceState.idFromName(message.deviceId);
+  const id = env.DeviceState.idFromName(telemetry.deviceId);
   const stub = env.DeviceState.get(id);
   ctx.waitUntil(
     stub.fetch('https://device-state.internal/state', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ telemetry: message }),
+      body: JSON.stringify({ telemetry: { ...telemetry, receivedAt: message.receivedAt } }),
     })
   );
 }
 
-async function handleCommandMessage(message: Extract<QueueMessage, { type: 'command' }>, env: Env, ctx: ExecutionContext) {
+async function handleCommandMessage(message: Extract<QueueMessage, { kind: 'command' }>, env: Env, ctx: ExecutionContext) {
   await env.DB.prepare(`UPDATE writes SET result = ? WHERE id = ?`)
     .bind('dispatching', message.writeId)
     .run();
