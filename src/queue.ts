@@ -1,17 +1,5 @@
 import type { Env, IngestMessage, TelemetryPayload } from './types';
 
-interface TelemetryContext {
-  telemetry: TelemetryPayload;
-  receivedAt: string;
-}
-
-interface HeartbeatContext {
-  deviceId: string;
-  ts: string;
-  rssi?: number;
-  receivedAt: string;
-}
-
 export async function handleQueueBatch(
   batch: MessageBatch<IngestMessage>,
   env: Env,
@@ -19,19 +7,25 @@ export async function handleQueueBatch(
 ): Promise<void> {
   for (const message of batch.messages) {
     try {
+      const receivedAt = new Date().toISOString();
+
       if (message.body.kind === 'telemetry') {
-        await handleTelemetry(env, ctx, {
-          telemetry: sanitizeTelemetry(message.body.body),
-          receivedAt: new Date().toISOString(),
-        });
-      } else if (message.body.kind === 'heartbeat') {
-        await handleHeartbeat(env, ctx, {
+        const telemetry = sanitizeTelemetry(message.body.body);
+        const derived = computeDerived(telemetry);
+
+        await persistTelemetry(env, telemetry, derived);
+        await upsertLatest(env, telemetry, derived);
+        await dispatchTelemetry(env, ctx, telemetry, derived, receivedAt);
+      } else {
+        const heartbeat = {
           deviceId: message.body.body.deviceId,
           ts: message.body.body.ts,
           rssi: message.body.body.rssi,
-          receivedAt: new Date().toISOString(),
-        });
+        };
+
+        await handleHeartbeat(env, ctx, heartbeat, receivedAt);
       }
+
       message.ack();
     } catch (error) {
       console.error('Failed to process queue message', error);
@@ -68,137 +62,161 @@ function sanitizeTelemetry(input: TelemetryPayload): TelemetryPayload {
           )
           .filter((fault): fault is { code: string; active: boolean } => fault !== undefined)
       : undefined,
-    derived: input.derived,
   };
 }
 
-async function handleTelemetry(env: Env, ctx: ExecutionContext, context: TelemetryContext): Promise<void> {
-  const { telemetry, receivedAt } = context;
+function computeDerived(telemetry: TelemetryPayload) {
+  const supply = telemetry.metrics.supplyC ?? null;
+  const ret = telemetry.metrics.returnC ?? null;
+  const flow = telemetry.metrics.flowLps ?? null;
+  const power = telemetry.metrics.powerKW ?? null;
 
+  const deltaT = supply != null && ret != null ? round1(supply - ret) : null;
+  const rho = 0.997;
+  const cp = 4.186;
+  const thermalKW = flow != null && deltaT != null ? round2((rho * cp * flow * deltaT) / 1_000) : null;
+
+  let cop: number | null = null;
+  let copQuality: 'measured' | 'estimated' | null = null;
+
+  if (thermalKW != null && power != null && power > 0.05) {
+    cop = round2(thermalKW / power);
+    copQuality = 'measured';
+  } else if (thermalKW != null) {
+    cop = null;
+    copQuality = 'estimated';
+  }
+
+  return { deltaT, thermalKW, cop, copQuality };
+}
+
+function round1(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function round2(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+async function persistTelemetry(
+  env: Env,
+  telemetry: TelemetryPayload,
+  derived: ReturnType<typeof computeDerived>,
+) {
   const metricsJson = JSON.stringify(telemetry.metrics);
   const statusJson = telemetry.status ? JSON.stringify(telemetry.status) : null;
   const faultsJson = telemetry.faults ? JSON.stringify(telemetry.faults) : null;
 
-  const getMetric = <K extends keyof TelemetryPayload['metrics']>(key: K): number | null => {
-    const value = telemetry.metrics[key];
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
-  };
-
-  const supplyC = getMetric('supplyC');
-  const returnC = getMetric('returnC');
-  const tankC = getMetric('tankC');
-  const ambientC = getMetric('ambientC');
-  const flowLps = getMetric('flowLps');
-  const compCurrentA = getMetric('compCurrentA');
-  const eevSteps = getMetric('eevSteps');
-  const powerKW = getMetric('powerKW');
-
-  const deltaT = supplyC !== null && returnC !== null ? supplyC - returnC : null;
-  const thermalKW =
-    deltaT !== null && flowLps !== null ? Number((flowLps * deltaT * 4.186).toFixed(3)) : null;
-  const cop =
-    thermalKW !== null && powerKW !== null && powerKW > 0
-      ? Number((thermalKW / powerKW).toFixed(3))
-      : null;
-  const copQuality = cop !== null ? telemetry.derived?.copQuality ?? 'estimated' : telemetry.derived?.copQuality ?? null;
-
-  const mode = telemetry.status?.mode ?? null;
-  const defrost = typeof telemetry.status?.defrost === 'boolean' ? (telemetry.status.defrost ? 1 : 0) : null;
-  const online = typeof telemetry.status?.online === 'boolean' ? (telemetry.status.online ? 1 : 0) : 1;
-
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO telemetry (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO telemetry
+     (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
       telemetry.deviceId,
       telemetry.ts,
       metricsJson,
-      deltaT,
-      thermalKW,
-      cop,
-      copQuality,
+      derived.deltaT,
+      derived.thermalKW,
+      derived.cop,
+      derived.copQuality,
       statusJson,
       faultsJson,
-    ),
-    env.DB.prepare(
-      `INSERT INTO latest_state (
-         device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW, deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json, updated_at
-       )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(device_id) DO UPDATE SET
-         ts = excluded.ts,
-         supplyC = excluded.supplyC,
-         returnC = excluded.returnC,
-         tankC = excluded.tankC,
-         ambientC = excluded.ambientC,
-         flowLps = excluded.flowLps,
-         compCurrentA = excluded.compCurrentA,
-         eevSteps = excluded.eevSteps,
-         powerKW = excluded.powerKW,
-         deltaT = excluded.deltaT,
-         thermalKW = excluded.thermalKW,
-         cop = excluded.cop,
-         cop_quality = excluded.cop_quality,
-         mode = excluded.mode,
-         defrost = excluded.defrost,
-         online = excluded.online,
-         faults_json = excluded.faults_json,
-         updated_at = excluded.updated_at`,
-    ).bind(
-      telemetry.deviceId,
-      telemetry.ts,
-      supplyC,
-      returnC,
-      tankC,
-      ambientC,
-      flowLps,
-      compCurrentA,
-      eevSteps,
-      powerKW,
-      deltaT,
-      thermalKW,
-      cop,
-      copQuality,
-      mode,
-      defrost,
-      online,
-      faultsJson,
-    ),
-    env.DB.prepare(`UPDATE devices SET online = 1, last_seen_at = ? WHERE device_id = ?`).bind(
-      telemetry.ts,
-      telemetry.deviceId,
-    ),
-  ]);
+    )
+    .run();
 
+  await env.DB.prepare(
+    'UPDATE devices SET online = 1, last_seen_at = ? WHERE device_id = ?',
+  )
+    .bind(telemetry.ts, telemetry.deviceId)
+    .run();
+}
+
+async function upsertLatest(
+  env: Env,
+  telemetry: TelemetryPayload,
+  derived: ReturnType<typeof computeDerived>,
+) {
+  const faultsJson = telemetry.faults ? JSON.stringify(telemetry.faults) : null;
+
+  await env.DB.prepare(
+    `INSERT INTO latest_state
+     (device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW,
+      deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(device_id) DO UPDATE SET
+      ts = excluded.ts, supplyC = excluded.supplyC, returnC = excluded.returnC, tankC = excluded.tankC,
+      ambientC = excluded.ambientC, flowLps = excluded.flowLps, compCurrentA = excluded.compCurrentA,
+      eevSteps = excluded.eevSteps, powerKW = excluded.powerKW, deltaT = excluded.deltaT, thermalKW = excluded.thermalKW,
+      cop = excluded.cop, cop_quality = excluded.cop_quality, mode = excluded.mode, defrost = excluded.defrost,
+      online = excluded.online, faults_json = excluded.faults_json, updated_at = datetime('now')`,
+  )
+    .bind(
+      telemetry.deviceId,
+      telemetry.ts,
+      telemetry.metrics.supplyC ?? null,
+      telemetry.metrics.returnC ?? null,
+      telemetry.metrics.tankC ?? null,
+      telemetry.metrics.ambientC ?? null,
+      telemetry.metrics.flowLps ?? null,
+      telemetry.metrics.compCurrentA ?? null,
+      telemetry.metrics.eevSteps ?? null,
+      telemetry.metrics.powerKW ?? null,
+      derived.deltaT,
+      derived.thermalKW,
+      derived.cop,
+      derived.copQuality,
+      telemetry.status?.mode ?? null,
+      telemetry.status?.defrost ? 1 : 0,
+      (telemetry.status?.online ?? true) ? 1 : 0,
+      faultsJson,
+    )
+    .run();
+}
+
+async function dispatchTelemetry(
+  env: Env,
+  ctx: ExecutionContext,
+  telemetry: TelemetryPayload,
+  derived: ReturnType<typeof computeDerived>,
+  receivedAt: string,
+) {
   const id = env.DeviceState.idFromName(telemetry.deviceId);
   const stub = env.DeviceState.get(id);
+
   ctx.waitUntil(
     stub.fetch('https://do/telemetry', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ telemetry, receivedAt }),
+      body: JSON.stringify({ telemetry, derived, receivedAt }),
     }),
   );
 }
 
-async function handleHeartbeat(env: Env, ctx: ExecutionContext, context: HeartbeatContext): Promise<void> {
-  const { deviceId, ts, rssi, receivedAt } = context;
-
+async function handleHeartbeat(
+  env: Env,
+  ctx: ExecutionContext,
+  heartbeat: { deviceId: string; ts: string; rssi?: number },
+  receivedAt: string,
+) {
   await env.DB.batch([
-    env.DB.prepare(`UPDATE devices SET online = 1, last_seen_at = ? WHERE device_id = ?`).bind(ts, deviceId),
+    env.DB.prepare('UPDATE devices SET online = 1, last_seen_at = ? WHERE device_id = ?').bind(
+      heartbeat.ts,
+      heartbeat.deviceId,
+    ),
     env.DB.prepare(
-      `UPDATE latest_state SET online = 1, updated_at = datetime('now') WHERE device_id = ?`,
-    ).bind(deviceId),
+      "UPDATE latest_state SET online = 1, updated_at = datetime('now') WHERE device_id = ?",
+    ).bind(heartbeat.deviceId),
   ]);
 
-  const id = env.DeviceState.idFromName(deviceId);
+  const id = env.DeviceState.idFromName(heartbeat.deviceId);
   const stub = env.DeviceState.get(id);
+
   ctx.waitUntil(
     stub.fetch('https://do/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ deviceId, ts, rssi, receivedAt }),
+      body: JSON.stringify({ ...heartbeat, receivedAt }),
     }),
   );
 }
