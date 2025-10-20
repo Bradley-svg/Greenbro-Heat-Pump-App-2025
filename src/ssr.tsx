@@ -216,6 +216,7 @@ export const renderer = jsxRenderer(({ children }) => (
         <strong>GreenBro</strong>
         <nav>
           <a href="/" class="active">Overview</a>
+          <a href="/ops">Ops &amp; Security</a>
           <a href="/alerts">Alerts</a>
           <a href="/devices">Devices</a>
           <a href="/admin/sites">Admin</a>
@@ -233,6 +234,17 @@ export function OverviewPage(props: { kpis: { onlinePct: number; openAlerts: num
       <div class="card"><h3>Online %</h3><div style="font-size:28px">{kpis.onlinePct.toFixed(1)}%</div></div>
       <div class="card"><h3>Open alerts</h3><div style="font-size:28px">{kpis.openAlerts}</div></div>
       <div class="card"><h3>Avg COP</h3><div style="font-size:28px">{kpis.avgCop ?? '—'}</div></div>
+    </div>
+  );
+}
+
+export function OpsPage(props: { gauges: { ingestSuccessPct: number; p95IngestMs: number; heartbeatFreshnessMin: number } }) {
+  const g = props.gauges;
+  return (
+    <div class="grid">
+      <div class="card"><h3>Ingest success %</h3><div style="font-size:28px">{g.ingestSuccessPct.toFixed(1)}%</div></div>
+      <div class="card"><h3>p95 ingest→cache</h3><div style="font-size:28px">{Math.round(g.p95IngestMs)} ms</div></div>
+      <div class="card"><h3>Heartbeat freshness</h3><div style="font-size:28px">{Math.round(g.heartbeatFreshnessMin)} min</div></div>
     </div>
   );
 }

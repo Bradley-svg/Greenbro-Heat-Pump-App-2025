@@ -7,7 +7,7 @@ import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO } from './do';
 import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
 import { generateCommissioningPDF, type CommissioningPayload } from './pdf';
-import { renderer, OverviewPage, AlertsPage, DevicesPage, AdminSitesPage } from './ssr';
+import { renderer, OverviewPage, AlertsPage, DevicesPage, AdminSitesPage, OpsPage } from './ssr';
 import { handleQueueBatch as baseQueueHandler } from './queue';
 
 void DeviceStateDO;
@@ -559,6 +559,45 @@ app.get('/', async (c) => {
     avgCop: null,
   };
   return c.render(<OverviewPage kpis={kpis} />);
+});
+
+app.get('/ops', async (c) => {
+  const { DB } = c.env;
+  const ingestOk = await DB.prepare(
+    "SELECT COUNT(*) as n FROM ops_metrics WHERE route='/api/ingest' AND status_code BETWEEN 200 AND 299",
+  )
+    .first<{ n: number }>()
+    .catch(() => null);
+  const ingestAll = await DB.prepare("SELECT COUNT(*) as n FROM ops_metrics WHERE route='/api/ingest'")
+    .first<{ n: number }>()
+    .catch(() => null);
+
+  const total = ingestAll?.n ?? 0;
+  let p95IngestMs = 0;
+  if (total > 0) {
+    const offset = Math.max(0, Math.floor(0.95 * (total - 1)));
+    const p95Row = await DB.prepare(
+      "SELECT duration_ms FROM ops_metrics WHERE route='/api/ingest' ORDER BY duration_ms LIMIT 1 OFFSET ?",
+    )
+      .bind(offset)
+      .first<{ duration_ms: number }>()
+      .catch(() => null);
+    p95IngestMs = p95Row?.duration_ms ?? 0;
+  }
+
+  const lastSeen = await DB.prepare(
+    "SELECT MAX(strftime('%s','now') - strftime('%s', last_seen_at)) as age FROM devices WHERE online=1",
+  )
+    .first<{ age: number | null }>()
+    .catch(() => null);
+
+  const gauges = {
+    ingestSuccessPct: total > 0 ? (100 * (ingestOk?.n ?? 0)) / total : 100,
+    p95IngestMs,
+    heartbeatFreshnessMin: (lastSeen?.age ?? 0) / 60,
+  };
+
+  return c.render(<OpsPage gauges={gauges} />);
 });
 
 app.get('/alerts', async (c) => {
