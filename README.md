@@ -55,3 +55,45 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
 * **Telemetry precision** – The consumer rounds temperatures to `0.1 °C` and power/COP values to `0.01`. Adjust the rounding logic in `src/queue.ts` if the charts require a different precision.
 * **Rollups & retention** – Consider adding a secondary consumer or a cron-triggered worker to aggregate one-minute rollups and archive telemetry older than 90 days to the `greenbro-reports` R2 bucket. The SQL schema separates `latest_state` (fast reads) from `telemetry` (history) to support this.
 
+
+## Alerts & Commissioning Enhancements
+
+1. Apply the new migration:
+   ```bash
+   wrangler d1 migrations create GREENBRO_DB --name 002_alerts
+   # paste `migrations/002_alerts.sql` into the generated file or copy it directly
+   wrangler d1 migrations apply GREENBRO_DB
+   ```
+2. Rebuild and deploy:
+   ```bash
+   npm run build
+   wrangler deploy
+   ```
+3. Core alert APIs:
+   - `GET /api/alerts`
+   - `POST /api/alerts/:id/ack`
+   - `POST /api/alerts/:id/resolve`
+   - `POST /api/alerts/:id/comment` with `{ "body": "..." }`
+4. Generate a commissioning PDF and store it in R2:
+   ```bash
+   curl -X POST https://<worker>/api/commissioning/GBR-HP-12345/report \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "performedBy": "alice@greenbro.co.za",
+       "ts": "2025-10-20T10:00:00Z",
+       "site": "Cape Town POC",
+       "checklist": [
+         { "step": "Sensors sane", "passed": true },
+         { "step": "ΔT under load", "passed": true, "notes": "4.9°C" }
+       ],
+       "measurements": {
+         "supplyC": 49.8,
+         "returnC": 44.9,
+         "flowLps": 0.23,
+         "cop": 2.24
+       }
+     }'
+   ```
+5. SSR dashboard routes:
+   - `GET /` – KPI overview cards
+   - `GET /alerts` – Server-rendered alerts table with live refresh

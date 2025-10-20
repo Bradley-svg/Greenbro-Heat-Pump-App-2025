@@ -6,15 +6,16 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "migrate": "wrangler d1 migrations apply GREENBRO_DB",
-    "build": "esbuild src/app.ts --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker"
+    "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker"
   },
   "dependencies": {
     "hono": "^4.6.5",
-    "jose": "^5.9.3"
+    "jose": "^5.9.3",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0",
     "@cloudflare/workers-types": "^4.20241018.0",
+    "esbuild": "^0.24.0",
     "typescript": "^5.6.3"
   }
 }
