@@ -7,6 +7,7 @@ export interface Env {
   INGEST_QUEUE: Queue<IngestMessage>;
 
   DeviceState: DurableObjectNamespace;
+  DEVICE_DO: DurableObjectNamespace;
 
   ACCESS_JWKS_URL: string;
   ACCESS_AUD: string;

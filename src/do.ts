@@ -1,5 +1,7 @@
 import type { Env, TelemetryPayload } from './types';
 
+type AuditPayload = Record<string, unknown>;
+
 interface TelemetrySnapshot {
   telemetry: TelemetryPayload;
   receivedAt: string;
@@ -157,6 +159,64 @@ export class DeviceStateDO {
       .bind(deviceId)
       .first<Record<string, unknown>>();
     return row ?? {};
+  }
+}
+
+export class DeviceDO {
+  private readonly state: DurableObjectState;
+  private readonly env: Env;
+
+  constructor(state: DurableObjectState, env: Env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const nowISO = new Date().toISOString();
+
+    const ro = await this.env.DB.prepare("SELECT value FROM settings WHERE key='read_only'")
+      .first<{ value: string }>();
+    if (ro?.value === '1') {
+      return new Response('Read-only mode', { status: 503 });
+    }
+
+    const bucket = (await this.state.storage.get<number>('bucket')) ?? 5;
+    if (bucket <= 0) {
+      return new Response('Rate limited', { status: 429 });
+    }
+
+    await this.state.storage.put('bucket', bucket - 1);
+    await this.state.storage.setAlarm(Date.now() + 10_000);
+
+    if (req.method === 'POST' && url.pathname.endsWith('/command')) {
+      const payload = (await req.json<AuditPayload>().catch(() => ({}))) ?? {};
+      const subject = req.headers.get('x-operator-subject') ?? 'operator';
+
+      await this.env.DB.prepare(
+        "INSERT INTO audit_log (id, ts, subject, device_id, action, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+        .bind(
+          crypto.randomUUID(),
+          nowISO,
+          subject,
+          this.state.id.toString(),
+          'command',
+          JSON.stringify(payload),
+        )
+        .run();
+
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    return new Response('OK');
+  }
+
+  async alarm(): Promise<void> {
+    const bucket = (await this.state.storage.get<number>('bucket')) ?? 0;
+    await this.state.storage.put('bucket', Math.min(bucket + 1, 5));
   }
 }
 

@@ -2,11 +2,12 @@
 /** @jsxRuntime automatic */
 import type { ExecutionContext, MessageBatch, ScheduledEvent } from '@cloudflare/workers-types';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import type { Env, IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
-import { DeviceStateDO } from './do';
+import { DeviceStateDO, DeviceDO } from './do';
 import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, openAlertIfNeeded, type Derived } from './alerts';
 import { generateCommissioningPDF, type CommissioningPayload } from './pdf';
 import {
@@ -24,6 +25,7 @@ import {
 import { handleQueueBatch as baseQueueHandler } from './queue';
 
 void DeviceStateDO;
+void DeviceDO;
 
 function maskId(id: string) {
   if (!id) return id as any;
@@ -135,6 +137,53 @@ async function guardWrite(c: any) {
   return null;
 }
 
+type DeviceCommandBody = { dhwSetC?: number; mode?: string };
+
+async function dispatchDeviceCommand(
+  c: Context<Ctx>,
+  deviceId: string,
+  actor: string,
+  commandBody: DeviceCommandBody,
+): Promise<Response> {
+  const envelope = {
+    deviceId,
+    actor,
+    command: commandBody,
+    limits: {
+      minC: Number(c.env.WRITE_MIN_C ?? '40'),
+      maxC: Number(c.env.WRITE_MAX_C ?? '60'),
+    },
+  };
+  const payload = JSON.stringify(envelope);
+
+  const doId = c.env.DEVICE_DO.idFromName(deviceId);
+  const auditStub = c.env.DEVICE_DO.get(doId);
+  const auditRes = await auditStub.fetch(
+    new Request(`https://do/devices/${deviceId}/command`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-operator-subject': actor,
+      },
+      body: payload,
+    }),
+  );
+
+  if (!auditRes.ok) {
+    return new Response(auditRes.body, { status: auditRes.status, headers: auditRes.headers });
+  }
+
+  const stateId = c.env.DeviceState.idFromName(deviceId);
+  const stateStub = c.env.DeviceState.get(stateId);
+  const res = await stateStub.fetch('https://do/command', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: payload,
+  });
+
+  return new Response(res.body, { status: res.status, headers: res.headers });
+}
+
 type Ctx = { Bindings: Env; Variables: { auth?: AccessContext } };
 
 const app = new Hono<Ctx>();
@@ -195,26 +244,38 @@ app.post('/api/devices/:id/write', async (c) => {
   requireRole(auth, ['admin', 'ops']);
 
   const deviceId = c.req.param('id');
-  const body = await c.req.json<{ dhwSetC?: number; mode?: string }>();
+  const body = await c.req.json<DeviceCommandBody>();
+  const actor = auth.email ?? auth.sub ?? 'operator';
 
-  const id = c.env.DeviceState.idFromName(deviceId);
-  const stub = c.env.DeviceState.get(id);
+  return dispatchDeviceCommand(c, deviceId, actor, body);
+});
 
-  const res = await stub.fetch('https://do/command', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      deviceId,
-      actor: auth.email ?? auth.sub,
-      command: body,
-      limits: {
-        minC: Number(c.env.WRITE_MIN_C ?? '40'),
-        maxC: Number(c.env.WRITE_MAX_C ?? '60'),
-      },
-    }),
-  });
+app.post('/api/devices/:id/command', async (c) => {
+  const ro = await isReadOnly(c.env.DB);
+  if (ro) {
+    return c.text('Read-only', 503);
+  }
 
-  return new Response(res.body, { status: res.status, headers: res.headers });
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  const deviceId = c.req.param('id');
+  const raw = await c.req.text();
+  let commandBody: DeviceCommandBody = {};
+  if (raw.trim().length > 0) {
+    try {
+      commandBody = JSON.parse(raw) as DeviceCommandBody;
+    } catch {
+      return c.text('Invalid JSON body', 400);
+    }
+  }
+
+  const actor = auth.email ?? auth.sub ?? 'operator';
+
+  return dispatchDeviceCommand(c, deviceId, actor, commandBody);
 });
 
 app.get('/api/me/saved-views', async (c) => {

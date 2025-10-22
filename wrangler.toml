@@ -42,9 +42,17 @@ max_batch_timeout = 2
 name = "DeviceState"
 class_name = "DeviceStateDO"
 
+[[durable_objects.bindings]]
+name = "DEVICE_DO"
+class_name = "DeviceDO"
+
 [[migrations]]
 tag = "v1-device-state"
 new_classes = ["DeviceStateDO"]
+
+[[migrations]]
+tag = "v2-device"
+new_classes = ["DeviceDO"]
 
 # ---- Cron jobs ----
 [triggers]
