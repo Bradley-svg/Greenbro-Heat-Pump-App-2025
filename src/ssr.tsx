@@ -418,6 +418,23 @@ const devicesScript = `
   })();
 `;
 
+const readOnlyScript = `
+(function(){
+  async function _ro(){
+    try {
+      const res = await fetch('/api/settings/public');
+      if (!res.ok) return;
+      const s = await res.json();
+      document.body.toggleAttribute('data-ro', !!s.read_only);
+    } catch (err) {
+      console.warn('read-only poll failed', err);
+    }
+  }
+  _ro();
+  setInterval(_ro, 60000);
+})();
+`;
+
 const opsScript = `
 (function(){
   const root = document.getElementById('ops-slo');
@@ -836,6 +853,7 @@ export const renderer = jsxRenderer(({ children }) => {
         label{display:flex;gap:6px;align-items:center;color:var(--muted)}
         select,input[type=text]{background:#0b1119;color:var(--text);border:1px solid #1e2632;border-radius:8px;padding:6px}
         button{cursor:pointer}
+        body[data-ro]::after{content:'READ-ONLY';position:fixed;top:8px;right:12px;background:#ff4d4f;color:#0b0e12;padding:6px 10px;border-radius:999px;font-weight:700;box-shadow:0 0 0 1px #1e2632}
         .overview-layout{display:grid;gap:16px}
         .overview-kpis{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
         .kpi-card{display:flex;flex-direction:column;gap:6px}
@@ -898,9 +916,13 @@ export const renderer = jsxRenderer(({ children }) => {
             <a href="/admin/maintenance" class={isActive('/admin/maintenance') ? 'active' : undefined}>
               Maintenance
             </a>
+            <a href="/admin/settings" class={isActive('/admin/settings') ? 'active' : undefined}>
+              Admin Settings
+            </a>
           </nav>
         </header>
         <div class="wrap">{children}</div>
+        <script dangerouslySetInnerHTML={{ __html: readOnlyScript }} />
       </body>
     </html>
   );
@@ -1177,6 +1199,37 @@ export function DevicesPage(props: { rows: any[] }) {
         </tbody>
       </table>
       <script dangerouslySetInnerHTML={{ __html: devicesScript }} />
+    </div>
+  );
+}
+
+export function AdminSettingsPage(){
+  return (
+    <div class="card">
+      <h2>Admin — Settings</h2>
+      <form id="ro-form" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px">
+        <label><input type="checkbox" name="read_only"/> Read-only mode</label>
+        <label>Ops webhook URL <input type="text" name="ops_webhook_url" placeholder="https://hooks.slack.com/..."/></label>
+        <button class="btn" type="submit">Save</button>
+      </form>
+      <script dangerouslySetInnerHTML={{ __html: `
+        (async function(){
+          const form = document.getElementById('ro-form');
+          async function load(){
+            const r = await fetch('/api/admin/settings'); const rows = await r.json();
+            const map = Object.fromEntries(rows.map(function(row){ return [row.key, row.value]; }));
+            form.read_only.checked = map.read_only === '1';
+            form.ops_webhook_url.value = map.ops_webhook_url || '';
+          }
+          form.addEventListener('submit', async function(e){
+            e.preventDefault();
+            await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'read_only',value: form.read_only.checked?'1':'0'})});
+            await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ops_webhook_url',value: form.ops_webhook_url.value})});
+            load();
+          });
+          load();
+        })();
+      ` }} />
     </div>
   );
 }

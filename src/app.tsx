@@ -16,6 +16,7 @@ import {
   DevicesPage,
   AdminSitesPage,
   AdminMaintenancePage,
+  AdminSettingsPage,
   OpsPage,
   type OverviewData,
   type OpsSnapshot,
@@ -27,6 +28,27 @@ void DeviceStateDO;
 function maskId(id: string) {
   if (!id) return id as any;
   return id.length <= 5 ? `•••${id.slice(-2)}` : `${id.slice(0, 3)}…${id.slice(-2)}`;
+}
+
+async function getSetting(DB: D1Database, key: string) {
+  const r = await DB.prepare("SELECT value FROM settings WHERE key=?").bind(key).first<{ value: string }>();
+  return r?.value ?? null;
+}
+async function setSetting(DB: D1Database, key: string, value: string) {
+  await DB.prepare(
+    "INSERT INTO settings (key,value,updated_at) VALUES (?,?,datetime('now')) " +
+      "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+  ).bind(key, value).run();
+}
+async function isReadOnly(DB: D1Database) {
+  return (await getSetting(DB, 'read_only')) === '1';
+}
+
+async function guardWrite(c: any) {
+  if (await isReadOnly(c.env.DB)) {
+    return c.text('Read-only mode active', 503);
+  }
+  return null;
 }
 
 type Ctx = { Bindings: Env; Variables: { auth?: AccessContext } };
@@ -78,6 +100,10 @@ app.get('/api/devices/:id/latest', async (c) => {
 });
 
 app.post('/api/devices/:id/write', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -124,6 +150,10 @@ app.get('/api/me/saved-views', async (c) => {
 });
 
 app.post('/api/me/saved-views', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   const uid = auth?.sub ?? auth?.email;
   if (!uid) {
@@ -148,6 +178,10 @@ app.post('/api/me/saved-views', async (c) => {
 });
 
 app.delete('/api/me/saved-views/:id', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   const uid = auth?.sub ?? auth?.email;
   if (!uid) {
@@ -158,6 +192,32 @@ app.delete('/api/me/saved-views/:id', async (c) => {
     .bind(c.req.param('id'), uid)
     .run();
 
+  return c.json({ ok: true });
+});
+
+app.get('/api/settings/public', async (c) => c.json({ read_only: await isReadOnly(c.env.DB) }));
+
+app.get('/api/admin/settings', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const rows = await c.env.DB.prepare('SELECT key,value FROM settings').all<{ key: string; value: string }>();
+  return c.json(rows.results ?? []);
+});
+
+app.post('/api/admin/settings', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const { key, value } = await c.req.json<{ key: string; value: string }>().catch(() => ({ key: '', value: '' }));
+  if (!key) {
+    return c.text('Bad Request', 400);
+  }
+  await setSetting(c.env.DB, key, value ?? '');
   return c.json({ ok: true });
 });
 
@@ -360,6 +420,10 @@ app.post('/api/ingest/:profileId', async (c) => {
 });
 
 app.post('/api/ops/recompute-baselines', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -444,6 +508,10 @@ app.get('/api/alerts', async (c) => {
 });
 
 app.post('/api/alerts/:id/ack', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -456,6 +524,10 @@ app.post('/api/alerts/:id/ack', async (c) => {
 });
 
 app.post('/api/alerts/:id/resolve', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -470,6 +542,10 @@ app.post('/api/alerts/:id/resolve', async (c) => {
 });
 
 app.post('/api/alerts/:id/comment', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -520,6 +596,10 @@ app.get('/api/admin/site-clients', async (c) => {
 });
 
 app.post('/api/admin/site-clients', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -534,6 +614,10 @@ app.post('/api/admin/site-clients', async (c) => {
 });
 
 app.delete('/api/admin/site-clients', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -588,6 +672,10 @@ app.get('/api/admin/maintenance', async (c) => {
 });
 
 app.post('/api/admin/maintenance', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -628,6 +716,10 @@ app.post('/api/admin/maintenance', async (c) => {
 });
 
 app.delete('/api/admin/maintenance/:id', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -639,6 +731,10 @@ app.delete('/api/admin/maintenance/:id', async (c) => {
 });
 
 app.post('/api/admin/sites', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -657,6 +753,10 @@ app.post('/api/admin/sites', async (c) => {
 });
 
 app.delete('/api/admin/sites', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -738,6 +838,10 @@ app.get('/api/devices', async (c) => {
 });
 
 app.post('/api/commissioning/:deviceId/report', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
   const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
@@ -996,6 +1100,19 @@ app.get('/admin/maintenance', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   return c.render(<AdminMaintenancePage />);
+});
+
+app.get('/admin/settings', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  return c.render(<AdminSettingsPage />);
 });
 
 function createEmptyOverview(): OverviewData {
