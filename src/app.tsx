@@ -1,5 +1,6 @@
 /** @jsxImportSource hono/jsx */
 /** @jsxRuntime automatic */
+import type { ExecutionContext, MessageBatch } from '@cloudflare/workers-types';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, IngestMessage, TelemetryPayload } from './types';
@@ -337,7 +338,9 @@ app.post('/api/alerts/:id/resolve', async (c) => {
     return c.text('Unauthorized', 401);
   }
   const id = c.req.param('id');
-  await c.env.DB.prepare("UPDATE alerts SET state='closed', closed_at=datetime('now') WHERE alert_id=? AND state IN ('open','ack')")
+  await c.env.DB.prepare(
+    "UPDATE alerts SET state='closed', closed_at=datetime('now') WHERE alert_id=? AND state IN ('open','ack')",
+  )
     .bind(id)
     .run();
   return c.json({ ok: true });
@@ -931,21 +934,22 @@ async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<
 
 async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | null | undefined) {
   if (!key) return false;
-  const row = await DB.prepare('SELECT device_key_hash FROM devices WHERE device_id=?')
+  const row = await DB.prepare('SELECT key_hash, device_key_hash FROM devices WHERE device_id=?')
     .bind(deviceId)
-    .first<{ device_key_hash: string }>();
-  if (!row?.device_key_hash) return false;
+    .first<{ key_hash?: string | null; device_key_hash?: string | null }>();
+  const stored = row?.key_hash ?? row?.device_key_hash;
+  if (!stored) return false;
   return crypto.subtle
     .digest('SHA-256', new TextEncoder().encode(key))
     .then((buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join(''))
-    .then((digest) => digest === row.device_key_hash);
+    .then((digest) => digest === stored);
 }
 
 async function isDuplicate(DB: D1Database, key: string) {
   await DB.exec(`CREATE TABLE IF NOT EXISTS idem (k TEXT PRIMARY KEY, ts TEXT)`);
   const hit = await DB.prepare('SELECT k FROM idem WHERE k=?').bind(key).first();
   if (hit) return true;
-  await DB.prepare('INSERT OR IGNORE INTO idem (k, ts) VALUES (?, datetime(\'now\'))').bind(key).run();
+  await DB.prepare("INSERT OR IGNORE INTO idem (k, ts) VALUES (?, datetime('now'))").bind(key).run();
   return false;
 }
 

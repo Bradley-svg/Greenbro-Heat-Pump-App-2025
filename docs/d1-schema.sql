@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS devices (
   map_version TEXT,
   online INTEGER NOT NULL DEFAULT 0,
   last_seen_at TEXT,
-  device_key_hash TEXT NOT NULL, -- SHA-256 hex of the device key
+  key_hash TEXT NOT NULL, -- SHA-256 hex of the device key
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
