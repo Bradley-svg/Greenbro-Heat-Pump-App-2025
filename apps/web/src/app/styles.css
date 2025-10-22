@@ -411,6 +411,10 @@ a {
   color: #ffffff;
 }
 
+.chip--readonly {
+  cursor: default;
+}
+
 .grid {
   display: grid;
   gap: 16px;

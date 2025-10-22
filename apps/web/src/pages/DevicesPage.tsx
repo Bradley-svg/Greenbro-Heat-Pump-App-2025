@@ -42,10 +42,15 @@ export function DevicesPage(): JSX.Element {
   const page = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 0;
 
   const [siteInput, setSiteInput] = useState(selectedSite);
+  const [regionInput, setRegionInput] = useState(selectedRegion);
 
   useEffect(() => {
     setSiteInput(selectedSite);
   }, [selectedSite]);
+
+  useEffect(() => {
+    setRegionInput(selectedRegion);
+  }, [selectedRegion]);
 
   const filterKey = useMemo(
     () => ({ site: selectedSite, region: selectedRegion, health: selectedHealth }),
@@ -142,52 +147,96 @@ export function DevicesPage(): JSX.Element {
   const hasPrevPage = shouldUseSearch ? page > 0 : false;
 
   const activeFilters = [
-    selectedSite ? `Site ${selectedSite}` : null,
-    selectedRegion ? `Region ${selectedRegion}` : null,
-    selectedHealth ? `Health ${selectedHealth}` : null,
-  ].filter(Boolean);
+    selectedSite ? { key: 'site', label: `Site ${selectedSite}` } : null,
+    selectedRegion ? { key: 'region', label: `Region ${selectedRegion}` } : null,
+    selectedHealth
+      ? {
+          key: 'health',
+          label:
+            selectedHealth === 'unhealthy'
+              ? 'Unhealthy only'
+              : `Health ${selectedHealth}`,
+        }
+      : null,
+  ].filter(Boolean) as Array<{ key: string; label: string }>;
 
-  const updateParam = useCallback(
-    (key: string, value: string | null) => {
+  const unhealthyOnly = selectedHealth === 'unhealthy';
+  const healthSelectValue = unhealthyOnly ? '' : selectedHealth;
+
+  const updateSearchParams = useCallback(
+    (
+      mutator: (next: URLSearchParams) => void,
+      options: { preservePage?: boolean } = {},
+    ) => {
       const next = new URLSearchParams(params);
-      if (value && value.length) {
-        next.set(key, value);
-      } else {
-        next.delete(key);
+      mutator(next);
+      if (!options.preservePage) {
+        next.delete('page');
       }
-      next.delete('page');
       setParams(next, { replace: true });
     },
     [params, setParams],
   );
 
   const clearFilters = () => {
-    const next = new URLSearchParams(params);
-    next.delete('site');
-    next.delete('region');
-    next.delete('health');
-    next.delete('page');
-    setParams(next, { replace: true });
+    updateSearchParams((next) => {
+      next.delete('site');
+      next.delete('region');
+      next.delete('health');
+    });
     setSiteInput('');
+    setRegionInput('');
   };
 
-  const handleSiteSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleFiltersSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    updateParam('site', siteInput.trim() ? siteInput.trim() : null);
+    const trimmedSite = siteInput.trim();
+    const trimmedRegion = regionInput.trim();
+    updateSearchParams((next) => {
+      if (trimmedSite) {
+        next.set('site', trimmedSite);
+      } else {
+        next.delete('site');
+      }
+      if (trimmedRegion) {
+        next.set('region', trimmedRegion);
+      } else {
+        next.delete('region');
+      }
+    });
   };
 
   const handleHealthChange = (value: string) => {
-    updateParam('health', value || null);
+    updateSearchParams((next) => {
+      if (value) {
+        next.set('health', value);
+      } else {
+        next.delete('health');
+      }
+    });
   };
 
   const goToPage = (nextPage: number) => {
-    const next = new URLSearchParams(params);
-    if (nextPage <= 0) {
-      next.delete('page');
-    } else {
-      next.set('page', String(nextPage));
-    }
-    setParams(next, { replace: true });
+    updateSearchParams(
+      (next) => {
+        if (nextPage <= 0) {
+          next.delete('page');
+        } else {
+          next.set('page', String(nextPage));
+        }
+      },
+      { preservePage: true },
+    );
+  };
+
+  const handleUnhealthyToggle = (checked: boolean) => {
+    updateSearchParams((next) => {
+      if (checked) {
+        next.set('health', 'unhealthy');
+      } else if (selectedHealth === 'unhealthy') {
+        next.delete('health');
+      }
+    });
   };
 
   const renderPagination = shouldUseSearch && (searchDevices.length > 0 || totalDevices > 0);
@@ -205,10 +254,19 @@ export function DevicesPage(): JSX.Element {
           <h2>Devices</h2>
           <p className="page__subtitle">Browse inventory and jump into live telemetry</p>
         </div>
+        {activeFilters.length ? (
+          <div className="chip-group" aria-label="Active filters">
+            {activeFilters.map((filter) => (
+              <span key={filter.key} className="chip chip--active chip--readonly">
+                {filter.label}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </header>
       <form
         className="card"
-        onSubmit={handleSiteSubmit}
+        onSubmit={handleFiltersSubmit}
         style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}
       >
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
@@ -227,10 +285,26 @@ export function DevicesPage(): JSX.Element {
           />
         </label>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
+          <span className="data-table__muted">Region</span>
+          <input
+            type="text"
+            value={regionInput}
+            onChange={(event) => setRegionInput(event.target.value)}
+            placeholder="Northwest"
+            style={{
+              padding: '8px 12px',
+              borderRadius: 8,
+              border: '1px solid #d1d5db',
+              fontSize: 14,
+            }}
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
           <span className="data-table__muted">Health</span>
           <select
-            value={selectedHealth}
+            value={healthSelectValue}
             onChange={(event) => handleHealthChange(event.target.value)}
+            disabled={unhealthyOnly}
             style={{
               padding: '8px 12px',
               borderRadius: 8,
@@ -241,8 +315,15 @@ export function DevicesPage(): JSX.Element {
             <option value="">Any</option>
             <option value="online">Online</option>
             <option value="offline">Offline</option>
-            <option value="unhealthy">Unhealthy</option>
           </select>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 160 }}>
+          <input
+            type="checkbox"
+            checked={unhealthyOnly}
+            onChange={(event) => handleUnhealthyToggle(event.target.checked)}
+          />
+          <span className="data-table__muted">Unhealthy only</span>
         </label>
         <div style={{ display: 'flex', gap: 8 }}>
           <button type="submit" className="app-button">
@@ -253,18 +334,10 @@ export function DevicesPage(): JSX.Element {
             className="app-button"
             onClick={clearFilters}
           >
-            Reset
+            Clear
           </button>
         </div>
       </form>
-      {activeFilters.length ? (
-        <div className="card filter-banner">
-          <span>Filters: {activeFilters.join(', ')}</span>
-          <button type="button" className="app-button" onClick={clearFilters}>
-            Clear filters
-          </button>
-        </div>
-      ) : null}
       {isLoading ? (
         <div className="card">Loading devices…</div>
       ) : isError ? (
