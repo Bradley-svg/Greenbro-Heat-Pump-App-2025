@@ -628,14 +628,14 @@ a {
   color: #6b7280;
 }
 
-.fleet-map {
+.devices-map {
   margin-top: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.fleet-map__svg {
+.devices-map__svg {
   width: 100%;
   height: auto;
   max-height: 360px;
@@ -643,22 +643,22 @@ a {
   border-radius: 16px;
 }
 
-.fleet-map__marker {
+.devices-map__marker {
   cursor: pointer;
   transition: transform 0.2s ease;
 }
 
-.fleet-map__marker:hover {
+.devices-map__marker:hover {
   transform: translateY(-2px) scale(1.02);
 }
 
-.fleet-map__label {
+.devices-map__label {
   font-size: 12px;
   fill: #e2e8f0;
   pointer-events: none;
 }
 
-.fleet-map__legend {
+.devices-map__legend {
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -666,7 +666,7 @@ a {
   color: #6b7280;
 }
 
-.fleet-map__dot {
+.devices-map__dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -674,11 +674,11 @@ a {
   margin-right: 4px;
 }
 
-.fleet-map__dot--online {
+.devices-map__dot--online {
   background: #22c55e;
 }
 
-.fleet-map__dot--offline {
+.devices-map__dot--offline {
   background: #f97316;
 }
 

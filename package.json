@@ -6,7 +6,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "migrate": "wrangler d1 migrations apply GREENBRO_DB",
-    "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker"
+    "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
+    "copy-guard": "node scripts/guard-words.cjs"
   },
   "dependencies": {
     "hono": "^4.6.5",

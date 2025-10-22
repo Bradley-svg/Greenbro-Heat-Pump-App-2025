@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import type { Env } from './types';
+import { drawBrandPdfHeader } from './brand';
 
 export type CommissioningPayload = {
   deviceId: string;
@@ -67,14 +68,21 @@ export async function generateCommissioningPDF(
   payload: CommissioningPayload,
 ): Promise<{ key: string; url: string }> {
   const pdfDoc = await PDFDocument.create();
-  let page = pdfDoc.addPage([595, 842]);
+  const pageSize: [number, number] = [595, 842];
+  let page = pdfDoc.addPage(pageSize);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const textColor = rgb(0.05, 0.12, 0.07);
 
   const drawText = (text: string, x: number, y: number, size = 12) => {
-    page.drawText(text, { x, y, size, font, color: rgb(0, 0, 0) });
+    page.drawText(text, { x, y, size, font, color: textColor });
   };
 
-  let y = 800;
+  const resetPage = () => {
+    page = pdfDoc.addPage(pageSize);
+    return drawBrandPdfHeader(page, font, 'Commissioning Report');
+  };
+
+  let y = drawBrandPdfHeader(page, font, 'Commissioning Report');
   drawText('GreenBro Commissioning Report', 40, y, 18);
   y -= 24;
   drawText(`Device: ${payload.deviceId}`, 40, y);
@@ -94,8 +102,7 @@ export async function generateCommissioningPDF(
     drawText(`${k}: ${v}`, 50, y);
     y -= 14;
     if (y < 80) {
-      page = pdfDoc.addPage([595, 842]);
-      y = 780;
+      y = resetPage();
     }
   }
 
@@ -106,8 +113,7 @@ export async function generateCommissioningPDF(
     drawText(`${item.passed ? '[✔]' : '[✖]'} ${item.step}${item.notes ? ` — ${item.notes}` : ''}`, 50, y);
     y -= 14;
     if (y < 60) {
-      page = pdfDoc.addPage([595, 842]);
-      y = 780;
+      y = resetPage();
     }
   }
 
@@ -134,14 +140,21 @@ export async function generateClientMonthlyReport(
   payload: ClientMonthlyReportPayload,
 ): Promise<{ key: string; url: string }> {
   const pdfDoc = await PDFDocument.create();
-  let page = pdfDoc.addPage([595, 842]);
+  const pageSize: [number, number] = [595, 842];
+  let page = pdfDoc.addPage(pageSize);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const textColor = rgb(0.05, 0.12, 0.07);
 
   const drawText = (text: string, x: number, y: number, size = 12) => {
-    page.drawText(text, { x, y, size, font });
+    page.drawText(text, { x, y, size, font, color: textColor });
   };
 
-  let y = 800;
+  const resetPage = () => {
+    page = pdfDoc.addPage(pageSize);
+    return drawBrandPdfHeader(page, font, 'Monthly Report');
+  };
+
+  let y = drawBrandPdfHeader(page, font, 'Monthly Report');
   drawText('GreenBro Monthly Report', 40, y, 18);
   y -= 24;
   drawText(`Client: ${payload.clientName} (${payload.clientId})`, 40, y);
@@ -203,8 +216,14 @@ export async function generateClientMonthlyReport(
 
   rows.forEach((row) => {
     if (y < 80) {
-      page = pdfDoc.addPage([595, 842]);
-      y = 780;
+      y = resetPage();
+      drawText('Metric', colX[0], y);
+      drawText('Target', colX[1], y);
+      drawText('Actual', colX[2], y);
+      drawText('Status', colX[3], y);
+      y -= 14;
+      page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 0.5 });
+      y -= 12;
     }
     drawText(row.label, colX[0], y);
     drawText(row.target, colX[1], y);
@@ -214,8 +233,7 @@ export async function generateClientMonthlyReport(
   });
 
   if (y < 140) {
-    page = pdfDoc.addPage([595, 842]);
-    y = 780;
+    y = resetPage();
   }
 
   page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 0.5 });
@@ -236,8 +254,13 @@ export async function generateClientMonthlyReport(
     y -= 12;
     alerts.forEach((alert) => {
       if (y < 60) {
-        page = pdfDoc.addPage([595, 842]);
-        y = 780;
+        y = resetPage();
+        drawText('Type', colX[0], y);
+        drawText('Severity', colX[1], y);
+        drawText('Count', colX[2], y);
+        y -= 14;
+        page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 0.5 });
+        y -= 12;
       }
       drawText(alert.type, colX[0], y);
       drawText(alert.severity, colX[1], y);
@@ -247,8 +270,7 @@ export async function generateClientMonthlyReport(
   }
 
   if (y < 120) {
-    page = pdfDoc.addPage([595, 842]);
-    y = 780;
+    y = resetPage();
   }
 
   page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 0.5 });
@@ -263,8 +285,7 @@ export async function generateClientMonthlyReport(
     } else {
       lines.forEach((line) => {
         if (y < 50) {
-          page = pdfDoc.addPage([595, 842]);
-          y = 780;
+          y = resetPage();
         }
         drawText(`• ${line}`, 40, y);
         y -= 14;
@@ -291,28 +312,30 @@ export async function generateIncidentReportV2(
   payload: IncidentReportV2Payload,
 ): Promise<{ key: string; url: string }> {
   const pdfDoc = await PDFDocument.create();
-  let page = pdfDoc.addPage([595, 842]);
+  const pageSize: [number, number] = [595, 842];
+  let page = pdfDoc.addPage(pageSize);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const textColor = rgb(0.05, 0.12, 0.07);
+
+  const resetPage = () => {
+    page = pdfDoc.addPage(pageSize);
+    return drawBrandPdfHeader(page, font, 'Incident Report');
+  };
 
   const ensureSpace = (minY: number) => {
-    if (payload == null) {
-      return;
-    }
     if (minY < 0) {
       return;
     }
     if (y < minY) {
-      page = pdfDoc.addPage([595, 842]);
-      y = 780;
+      y = resetPage();
     }
   };
 
   const drawText = (text: string, x = 40, size = 12, lineGap = 6) => {
     if (y < 60) {
-      page = pdfDoc.addPage([595, 842]);
-      y = 780;
+      y = resetPage();
     }
-    page.drawText(text, { x, y, size, font });
+    page.drawText(text, { x, y, size, font, color: textColor });
     y -= size + lineGap;
   };
 
@@ -331,7 +354,7 @@ export async function generateIncidentReportV2(
       .join(', ')}`;
   };
 
-  let y = 800;
+  let y = drawBrandPdfHeader(page, font, 'Incident Report');
   const siteLabel = payload.siteName ? `${payload.siteName} (${payload.siteId})` : payload.siteId;
   drawText('GreenBro Incident Report', 40, 18);
   drawText(`Site: ${siteLabel}`);

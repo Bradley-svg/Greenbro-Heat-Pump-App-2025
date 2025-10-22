@@ -95,9 +95,9 @@ const overviewScript = `
   if(!root) return;
 
   const dataEl = document.getElementById('overview-data');
-  const mapSvg = root.querySelector('#fleet-map');
+  const mapSvg = root.querySelector('#devices-map');
   const updatedEl = root.querySelector('[data-updated]');
-  const listEl = root.querySelector('#fleet-sites');
+  const listEl = root.querySelector('#devices-sites');
   const kpiOnline = root.querySelector('[data-kpi="online"]');
   const kpiAlerts = root.querySelector('[data-kpi="alerts"]');
   const kpiCop = root.querySelector('[data-kpi="cop"]');
@@ -1685,101 +1685,102 @@ export const renderer = jsxRenderer(({ children }) => {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>GreenBro Dashboard</title>
-      <style>{`
-        :root{--bg:#0b0e12;--card:#121721;--text:#e6edf3;--muted:#91a0b4;--accent:#3fb950}
-        body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto}
-        header{display:flex;gap:12px;align-items:center;padding:14px 18px;background:#0d131b;border-bottom:1px solid #1e2632}
-        nav a{color:var(--muted);text-decoration:none;margin-right:14px}
-        nav a.active{color:var(--text)}
-        .wrap{max-width:1100px;margin:0 auto;padding:18px}
-        .card{background:var(--card);border:1px solid #1e2632;border-radius:14px;padding:16px}
-        .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
-        .btn{background:var(--accent);color:#04110a;border:none;padding:8px 12px;border-radius:10px;cursor:pointer}
-        table{width:100%;border-collapse:collapse}
-        th,td{padding:8px 10px;border-bottom:1px solid #1e2632}
-        label{display:flex;gap:6px;align-items:center;color:var(--muted)}
-        select,input[type=text]{background:#0b1119;color:var(--text);border:1px solid #1e2632;border-radius:8px;padding:6px}
-        button{cursor:pointer}
-        body[data-ro]::after{content:'READ-ONLY';position:fixed;top:8px;right:12px;background:#ff4d4f;color:#0b0e12;padding:6px 10px;border-radius:999px;font-weight:700;box-shadow:0 0 0 1px #1e2632}
-        .overview-layout{display:grid;gap:16px}
-        .overview-kpis{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
-        .kpi-card{display:flex;flex-direction:column;gap:6px}
-        .kpi-value{font-size:32px;font-weight:600}
-        .fleet-card{display:flex;flex-direction:column;gap:12px}
-        .fleet-map-wrap{width:100%;overflow:hidden;border-radius:14px}
-        .fleet-map{width:100%;height:auto;display:block}
-        .legend{display:flex;flex-wrap:wrap;gap:12px;color:var(--muted);font-size:13px}
-        .legend span{display:flex;align-items:center;gap:6px}
-        .legend .swatch{width:10px;height:10px;border-radius:50%}
-        .fleet-sites{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto}
-        .fleet-sites li{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted)}
-        .fleet-sites .dot{width:10px;height:10px;border-radius:50%}
-        .fleet-sites .name{color:var(--text);font-weight:600}
-        .fleet-sites .empty{justify-content:center;font-style:italic}
-        .sparkline-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
-        .sparkline-card{display:flex;flex-direction:column;gap:10px}
-        .sparkline-chart{width:100%;height:auto}
-        .sparkline-meta{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)}
-        .sparkline-meta strong{color:var(--text);font-weight:600}
-        .card-header{display:flex;justify-content:space-between;align-items:center;gap:10px}
-        .card-subtle{color:var(--muted);font-size:13px}
-        .ops-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
-        .ops-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
-        .ops-tile{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:6px}
-        .ops-label{color:var(--muted);font-size:12px;letter-spacing:0.04em;text-transform:uppercase}
-        .ops-value{font-size:32px;font-weight:600;color:var(--text)}
-        .ops-status{font-size:13px;color:#3fb950}
-        .ops-status[data-state="bad"]{color:#f85149}
-        .ops-subtext{font-size:13px;color:var(--muted)}
-        .ops-header .ops-subtext{font-size:12px}
-        .maintenance-form{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
-        .maintenance-form input,.maintenance-form select{min-width:160px}
-        #reports-outbox-filters{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
-        #reports-outbox-filters input{min-width:140px}
-        .reports-outbox-table tbody tr:hover{background:#111a27}
-        #report-history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
-        #report-history-filters input,#report-history-filters select{min-width:160px}
-        #report-history-status{margin-bottom:10px}
-        .report-history-table tbody tr:hover{background:#111a27}
-        .slo-form{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:12px 0 18px}
-        .slo-form input[type=month]{min-width:160px}
-        .slo-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:18px}
-        .slo-card{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px}
-        .slo-metric-value{font-size:28px;font-weight:600}
-        .slo-target{font-size:12px;color:var(--muted)}
-        .slo-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
-        .slo-chip.pass{background:#122418;color:#3fb950}
-        .slo-chip.fail{background:#2a1417;color:#f85149}
-        .slo-chip.idle{background:#1a2332;color:var(--muted)}
-        .slo-spark{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;margin-bottom:16px}
-        #client-slo-sparkline{width:100%;height:auto;display:block}
-        .slo-spark-meta{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:8px}
-        .slo-meta{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--muted);margin-bottom:18px}
-        .slo-alerts{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;margin-top:16px}
-        .slo-alerts ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
-        .slo-alerts strong{color:var(--text)}
-        .slo-heatmap{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;margin-top:16px}
-        .slo-heatmap-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:13px;color:var(--muted)}
-        .slo-heatmap-month{font-size:12px;color:var(--muted);margin-left:8px;font-weight:400}
-        .slo-heatmap-grid{display:grid;grid-template-columns:repeat(7, minmax(0,1fr));gap:6px}
-        .slo-heatmap-cell{position:relative;padding-top:100%;border-radius:8px;background:#1a2332;overflow:hidden}
-        .slo-heatmap-cell span{position:absolute;top:4px;left:6px;font-size:11px;font-weight:600;color:rgba(255,255,255,0.85)}
-        .slo-heatmap-cell[data-empty="true"]{background:#101724}
-        .slo-heatmap-cell:hover{outline:1px solid #f9f9f915}
-        .slo-heatmap-legend{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:11px;color:var(--muted)}
-        .slo-heatmap-legend .bar{flex:1;height:8px;border-radius:999px;background:linear-gradient(90deg,#f85149,#f0883e,#fbd25d,#3fb950)}
-        .slo-heatmap-empty{font-size:13px;color:var(--muted)}
-        .badge{display:inline-block;border-radius:999px;padding:2px 8px;font-size:12px}
-        .badge[data-state="active"]{background:rgba(63,185,80,0.18);color:#3fb950}
-        .badge[data-state="scheduled"]{background:rgba(240,136,62,0.18);color:#f0883e}
-        .badge[data-state="expired"]{background:rgba(145,160,180,0.18);color:var(--muted)}
-        .table-empty{text-align:center;font-style:italic;color:var(--muted)}
-      `}</style>
+        <title>GreenBro Control Center — Devices</title>
+        <link rel="icon" href="/brand/logo.svg" type="image/svg+xml" />
+        <link rel="stylesheet" href="/brand.css" />
+        <style>{`
+          body{margin:0;background:var(--gb-bg);color:var(--gb-ink);font-family:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+          a{color:var(--gb-primary-500)}
+          header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:18px 24px;background:var(--gb-panel);border-bottom:1px solid var(--gb-panel-border);backdrop-filter:blur(12px)}
+          nav{display:flex;flex-wrap:wrap;gap:10px}
+          nav a{color:rgba(236,247,237,0.75);text-decoration:none;padding:8px 16px;border-radius:999px;transition:background 0.2s ease,color 0.2s ease,box-shadow 0.2s ease}
+          nav a:hover{background:rgba(111,219,127,0.18);color:#ffffff}
+          nav a.active{background:rgba(57,181,74,0.3);color:#041205;box-shadow:0 14px 28px -20px rgba(57,181,74,0.75)}
+          .brand-mark{display:inline-flex;align-items:center;gap:12px;font-size:18px;font-weight:600;color:#ecf7ed;letter-spacing:0.08em;text-transform:uppercase}
+          .brand-mark::before{content:'';width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,var(--gb-primary-700),var(--gb-primary-300));box-shadow:0 16px 32px -20px rgba(57,181,74,0.8)}
+          .wrap{max-width:1120px;margin:0 auto;padding:28px 24px 48px}
+          .card{background:var(--gb-card);border:1px solid var(--gb-card-border);border-radius:18px;padding:20px;box-shadow:var(--gb-card-shadow)}
+          .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+          .btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 18px;border-radius:999px;border:1px solid rgba(57,181,74,0.35);background:linear-gradient(95deg,var(--gb-primary-700) 0%,var(--gb-primary-300) 100%);color:#041205;font-weight:600;cursor:pointer;box-shadow:0 18px 32px -24px rgba(57,181,74,0.85)}
+          table{width:100%;border-collapse:collapse}
+          th,td{padding:10px 12px;border-bottom:1px solid rgba(11,14,18,0.08);text-align:left;color:var(--gb-ink)}
+          label{display:flex;gap:6px;align-items:center;color:var(--gb-muted)}
+          select,input[type=text]{background:#f4f9f6;color:var(--gb-ink);border:1px solid rgba(11,14,18,0.08);border-radius:10px;padding:8px 10px}
+          button{cursor:pointer}
+          body[data-ro]::after{content:'READ-ONLY';position:fixed;top:10px;right:18px;background:rgba(244,63,94,0.16);color:#b4231a;padding:6px 14px;border-radius:999px;font-weight:700;box-shadow:0 10px 24px -20px rgba(11,14,18,0.6);border:1px solid rgba(244,63,94,0.3)}
+          .overview-layout{display:grid;gap:20px}
+          .overview-kpis{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+          .kpi-card{display:flex;flex-direction:column;gap:8px}
+          .kpi-value{font-size:34px;font-weight:600;color:var(--gb-primary-700)}
+          .devices-card{display:flex;flex-direction:column;gap:14px}
+          .devices-map-wrap{width:100%;overflow:hidden;border-radius:16px;background:#03130a;border:1px solid rgba(46,158,63,0.2);box-shadow:0 24px 50px -36px rgba(8,12,9,0.85)}
+          #devices-map{width:100%;height:auto;display:block}
+          .legend{display:flex;flex-wrap:wrap;gap:12px;color:var(--gb-muted);font-size:13px}
+          .legend span{display:flex;align-items:center;gap:6px}
+          .legend .swatch{width:10px;height:10px;border-radius:50%}
+          .devices-sites{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;max-height:200px;overflow:auto}
+          .devices-sites li{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--gb-muted)}
+          .devices-sites .dot{width:10px;height:10px;border-radius:50%}
+          .devices-sites .name{color:var(--gb-ink);font-weight:600}
+          .devices-sites .empty{justify-content:center;font-style:italic}
+          .sparkline-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+          .sparkline-card{display:flex;flex-direction:column;gap:10px}
+          .sparkline-chart{width:100%;height:auto}
+          .sparkline-meta{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--gb-muted)}
+          .sparkline-meta strong{color:var(--gb-ink);font-weight:600}
+          .card-header{display:flex;justify-content:space-between;align-items:center;gap:10px}
+          .card-subtle{color:var(--gb-muted);font-size:13px}
+          .ops-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+          .ops-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+          .ops-tile{background:rgba(244,249,246,0.92);border:1px solid rgba(46,158,63,0.15);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:8px;box-shadow:0 20px 40px -34px rgba(8,12,9,0.6)}
+          .ops-label{color:var(--gb-muted);font-size:12px;letter-spacing:0.04em;text-transform:uppercase}
+          .ops-value{font-size:32px;font-weight:600;color:var(--gb-ink)}
+          .ops-status{font-size:13px;color:var(--gb-primary-700)}
+          .ops-status[data-state="bad"]{color:#b4231a}
+          .ops-subtext{font-size:13px;color:var(--gb-muted)}
+          .maintenance-form{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 18px}
+          .maintenance-form input,.maintenance-form select{min-width:160px}
+          #reports-outbox-filters,#report-history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 18px}
+          #reports-outbox-filters input,#report-history-filters input,#report-history-filters select{min-width:150px}
+          .reports-outbox-table tbody tr:hover,.report-history-table tbody tr:hover{background:rgba(111,219,127,0.08)}
+          .slo-form{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:14px 0 20px}
+          .slo-form input[type=month]{min-width:160px}
+          .slo-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:18px}
+          .slo-card{background:rgba(244,249,246,0.92);border:1px solid rgba(46,158,63,0.15);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:10px;box-shadow:0 20px 36px -34px rgba(8,12,9,0.6)}
+          .slo-metric-value{font-size:30px;font-weight:600;color:var(--gb-ink)}
+          .slo-target{font-size:12px;color:var(--gb-muted)}
+          .slo-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
+          .slo-chip.pass{background:rgba(57,181,74,0.18);color:var(--gb-primary-700)}
+          .slo-chip.fail{background:rgba(244,63,94,0.16);color:#b4231a}
+          .slo-chip.idle{background:rgba(143,154,166,0.16);color:var(--gb-muted)}
+          .slo-spark{background:rgba(244,249,246,0.92);border:1px solid rgba(46,158,63,0.15);border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 20px 40px -36px rgba(8,12,9,0.6)}
+          #client-slo-sparkline{width:100%;height:auto;display:block}
+          .slo-spark-meta{display:flex;justify-content:space-between;font-size:13px;color:var(--gb-muted);margin-top:8px}
+          .slo-meta{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--gb-muted);margin-bottom:18px}
+          .slo-alerts{background:rgba(244,249,246,0.92);border:1px solid rgba(46,158,63,0.15);border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 20px 40px -34px rgba(8,12,9,0.6)}
+          .slo-alerts ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--gb-muted)}
+          .slo-alerts strong{color:var(--gb-ink)}
+          .slo-heatmap{background:rgba(244,249,246,0.92);border:1px solid rgba(46,158,63,0.15);border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 20px 40px -34px rgba(8,12,9,0.6)}
+          .slo-heatmap-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:13px;color:var(--gb-muted)}
+          .slo-heatmap-month{font-size:12px;color:var(--gb-muted);margin-left:8px;font-weight:400}
+          .slo-heatmap-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+          .slo-heatmap-cell{position:relative;padding-top:100%;border-radius:8px;background:rgba(12,20,14,0.75);overflow:hidden}
+          .slo-heatmap-cell span{position:absolute;top:4px;left:6px;font-size:11px;font-weight:600;color:rgba(236,247,237,0.9)}
+          .slo-heatmap-cell[data-empty="true"]{background:rgba(4,9,13,0.8)}
+          .slo-heatmap-cell:hover{outline:1px solid rgba(111,219,127,0.25)}
+          .slo-heatmap-legend{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:11px;color:var(--gb-muted)}
+          .slo-heatmap-legend .bar{flex:1;height:8px;border-radius:999px;background:linear-gradient(90deg,#f85149,#f0883e,#fbd25d,#39b54a)}
+          .slo-heatmap-empty{font-size:13px;color:var(--gb-muted)}
+          .badge{display:inline-block;border-radius:999px;padding:3px 10px;font-size:12px}
+          .badge[data-state="active"]{background:rgba(57,181,74,0.18);color:var(--gb-primary-700)}
+          .badge[data-state="scheduled"]{background:rgba(240,136,62,0.18);color:#b45309}
+          .badge[data-state="expired"]{background:rgba(143,154,166,0.16);color:var(--gb-muted)}
+          .table-empty{text-align:center;font-style:italic;color:var(--gb-muted)}
+        `}</style>
       </head>
       <body>
         <header>
-          <strong>GreenBro</strong>
+          <span class="brand-mark">GreenBro Control Center</span>
           <nav>
             <a href="/" class={isActive('/') ? 'active' : undefined}>
               Overview
@@ -1854,16 +1855,16 @@ export function OverviewPage(props: { data: OverviewData }) {
         </div>
       </div>
 
-      <div class="card fleet-card">
+      <div class="card devices-card">
         <div class="card-header">
           <h2>Devices map</h2>
           <span class="card-subtle" data-updated>Updated just now</span>
         </div>
-        <div class="fleet-map-wrap">
+        <div class="devices-map-wrap">
           <svg
-            id="fleet-map"
+            id="devices-map"
             viewBox="0 0 600 360"
-            class="fleet-map"
+            class="devices-map"
             preserveAspectRatio="xMidYMid meet"
           ></svg>
         </div>
@@ -1885,7 +1886,7 @@ export function OverviewPage(props: { data: OverviewData }) {
             No devices
           </span>
         </div>
-        <ul id="fleet-sites" class="fleet-sites"></ul>
+        <ul id="devices-sites" class="devices-sites"></ul>
       </div>
 
       <div class="grid sparkline-grid">

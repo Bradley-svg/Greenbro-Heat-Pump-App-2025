@@ -17,6 +17,7 @@ import {
   type CommissioningPayload,
   type IncidentReportV2Payload,
 } from './pdf';
+import { brandCss, brandEmail, brandLogoSvg } from './brand';
 import {
   renderer,
   OverviewPage,
@@ -240,6 +241,7 @@ async function sendEmail(
   subject: string,
   text: string,
   settings?: EmailSettings,
+  html?: string,
 ): Promise<boolean> {
   const recipients = Array.isArray(to) ? dedupeRecipients(to) : parseRecipientList(to);
   if (recipients.length === 0) {
@@ -250,10 +252,19 @@ async function sendEmail(
     return false;
   }
   try {
+    const payload: Record<string, unknown> = {
+      from: cfg.from,
+      to: recipients,
+      subject,
+      text,
+    };
+    if (html) {
+      payload.html = html;
+    }
     await fetch(cfg.webhook, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: cfg.from, to: recipients, subject, text }),
+      body: JSON.stringify(payload),
     });
     return true;
   } catch (error) {
@@ -484,6 +495,22 @@ type Ctx = { Bindings: Env; Variables: { auth?: AccessContext } };
 const app = new Hono<Ctx>();
 
 app.use('*', cors());
+
+app.get('/brand.css', (c) =>
+  c.text(brandCss, 200, {
+    'Content-Type': 'text/css; charset=utf-8',
+    'Cache-Control': 'public, max-age=300',
+  }),
+);
+
+app.get('/brand/logo.svg', () =>
+  new Response(brandLogoSvg, {
+    headers: {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400',
+    },
+  }),
+);
 
 app.use('/api/*', async (c, next) => {
   const jwt = c.req.header('Cf-Access-Jwt-Assertion');
@@ -2052,8 +2079,8 @@ app.post('/api/reports/incident/v2', async (c) => {
   if (recipients.length > 0) {
     const emailSettings = await loadEmailSettings(c.env.DB);
     const subject = `Incident report — ${payload.siteName ?? payload.siteId}`;
-    const lines = [
-      `Incident report for ${payload.siteName ?? payload.siteId}`,
+    const introLines = [`Incident report for ${payload.siteName ?? payload.siteId}`];
+    const detailLines = [
       `Window: ${payload.windowStart} → ${payload.windowEnd}`,
       payload.incidents.length === 0
         ? 'Incidents: none recorded in this window'
@@ -2062,9 +2089,17 @@ app.post('/api/reports/incident/v2', async (c) => {
         ? 'Maintenance windows: none'
         : `Maintenance windows: ${payload.maintenance.length}`,
       `Download: ${pdf.url}`,
-      `R2 path: ${path}`,
     ];
-    emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), emailSettings);
+    const footerLines = [`R2 path: ${path}`];
+    const html = brandEmail({
+      title: 'Incident report ready',
+      introLines,
+      detailLines,
+      footerLines,
+      cta: { href: pdf.url, label: 'View report' },
+    });
+    const text = [...introLines, ...detailLines, ...footerLines].join('\n');
+    emailed = await sendEmail(c.env, recipients, subject, text, emailSettings, html);
     // To capture email sends in the audit log, call logReportDelivery(c.env.DB, { ...status: 'sent' }) here.
   }
 
@@ -2255,14 +2290,27 @@ app.post('/api/reports/email-existing', async (c) => {
   const downloadUrl = `${origin.origin}${normalizedPath}`;
   const lines = [
     `Report type: ${normalizedType}`,
-    resolvedClientId ? `Client: ${clientName ?? resolvedClientId} (${resolvedClientId})` : clientName ? `Client: ${clientName}` : null,
+    resolvedClientId
+      ? `Client: ${clientName ?? resolvedClientId} (${resolvedClientId})`
+      : clientName
+        ? `Client: ${clientName}`
+        : null,
     siteId ? `Site: ${siteName ?? siteId} (${siteId})` : siteName ? `Site: ${siteName}` : null,
     `Download: ${downloadUrl}`,
     `R2 path: ${normalizedPath}`,
     `Requested by: ${auth.email ?? auth.sub}`,
   ].filter((line): line is string => typeof line === 'string' && line.length > 0);
 
-  const emailed = await sendEmail(c.env, uniqueRecipients, subject, lines.join('\n'), settings);
+  const detailLines = lines.filter((line) => !line.startsWith('R2 path') && !line.startsWith('Requested by'));
+  const footerLines = lines.filter((line) => line.startsWith('R2 path') || line.startsWith('Requested by'));
+  const html = brandEmail({
+    title: subject,
+    introLines: [`Here's the latest ${normalizedType} report link from GreenBro Control Center.`],
+    detailLines,
+    footerLines,
+    cta: { href: downloadUrl, label: 'Open report' },
+  });
+  const emailed = await sendEmail(c.env, uniqueRecipients, subject, lines.join('\n'), settings, html);
   const status = emailed ? 'sent' : 'send_failed';
   await logReportDelivery(c.env.DB, {
     type: normalizedType,
@@ -2322,7 +2370,7 @@ app.post('/api/reports/client-monthly/v2', async (c) => {
   if (recipients.length > 0) {
     const settings = await loadEmailSettings(c.env.DB);
     const subject = `Monthly report — ${payload.monthLabel} (${client.name})`;
-    const lines = [
+    const detailLines = [
       `Client: ${client.name} (${client.id})`,
       `Period: ${payload.periodStart} → ${payload.periodEnd}`,
       `Sites: ${payload.siteCount} · Devices: ${payload.deviceCount}`,
@@ -2330,9 +2378,17 @@ app.post('/api/reports/client-monthly/v2', async (c) => {
         ? 'Uptime: n/a'
         : `Uptime: ${(payload.metrics.uptimePct * 100).toFixed(2)}%`,
       `Download: ${pdf.url}`,
-      `R2 path: ${path}`,
     ];
-    emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), settings);
+    const footerLines = [`R2 path: ${path}`];
+    const html = brandEmail({
+      title: `Monthly report ready — ${payload.monthLabel}`,
+      introLines: [`${client.name}'s monthly performance summary is ready.`],
+      detailLines,
+      footerLines,
+      cta: { href: pdf.url, label: 'View report' },
+    });
+    const text = [...detailLines, ...footerLines].join('\n');
+    emailed = await sendEmail(c.env, recipients, subject, text, settings, html);
     await logReportDelivery(c.env.DB, {
       type: 'monthly',
       status: emailed ? 'sent' : 'send_failed',
@@ -2556,7 +2612,7 @@ app.post('/api/ops/monthly-run', async (c) => {
       let emailed = false;
       if (recipients.length > 0) {
         const subject = `Monthly report — ${payload.monthLabel} (${client.name})`;
-        const lines = [
+        const detailLines = [
           `Client: ${client.name} (${client.id})`,
           `Period: ${payload.periodStart} → ${payload.periodEnd}`,
           `Sites: ${payload.siteCount} · Devices: ${payload.deviceCount}`,
@@ -2564,9 +2620,18 @@ app.post('/api/ops/monthly-run', async (c) => {
             ? 'Uptime: n/a'
             : `Uptime: ${(payload.metrics.uptimePct * 100).toFixed(2)}%`,
           `Download: ${pdf.url}`,
-          `R2 path: ${keyToPath(pdf.key)}`,
         ];
-        emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), emailSettings);
+        const reportPath = keyToPath(pdf.key);
+        const footerLines = [`R2 path: ${reportPath}`];
+        const html = brandEmail({
+          title: `Monthly report ready — ${payload.monthLabel}`,
+          introLines: [`${client.name}'s monthly performance summary is ready.`],
+          detailLines,
+          footerLines,
+          cta: { href: pdf.url, label: 'View report' },
+        });
+        const text = [...detailLines, ...footerLines].join('\n');
+        emailed = await sendEmail(c.env, recipients, subject, text, emailSettings, html);
       }
       results.push({
         clientId: client.id,
