@@ -1,7 +1,7 @@
 
 /** @jsxImportSource hono/jsx */
 /** @jsxRuntime automatic */
-import { jsxRenderer } from 'hono/jsx-renderer';
+import { jsxRenderer, useRequestContext } from 'hono/jsx-renderer';
 
 export type OverviewData = {
   kpis: { onlinePct: number; openAlerts: number; avgCop: number | null };
@@ -413,12 +413,25 @@ const adminSitesScript = `
 })();
 `;
 
-export const renderer = jsxRenderer(({ children }) => (
-  <html lang="en">
-    <head>
-      <meta charSet="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>GreenBro Dashboard</title>
+export const renderer = jsxRenderer(({ children }) => {
+  const c = useRequestContext();
+  const path = c.req.path;
+  const isActive = (href: string) => {
+    if (href === '/') {
+      return path === '/';
+    }
+    if (href === '/admin/sites') {
+      return path === '/admin' || path.startsWith('/admin/');
+    }
+    return path === href || path.startsWith(`${href}/`);
+  };
+
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>GreenBro Dashboard</title>
       <style>{`
         :root{--bg:#0b0e12;--card:#121721;--text:#e6edf3;--muted:#91a0b4;--accent:#3fb950}
         body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto}
@@ -457,22 +470,33 @@ export const renderer = jsxRenderer(({ children }) => (
         .card-header{display:flex;justify-content:space-between;align-items:center;gap:10px}
         .card-subtle{color:var(--muted);font-size:13px}
       `}</style>
-    </head>
-    <body>
-      <header>
-        <strong>GreenBro</strong>
-        <nav>
-          <a href="/" class="active">Overview</a>
-          <a href="/ops">Ops &amp; Security</a>
-          <a href="/alerts">Alerts</a>
-          <a href="/devices">Devices</a>
-          <a href="/admin/sites">Admin</a>
-        </nav>
-      </header>
-      <div class="wrap">{children}</div>
-    </body>
-  </html>
-));
+      </head>
+      <body>
+        <header>
+          <strong>GreenBro</strong>
+          <nav>
+            <a href="/" class={isActive('/') ? 'active' : undefined}>
+              Overview
+            </a>
+            <a href="/ops" class={isActive('/ops') ? 'active' : undefined}>
+              Ops &amp; Security
+            </a>
+            <a href="/alerts" class={isActive('/alerts') ? 'active' : undefined}>
+              Alerts
+            </a>
+            <a href="/devices" class={isActive('/devices') ? 'active' : undefined}>
+              Devices
+            </a>
+            <a href="/admin/sites" class={isActive('/admin/sites') ? 'active' : undefined}>
+              Admin
+            </a>
+          </nav>
+        </header>
+        <div class="wrap">{children}</div>
+      </body>
+    </html>
+  );
+});
 
 export function OverviewPage(props: { data: OverviewData }) {
   const { data } = props;
