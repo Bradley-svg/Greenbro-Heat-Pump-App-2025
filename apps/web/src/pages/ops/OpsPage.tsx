@@ -19,6 +19,10 @@ export default function OpsPage(){
   });
 
   const d = slo.data || {};
+  const burnSeries = burn.data || [];
+  const burnLast = burnSeries.at(-1) ?? 0;
+  const burnKind = burnLast > 2 ? 'crit' : burnLast > 1 ? 'warn' : 'ok';
+
   return (
     <div style={{ display:'grid', gap:12 }}>
       <h2>Ops — Reliability</h2>
@@ -31,7 +35,13 @@ export default function OpsPage(){
 
       <div className="card" style={{ padding:12 }}>
         <h3 style={{ marginTop:0 }}>Burn (last 10 minutes)</h3>
-        <Sparkline data={burn.data || []} width={600} height={64} />
+        <div style={{ display:'flex', alignItems:'center', gap:16, justifyContent:'space-between' }}>
+          <Sparkline data={burnSeries} width={600} height={64} kind={burnKind} showArea ariaLabel="Burn rate trend" />
+          <span className={`chip ${burnKind}`}>
+            {Number.isFinite(burnLast) ? `${burnLast.toFixed(2)}×` : '—'}
+          </span>
+        </div>
+        <small className="muted">Target ≤ 1.0× (SLO 99.9%)</small>
       </div>
 
       <div className="card">

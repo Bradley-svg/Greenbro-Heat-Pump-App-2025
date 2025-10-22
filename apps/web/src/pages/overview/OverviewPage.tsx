@@ -76,11 +76,25 @@ export default function OverviewPage(){
         <div style={{ display:'grid', gap:12 }}>
           <div className="card">
             <h4>Devices ΔT</h4>
-            <Sparkline data={sparks.data?.delta_t || []} width={300} height={60} />
+            <Sparkline
+              data={sparks.data?.delta_t || []}
+              width={300}
+              height={60}
+              kind="warn"
+              showArea
+              ariaLabel="Devices delta T trend"
+            />
           </div>
           <div className="card">
             <h4>Devices COP</h4>
-            <Sparkline data={sparks.data?.cop || []} width={300} height={60} />
+            <Sparkline
+              data={sparks.data?.cop || []}
+              width={300}
+              height={60}
+              kind="ok"
+              showArea
+              ariaLabel="Devices COP trend"
+            />
           </div>
         </div>
       </div>
