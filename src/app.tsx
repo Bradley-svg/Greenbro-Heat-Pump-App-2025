@@ -9,7 +9,12 @@ import type { Env, IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO, DeviceDO } from './do';
 import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
-import { generateCommissioningPDF, type CommissioningPayload } from './pdf';
+import {
+  generateCommissioningPDF,
+  generateClientMonthlyReport,
+  type ClientMonthlyReportPayload,
+  type CommissioningPayload,
+} from './pdf';
 import {
   renderer,
   OverviewPage,
@@ -18,11 +23,13 @@ import {
   AdminSitesPage,
   AdminMaintenancePage,
   AdminSettingsPage,
+  AdminReportsPage,
   OpsPage,
   type OverviewData,
   type OpsSnapshot,
 } from './ssr';
 import { handleQueueBatch as baseQueueHandler } from './queue';
+import { sweepIncidents } from './incidents';
 
 void DeviceStateDO;
 void DeviceDO;
@@ -482,6 +489,132 @@ app.post('/api/ops/recompute-baselines', async (c) => {
   return c.json({ ok: true });
 });
 
+app.post('/api/ops/incidents/sweep', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const hoursParam = url.searchParams.get('hours');
+  const hours = Number(hoursParam ?? '48');
+  const windowHours = Number.isFinite(hours) && hours > 0 ? Math.min(hours, 240) : 48;
+  const result = await sweepIncidents(c.env.DB, windowHours);
+  return c.json({ ok: true, windowHours, ...result });
+});
+
+app.get('/api/ops/incidents', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const sinceParam = url.searchParams.get('since');
+  const siteId = url.searchParams.get('siteId');
+
+  let sinceExpr = "datetime('now', ?)";
+  const bind: string[] = [];
+
+  if (sinceParam && /^\d{4}-\d{2}-\d{2}/.test(sinceParam)) {
+    sinceExpr = '?';
+    bind.push(sinceParam);
+  } else {
+    bind.push(sinceParam ?? '-72 hours');
+  }
+
+  let siteClause = '';
+  if (siteId) {
+    siteClause = ' AND i.site_id = ?';
+    bind.push(siteId);
+  }
+
+  const rows = await c.env.DB.prepare(
+    `SELECT i.incident_id, i.site_id, i.started_at, i.last_alert_at, i.resolved_at, s.name AS site_name
+       FROM incidents i
+       LEFT JOIN sites s ON s.site_id = i.site_id
+      WHERE i.started_at >= ${sinceExpr}${siteClause}
+      ORDER BY i.started_at DESC
+      LIMIT 200`,
+  )
+    .bind(...bind)
+    .all<{
+      incident_id: string;
+      site_id: string;
+      started_at: string;
+      last_alert_at: string;
+      resolved_at: string | null;
+      site_name: string | null;
+    }>();
+
+  const incidents = rows.results ?? [];
+  if (incidents.length === 0) {
+    return c.json([]);
+  }
+
+  const ids = incidents.map((r) => r.incident_id);
+  const placeholders = ids.map(() => '?').join(',');
+  const alertRows = await c.env.DB.prepare(
+    `SELECT ia.incident_id, a.type, a.severity, a.state, COUNT(*) as count
+       FROM incident_alerts ia
+       JOIN alerts a ON a.alert_id = ia.alert_id
+      WHERE ia.incident_id IN (${placeholders})
+      GROUP BY ia.incident_id, a.type, a.severity, a.state`,
+  )
+    .bind(...ids)
+    .all<{ incident_id: string; type: string; severity: string; state: string; count: number }>();
+
+  const grouped = new Map<
+    string,
+    {
+      states: Record<string, number>;
+      types: Map<string, { type: string; severity: string; count: number }>;
+    }
+  >();
+
+  for (const row of alertRows.results ?? []) {
+    if (!grouped.has(row.incident_id)) {
+      grouped.set(row.incident_id, { states: {}, types: new Map() });
+    }
+    const bucket = grouped.get(row.incident_id)!;
+    bucket.states[row.state] = (bucket.states[row.state] ?? 0) + row.count;
+    const key = `${row.type}::${row.severity}`;
+    const prev = bucket.types.get(key);
+    if (prev) {
+      prev.count += row.count;
+    } else {
+      bucket.types.set(key, { type: row.type, severity: row.severity, count: row.count });
+    }
+  }
+
+  const out = incidents.map((incident) => {
+    const meta = grouped.get(incident.incident_id);
+    const states = meta?.states ?? {};
+    const total = Object.values(states).reduce((acc, value) => acc + value, 0);
+    return {
+      incidentId: incident.incident_id,
+      siteId: incident.site_id,
+      siteName: incident.site_name ?? null,
+      startedAt: incident.started_at,
+      lastAlertAt: incident.last_alert_at,
+      resolvedAt: incident.resolved_at,
+      alerts: {
+        total,
+        open: states.open ?? 0,
+        ack: states.ack ?? 0,
+        closed: states.closed ?? 0,
+      },
+      types: meta ? Array.from(meta.types.values()) : [],
+    };
+  });
+
+  return c.json(out);
+});
+
 app.post('/api/heartbeat/:profileId', async (c) => {
   const body = await c.req.json<{ deviceId: string; ts: string; rssi?: number }>().catch(() => null);
   if (!body?.deviceId || !body?.ts) return c.text('Bad Request', 400);
@@ -679,6 +812,84 @@ app.delete('/api/admin/site-clients', async (c) => {
     return c.text('Bad Request', 400);
   }
   await c.env.DB.prepare('DELETE FROM site_clients WHERE client_id=? AND site_id=?').bind(clientId, siteId).run();
+  return c.json({ ok: true });
+});
+
+app.get('/api/admin/slo', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const clientId = url.searchParams.get('clientId');
+  let sql =
+    'SELECT cs.client_id, cs.uptime_target, cs.ingest_target, cs.cop_target, cs.report_recipients, cs.updated_at, c.name AS client_name FROM client_slos cs LEFT JOIN clients c ON c.client_id = cs.client_id';
+  const bind: string[] = [];
+  if (clientId) {
+    sql += ' WHERE cs.client_id = ?';
+    bind.push(clientId);
+  }
+  sql += ' ORDER BY COALESCE(c.name, cs.client_id)';
+  const rows = await c.env.DB.prepare(sql).bind(...bind).all();
+  return c.json(rows.results ?? []);
+});
+
+app.post('/api/admin/slo', async (c) => {
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const body = await c.req
+    .json<{
+      clientId: string;
+      uptimeTarget?: number | string | null;
+      ingestTarget?: number | string | null;
+      copTarget?: number | string | null;
+      reportRecipients?: string | null;
+    }>()
+    .catch(() => null);
+  if (!body?.clientId) {
+    return c.text('clientId required', 400);
+  }
+
+  const toRatio = (value: number | string | null | undefined): number | null => {
+    if (value == null) return null;
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return null;
+  };
+
+  const uptimeTarget = toRatio(body.uptimeTarget);
+  const ingestTarget = toRatio(body.ingestTarget);
+  const copTarget = toRatio(body.copTarget);
+  const recipients = body.reportRecipients ?? null;
+
+  await c.env.DB.prepare(
+    `INSERT INTO client_slos (client_id, uptime_target, ingest_target, cop_target, report_recipients, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(client_id) DO UPDATE SET
+         uptime_target=excluded.uptime_target,
+         ingest_target=excluded.ingest_target,
+         cop_target=excluded.cop_target,
+         report_recipients=excluded.report_recipients,
+         updated_at=excluded.updated_at`,
+  )
+    .bind(body.clientId, uptimeTarget, ingestTarget, copTarget, recipients)
+    .run();
+
   return c.json({ ok: true });
 });
 
@@ -1078,6 +1289,73 @@ app.post('/api/reports/incident', async (c) => {
   });
 });
 
+app.post('/api/reports/client-monthly', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const clientId = url.searchParams.get('client_id');
+  const monthParam = url.searchParams.get('month');
+  if (!clientId || !monthParam) {
+    return c.text('client_id and month required', 400);
+  }
+
+  let prepared;
+  try {
+    prepared = await buildClientMonthlyReportPayload(c.env, clientId, monthParam);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to prepare report';
+    if (message === 'Client not found') {
+      return c.text(message, 404);
+    }
+    return c.text(message, 400);
+  }
+
+  const { payload, client } = prepared;
+
+  const pdf = await generateClientMonthlyReport(c.env, payload);
+
+  return c.json({
+    ok: true,
+    key: pdf.key,
+    url: pdf.url,
+    client,
+    month: monthParam,
+    metrics: payload.metrics,
+    targets: payload.targets,
+    siteCount: payload.siteCount,
+    deviceCount: payload.deviceCount,
+    recipients: payload.recipients,
+  });
+});
+
+app.get('/api/reports/client-monthly', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const clientId = url.searchParams.get('client_id');
+  if (!clientId) {
+    return c.text('client_id required', 400);
+  }
+  const limitParam = url.searchParams.get('limit');
+  const limit = Number(limitParam ?? '20');
+  const max = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 100) : 20;
+  const list = await c.env.REPORTS.list({ prefix: `client-reports/${clientId}/`, limit: max });
+  const objects = list.objects ?? [];
+  const out = objects.map((obj) => ({
+    key: obj.key,
+    size: obj.size,
+    uploaded: obj.uploaded?.toISOString?.() ?? obj.uploaded,
+    url: `/api/reports/${obj.key}`,
+  }));
+  return c.json(out);
+});
+
 app.get('/api/reports/*', async (c) => {
   const key = c.req.path.replace('/api/reports/', '');
   const obj = await c.env.REPORTS.get(key);
@@ -1257,6 +1535,19 @@ app.get('/admin/settings', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   return c.render(<AdminSettingsPage />);
+});
+
+app.get('/admin/reports', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  return c.render(<AdminReportsPage />);
 });
 
 function createEmptyOverview(): OverviewData {
@@ -1644,6 +1935,177 @@ function parseIsoTimestamp(value?: string | null): string | null {
   return parsed.toISOString();
 }
 
+type MonthRange = { start: Date; end: Date; label: string };
+
+function parseMonthRange(month: string): MonthRange | null {
+  const m = /^([0-9]{4})-([0-9]{2})$/.exec(month);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const monthIndex = Number(m[2]) - 1;
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+    return null;
+  }
+  const start = new Date(Date.UTC(year, monthIndex, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 1, 0, 0, 0, 0));
+  const label = start.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  return { start, end, label };
+}
+
+function formatMonthKey(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + 1;
+  return `${year}-${String(month).padStart(2, '0')}`;
+}
+
+function previousMonthKey(reference: Date = new Date()): string {
+  const base = new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth(), 1));
+  base.setUTCMonth(base.getUTCMonth() - 1);
+  return formatMonthKey(base);
+}
+
+type ClientMonthlyMetrics = {
+  uptimePct: number | null;
+  ingestSuccessPct: number | null;
+  avgCop: number | null;
+  alerts: Array<{ type: string; severity: string; count: number }>;
+};
+
+async function computeClientMonthlyMetrics(
+  DB: D1Database,
+  clientId: string,
+  deviceIds: string[],
+  startIso: string,
+  endIso: string,
+): Promise<ClientMonthlyMetrics> {
+  let uptimePct: number | null = null;
+  let avgCop: number | null = null;
+
+  if (deviceIds.length > 0) {
+    const placeholders = deviceIds.map(() => '?').join(',');
+    const telemetryRow = await DB.prepare(
+      `SELECT COUNT(*) as total,
+              SUM(CASE WHEN COALESCE(json_extract(status_json,'$.online'),0) = 1 THEN 1 ELSE 0 END) as online_count,
+              AVG(cop) as avg_cop
+         FROM telemetry
+        WHERE device_id IN (${placeholders})
+          AND ts >= ?
+          AND ts < ?`,
+    )
+      .bind(...deviceIds, startIso, endIso)
+      .first<{ total: number | null; online_count: number | null; avg_cop: number | null }>()
+      .catch(() => null);
+    const total = toNumber(telemetryRow?.total) ?? 0;
+    const online = toNumber(telemetryRow?.online_count) ?? 0;
+    if (total > 0) {
+      uptimePct = online / total;
+    }
+    avgCop = toNumber(telemetryRow?.avg_cop);
+  }
+
+  const ingestRow = await DB.prepare(
+    `SELECT COUNT(*) as total,
+            SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) as ok
+       FROM ops_metrics
+      WHERE route='/api/ingest'
+        AND ts >= ?
+        AND ts < ?`,
+  )
+    .bind(startIso, endIso)
+    .first<{ total: number | null; ok: number | null }>()
+    .catch(() => null);
+
+  const ingestTotal = toNumber(ingestRow?.total) ?? 0;
+  const ingestOk = toNumber(ingestRow?.ok) ?? 0;
+  const ingestSuccessPct = ingestTotal > 0 ? ingestOk / ingestTotal : null;
+
+  const alertRows = await DB.prepare(
+    `SELECT a.type, a.severity, COUNT(*) as count
+       FROM alerts a
+       JOIN devices d ON d.device_id = a.device_id
+       JOIN site_clients sc ON sc.site_id = d.site_id
+      WHERE sc.client_id = ?
+        AND a.opened_at >= ?
+        AND a.opened_at < ?
+      GROUP BY a.type, a.severity
+      ORDER BY count DESC`,
+  )
+    .bind(clientId, startIso, endIso)
+    .all<{ type: string; severity: string; count: number }>()
+    .catch(() => ({ results: [] }));
+
+  const alerts = (alertRows.results ?? []).map((row) => ({ type: row.type, severity: row.severity, count: row.count }));
+
+  return { uptimePct, ingestSuccessPct, avgCop, alerts };
+}
+
+async function buildClientMonthlyReportPayload(
+  env: Env,
+  clientId: string,
+  monthKey: string,
+): Promise<{ payload: ClientMonthlyReportPayload; client: { id: string; name: string } }> {
+  const range = parseMonthRange(monthKey);
+  if (!range) {
+    throw new Error('Invalid month format');
+  }
+
+  const client = await env.DB.prepare('SELECT client_id, name FROM clients WHERE client_id=?')
+    .bind(clientId)
+    .first<{ client_id: string; name: string | null }>();
+  if (!client) {
+    throw new Error('Client not found');
+  }
+
+  const mapRows = await env.DB.prepare(
+    `SELECT DISTINCT d.device_id, d.site_id
+       FROM devices d
+       JOIN site_clients sc ON sc.site_id = d.site_id
+      WHERE sc.client_id = ?`,
+  )
+    .bind(clientId)
+    .all<{ device_id: string; site_id: string | null }>();
+
+  const deviceIds = (mapRows.results ?? []).map((row) => row.device_id).filter((id): id is string => !!id);
+  const siteIds = new Set<string>();
+  for (const row of mapRows.results ?? []) {
+    if (row.site_id) {
+      siteIds.add(row.site_id);
+    }
+  }
+
+  const startIso = range.start.toISOString();
+  const endIso = range.end.toISOString();
+
+  const metrics = await computeClientMonthlyMetrics(env.DB, clientId, deviceIds, startIso, endIso);
+
+  const slo = await env.DB.prepare(
+    'SELECT uptime_target, ingest_target, cop_target, report_recipients FROM client_slos WHERE client_id=?',
+  )
+    .bind(clientId)
+    .first<{ uptime_target: number | null; ingest_target: number | null; cop_target: number | null; report_recipients: string | null }>();
+
+  const periodEndDisplay = new Date(range.end.getTime() - 1);
+
+  const payload: ClientMonthlyReportPayload = {
+    clientId,
+    clientName: client.name ?? clientId,
+    monthLabel: range.label,
+    monthKey,
+    periodStart: startIso,
+    periodEnd: periodEndDisplay.toISOString(),
+    siteCount: siteIds.size,
+    deviceCount: deviceIds.length,
+    metrics,
+    targets: {
+      uptimeTarget: toNumber(slo?.uptime_target),
+      ingestTarget: toNumber(slo?.ingest_target),
+      copTarget: toNumber(slo?.cop_target),
+    },
+    recipients: slo?.report_recipients ?? null,
+  };
+
+  return { payload, client: { id: clientId, name: client.name ?? clientId } };
+}
+
 async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
   const totalRow = await DB.prepare(
     "SELECT COUNT(*) AS total, SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success FROM ops_metrics WHERE route='/api/ingest'",
@@ -1736,17 +2198,38 @@ export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: E
 export default {
   fetch: app.fetch,
   queue,
-  scheduled: async (_evt: ScheduledEvent, env: Env) => {
+  scheduled: async (evt: ScheduledEvent, env: Env) => {
+    const cron = evt.cron ?? '';
     try {
       await fastBurnMonitor(env);
     } catch (error) {
       console.error('fast burn monitor error', error);
     }
-    await evaluateHeartbeatAlerts(env, new Date().toISOString()).catch((error) => {
-      console.error('heartbeat sweep error', error);
-    });
-    // Nightly baselines
-    await recomputeBaselines(env.DB).catch(() => {});
-    // TODO: escalation sweep for stale heartbeat, idem table cleanup
+    const shouldRunNightly = !cron || cron === '0 2 * * *' || cron === '15 2 1 * *';
+    if (shouldRunNightly) {
+      await evaluateHeartbeatAlerts(env, new Date().toISOString()).catch((error) => {
+        console.error('heartbeat sweep error', error);
+      });
+      await recomputeBaselines(env.DB).catch((error) => {
+        console.error('baseline recompute error', error);
+      });
+      await sweepIncidents(env.DB).catch((error) => {
+        console.error('incident sweep error', error);
+      });
+    }
+
+    if (!cron || cron === '15 2 1 * *') {
+      const reference = evt.scheduledTime ? new Date(evt.scheduledTime) : new Date();
+      const monthKey = previousMonthKey(reference);
+      const sloRows = await env.DB.prepare('SELECT client_id FROM client_slos').all<{ client_id: string }>();
+      for (const row of sloRows.results ?? []) {
+        try {
+          const { payload } = await buildClientMonthlyReportPayload(env, row.client_id, monthKey);
+          await generateClientMonthlyReport(env, payload);
+        } catch (error) {
+          console.error('monthly report generation failed', row.client_id, error);
+        }
+      }
+    }
   },
 };

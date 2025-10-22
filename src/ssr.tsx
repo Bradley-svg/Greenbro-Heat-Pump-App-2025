@@ -449,6 +449,7 @@ const opsScript = `
     heartbeatCount: root.querySelector('[data-field="heartbeat-count"]'),
     generatedAt: root.querySelector('[data-field="generated-at"]')
   };
+  const incidentBody = document.getElementById('ops-incidents');
 
   function pct(value, digits){
     if(typeof value !== 'number' || !Number.isFinite(value)) return '—';
@@ -458,6 +459,15 @@ const opsScript = `
   function fmt(value){
     if(typeof value !== 'number' || !Number.isFinite(value)) return '0';
     return value.toLocaleString();
+  }
+
+  function esc(value){
+    return String(value ?? '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
   }
 
   function render(data){
@@ -499,6 +509,34 @@ const opsScript = `
     }
   }
 
+  function renderIncidents(rows){
+    if(!incidentBody) return;
+    if(!Array.isArray(rows) || rows.length === 0){
+      incidentBody.innerHTML = '<tr><td colspan="5" class="table-empty">No incidents in window</td></tr>';
+      return;
+    }
+    incidentBody.innerHTML = rows.map(function(row){
+      const site = esc(row.siteName || row.siteId || '—');
+      const opened = esc(row.startedAt || '—');
+      const last = esc(row.lastAlertAt || '—');
+      const alerts = row.alerts || {};
+      const active = Number(alerts.open || 0) + Number(alerts.ack || 0);
+      const badgeState = active > 0 ? 'active' : 'expired';
+      const badgeLabel = active > 0 ? 'Active (' + active + ')' : 'Resolved';
+      const types = Array.isArray(row.types) && row.types.length > 0
+        ? row.types.map(function(t){ return esc(t.type) + ' (' + esc(t.severity) + '×' + esc(String(t.count)) + ')'; })
+        : [];
+      const typesLabel = types.length ? types.join(', ') : '—';
+      return '<tr>'
+        + '<td>' + site + '</td>'
+        + '<td>' + opened + '</td>'
+        + '<td>' + last + '</td>'
+        + '<td><span class="badge" data-state="' + badgeState + '">' + esc(badgeLabel) + '</span></td>'
+        + '<td>' + typesLabel + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
   let initial = null;
   if(dataEl){
     try {
@@ -522,6 +560,21 @@ const opsScript = `
 
   setInterval(refresh, 30000);
   refresh();
+
+  async function refreshIncidents(){
+    if(!incidentBody) return;
+    try {
+      const res = await fetch('/api/ops/incidents?since=-72 hours');
+      if(!res.ok) throw new Error('Failed to load incidents');
+      const payload = await res.json();
+      renderIncidents(Array.isArray(payload) ? payload : []);
+    } catch (err) {
+      console.warn('ops incidents refresh failed', err);
+    }
+  }
+
+  setInterval(refreshIncidents, 60000);
+  refreshIncidents();
 })();
 ${readOnlySnippet}
 `;
@@ -678,6 +731,204 @@ const adminSitesScript = `
 
   listSites();
   listMaps();
+})();
+${readOnlySnippet}
+`;
+
+const adminReportsScript = `
+(function(){
+  const clientSelect = document.getElementById('reports-client');
+  const sloForm = document.getElementById('slo-form');
+  const reportForm = document.getElementById('report-form');
+  const reportBody = document.getElementById('reports-tbody');
+  const statusEl = document.getElementById('report-status');
+
+  function esc(value){
+    return String(value ?? '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  function previousMonth(){
+    const now = new Date();
+    const year = now.getUTCFullYear();
+    let month = now.getUTCMonth();
+    month -= 1;
+    if(month < 0){
+      month = 11;
+      now.setUTCFullYear(year - 1);
+    }
+    const target = new Date(Date.UTC(now.getUTCFullYear(), month, 1));
+    const y = target.getUTCFullYear();
+    const m = String(target.getUTCMonth() + 1).padStart(2,'0');
+    return y + '-' + m;
+  }
+
+  function syncForms(){
+    const hasClient = !!(clientSelect && clientSelect.value);
+    if(sloForm){
+      sloForm.querySelectorAll('input,button,textarea').forEach(function(el){
+        const tag = el.tagName ? el.tagName.toLowerCase() : '';
+        const type = el.getAttribute && el.getAttribute('type');
+        if(tag === 'input' && type === 'hidden') return;
+        el.disabled = !hasClient;
+      });
+    }
+    if(reportForm){
+      reportForm.querySelectorAll('button').forEach(function(btn){
+        btn.disabled = !hasClient;
+      });
+    }
+  }
+
+  async function loadClients(){
+    if(!clientSelect) return;
+    try {
+      const res = await fetch('/api/admin/distinct/clients');
+      if(!res.ok) throw new Error('failed');
+      const rows = await res.json();
+      clientSelect.innerHTML = '<option value="">Select client…</option>' + rows.map(function(row){
+        const id = row.client_id || row.clientId || row.id;
+        const name = row.name || id;
+        return '<option value="' + esc(id) + '">' + esc(name) + '</option>';
+      }).join('');
+    } catch (err) {
+      console.warn('load clients failed', err);
+    }
+  }
+
+  async function loadSlo(clientId){
+    if(!sloForm || !clientId) return;
+    try {
+      const res = await fetch('/api/admin/slo?clientId=' + encodeURIComponent(clientId));
+      if(!res.ok) throw new Error('failed');
+      const rows = await res.json();
+      const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+      sloForm.uptimeTarget.value = row && row.uptime_target != null ? row.uptime_target : '';
+      sloForm.ingestTarget.value = row && row.ingest_target != null ? row.ingest_target : '';
+      sloForm.copTarget.value = row && row.cop_target != null ? row.cop_target : '';
+      sloForm.reportRecipients.value = row && row.report_recipients ? row.report_recipients : '';
+      if(statusEl) statusEl.textContent = 'Targets loaded';
+    } catch (err) {
+      console.warn('load slo failed', err);
+      if(statusEl) statusEl.textContent = 'Error loading targets';
+    }
+  }
+
+  async function loadReports(clientId){
+    if(!reportBody || !clientId) return;
+    try {
+      const res = await fetch('/api/reports/client-monthly?client_id=' + encodeURIComponent(clientId));
+      if(!res.ok) throw new Error('failed');
+      const rows = await res.json();
+      if(!Array.isArray(rows) || rows.length === 0){
+        reportBody.innerHTML = '<tr><td colspan="3" class="table-empty">No reports generated yet</td></tr>';
+        return;
+      }
+      reportBody.innerHTML = rows.map(function(row){
+        const uploaded = row.uploaded ? esc(row.uploaded) : '—';
+        const link = '/api/reports/' + row.key;
+        return '<tr>'
+          + '<td>' + esc(row.key.split('/').pop() || row.key) + '</td>'
+          + '<td>' + uploaded + '</td>'
+          + '<td><a href="' + esc(link) + '" target="_blank" rel="noopener">Download</a></td>'
+          + '</tr>';
+      }).join('');
+      if(statusEl) statusEl.textContent = 'Reports refreshed';
+    } catch (err) {
+      console.warn('load reports failed', err);
+      reportBody.innerHTML = '<tr><td colspan="3" class="table-empty">Failed to load reports</td></tr>';
+      if(statusEl) statusEl.textContent = 'Error loading reports';
+    }
+  }
+
+  if(reportForm){
+    const monthInput = reportForm.querySelector('input[name="month"]');
+    if(monthInput && !monthInput.value){
+      monthInput.value = previousMonth();
+    }
+    reportForm.addEventListener('submit', async function(e){
+      e.preventDefault();
+      if(!clientSelect || !clientSelect.value) return;
+      if(statusEl) statusEl.textContent = 'Generating…';
+      try {
+        const params = new URLSearchParams({ client_id: clientSelect.value, month: reportForm.month.value });
+        const res = await fetch('/api/reports/client-monthly?' + params.toString(), { method: 'POST' });
+        if(!res.ok){
+          const text = await res.text();
+          throw new Error(text || 'Request failed');
+        }
+        await loadReports(clientSelect.value);
+        if(statusEl) statusEl.textContent = 'Report generated';
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        if(statusEl) statusEl.textContent = 'Error: ' + message;
+        console.error('generate report failed', err);
+      }
+    });
+  }
+
+  if(sloForm){
+    sloForm.addEventListener('submit', async function(e){
+      e.preventDefault();
+      if(!clientSelect || !clientSelect.value) return;
+      const payload = {
+        clientId: clientSelect.value,
+        uptimeTarget: sloForm.uptimeTarget.value || null,
+        ingestTarget: sloForm.ingestTarget.value || null,
+        copTarget: sloForm.copTarget.value || null,
+        reportRecipients: sloForm.reportRecipients.value || null
+      };
+      try {
+        const res = await fetch('/api/admin/slo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if(!res.ok){
+          const text = await res.text();
+          throw new Error(text || 'Request failed');
+        }
+        if(statusEl) statusEl.textContent = 'Saved SLO targets';
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err);
+        if(statusEl) statusEl.textContent = 'Error: ' + message;
+        console.error('save slo failed', err);
+      }
+    });
+  }
+
+  if(clientSelect){
+    clientSelect.addEventListener('change', function(){
+      const value = clientSelect.value;
+      syncForms();
+      if(sloForm){
+        sloForm.clientId.value = value || '';
+      }
+      if(statusEl){
+        statusEl.textContent = value ? 'Loading targets…' : 'Select a client to begin.';
+      }
+      if(value){
+        loadSlo(value);
+        loadReports(value);
+      } else {
+        if(reportBody) reportBody.innerHTML = '<tr><td colspan="3" class="table-empty">Select a client to load reports</td></tr>';
+        if(sloForm){
+          sloForm.uptimeTarget.value = '';
+          sloForm.ingestTarget.value = '';
+          sloForm.copTarget.value = '';
+          sloForm.reportRecipients.value = '';
+        }
+      }
+    });
+  }
+
+  loadClients().then(function(){
+    syncForms();
+  });
 })();
 ${readOnlySnippet}
 `;
@@ -914,6 +1165,9 @@ export const renderer = jsxRenderer(({ children }) => {
             <a href="/admin/sites" class={isActive('/admin/sites') ? 'active' : undefined}>
               Admin Sites
             </a>
+            <a href="/admin/reports" class={isActive('/admin/reports') ? 'active' : undefined}>
+              Reports
+            </a>
             <a href="/admin/maintenance" class={isActive('/admin/maintenance') ? 'active' : undefined}>
               Maintenance
             </a>
@@ -1079,6 +1333,26 @@ export function OpsPage(props: { snapshot: OpsSnapshot }) {
           </span>
         </div>
       </div>
+      <div class="card-header" style="margin-top:24px">
+        <h3>Incidents (last 72h)</h3>
+        <span class="card-subtle">Grouped per site with 10 min gap heuristic</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Site</th>
+            <th>Opened</th>
+            <th>Last alert</th>
+            <th>Status</th>
+            <th>Types</th>
+          </tr>
+        </thead>
+        <tbody id="ops-incidents">
+          <tr>
+            <td colSpan={5} class="table-empty">Loading…</td>
+          </tr>
+        </tbody>
+      </table>
       <script id="ops-slo-data" type="application/json">{initialJson}</script>
       <script dangerouslySetInnerHTML={{ __html: opsScript }} />
     </div>
@@ -1261,6 +1535,61 @@ export function AdminSitesPage() {
         <tbody id="maps-tbody"></tbody>
       </table>
       <script dangerouslySetInnerHTML={{ __html: adminSitesScript }} />
+    </div>
+  );
+}
+
+export function AdminReportsPage() {
+  return (
+    <div class="card">
+      <h2>Admin — Client Reports</h2>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 16px">
+        <label style="min-width:220px">Client
+          <select id="reports-client">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+        <span class="card-subtle" id="report-status">Select a client to begin.</span>
+      </div>
+      <h3 style="margin-top:0">Service-level targets</h3>
+      <form id="slo-form" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 20px">
+        <input type="hidden" name="clientId" value="" />
+        <label>Uptime target
+          <input type="number" name="uptimeTarget" step="0.001" min="0" max="1" placeholder="0.999" disabled />
+        </label>
+        <label>Ingest success target
+          <input type="number" name="ingestTarget" step="0.001" min="0" max="1" placeholder="0.999" disabled />
+        </label>
+        <label>COP target
+          <input type="number" name="copTarget" step="0.01" min="0" max="10" placeholder="3.5" disabled />
+        </label>
+        <label style="flex:1 1 320px">Report recipients
+          <textarea name="reportRecipients" rows={2} placeholder="ops@example.com" disabled style="width:100%"></textarea>
+        </label>
+        <button class="btn" type="submit" disabled>Save targets</button>
+      </form>
+      <h3>Generate monthly report</h3>
+      <form id="report-form" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 20px">
+        <label>Month
+          <input type="month" name="month" required />
+        </label>
+        <button class="btn" type="submit" disabled>Generate PDF</button>
+      </form>
+      <table>
+        <thead>
+          <tr>
+            <th>Report</th>
+            <th>Generated</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="reports-tbody">
+          <tr>
+            <td colSpan={3} class="table-empty">Select a client to list reports</td>
+          </tr>
+        </tbody>
+      </table>
+      <script dangerouslySetInnerHTML={{ __html: adminReportsScript }} />
     </div>
   );
 }

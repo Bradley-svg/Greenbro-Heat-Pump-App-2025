@@ -53,6 +53,22 @@ CREATE TABLE IF NOT EXISTS alerts (
   meta_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS incidents (
+  incident_id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  last_alert_at TEXT NOT NULL,
+  resolved_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS incident_alerts (
+  incident_id TEXT NOT NULL,
+  alert_id TEXT NOT NULL,
+  PRIMARY KEY (incident_id, alert_id)
+);
+
 -- Ops metrics (for /ops SLOs)
 CREATE TABLE IF NOT EXISTS ops_metrics (
   ts TEXT NOT NULL,
@@ -72,6 +88,15 @@ CREATE TABLE IF NOT EXISTS writes (
   after_json TEXT,
   clamped_json TEXT,
   result TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS client_slos (
+  client_id TEXT PRIMARY KEY,
+  uptime_target REAL,
+  ingest_target REAL,
+  cop_target REAL,
+  report_recipients TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Helpful indices
