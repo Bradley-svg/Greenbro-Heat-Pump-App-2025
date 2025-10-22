@@ -78,12 +78,14 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
   const widthInner = Math.max(width - pad * 2, 1);
   const heightInner = Math.max(height - pad * 2, 1);
   const spanTs = Math.max(maxTs - minTs, 1);
-  const spanV = Math.max(maxV - minV, 1);
+  const flatSeries = hasData && maxV === minV;
+  const spanV = flatSeries ? 1 : Math.max(maxV - minV, 1);
 
   const ts = useMemo(() => sorted.map((point) => point.ts), [sorted]);
 
   const x = (t: number) => pad + ((t - minTs) / spanTs) * widthInner;
-  const y = (value: number) => pad + (heightInner - ((value - minV) / spanV) * heightInner);
+  const y = (value: number) =>
+    pad + (flatSeries ? heightInner / 2 : heightInner - ((value - minV) / spanV) * heightInner);
 
   const pathData = hasData
     ? sorted.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.ts).toFixed(2)},${y(point.v).toFixed(2)}`).join(' ')
