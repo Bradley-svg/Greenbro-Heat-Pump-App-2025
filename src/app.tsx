@@ -1381,6 +1381,253 @@ app.get('/api/devices', async (c) => {
   return c.json(out);
 });
 
+app.get('/api/sites/search', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  const region = c.req.query('region');
+  const onlyUnhealthyParam = c.req.query('only_unhealthy');
+  const limitParam = Number(c.req.query('limit') ?? 100);
+  const offsetParam = Number(c.req.query('offset') ?? 0);
+  const limit = Number.isFinite(limitParam) ? Math.min(500, Math.max(1, limitParam)) : 100;
+  const offset = Number.isFinite(offsetParam) ? Math.max(0, offsetParam) : 0;
+  const onlyUnhealthy =
+    typeof onlyUnhealthyParam === 'string'
+      ? ['1', 'true', 'yes', 'on'].includes(onlyUnhealthyParam.toLowerCase())
+      : false;
+  const staleMinutesThreshold = 10;
+
+  const siteSearchCte = `WITH all_sites AS (
+      SELECT site_id FROM sites WHERE site_id IS NOT NULL
+      UNION
+      SELECT DISTINCT site_id FROM devices WHERE site_id IS NOT NULL
+      UNION
+      SELECT DISTINCT site_id FROM site_clients WHERE site_id IS NOT NULL
+    ),
+    device_stats AS (
+      SELECT site_id,
+             COUNT(*) AS total_devices,
+             SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online_devices,
+             MIN(CASE WHEN last_seen_at IS NULL THEN NULL ELSE ROUND((julianday('now') - julianday(last_seen_at)) * 24 * 60) END) AS freshness_min
+      FROM devices
+      GROUP BY site_id
+    ),
+    alert_stats AS (
+      SELECT d.site_id AS site_id,
+             COUNT(*) AS open_alerts
+        FROM alerts a
+        JOIN devices d ON d.device_id = a.device_id
+       WHERE a.state IN ('open','ack')
+       GROUP BY d.site_id
+    ),
+    base AS (
+      SELECT a.site_id,
+             s.name,
+             s.region,
+             s.lat,
+             s.lon,
+             COALESCE(device_stats.total_devices, 0) AS total_devices,
+             COALESCE(device_stats.online_devices, 0) AS online_devices,
+             device_stats.freshness_min,
+             COALESCE(alert_stats.open_alerts, 0) AS open_alerts
+        FROM all_sites a
+        LEFT JOIN sites s ON s.site_id = a.site_id
+        LEFT JOIN device_stats ON device_stats.site_id = a.site_id
+        LEFT JOIN alert_stats ON alert_stats.site_id = a.site_id
+    ),
+    annotated AS (
+      SELECT base.*,
+             (base.total_devices - base.online_devices) AS offline_devices,
+             CASE
+               WHEN base.total_devices = 0 THEN 0
+               WHEN base.open_alerts > 0 OR (base.total_devices - base.online_devices) > 0 OR (base.freshness_min IS NOT NULL AND base.freshness_min > ?) THEN 1
+               ELSE 0
+             END AS is_unhealthy
+        FROM base
+    )`;
+
+  const page = await c.env.DB.prepare(
+    `${siteSearchCte}
+    SELECT site_id, name, region, lat, lon, total_devices, online_devices, offline_devices, open_alerts, freshness_min, is_unhealthy
+      FROM annotated
+     WHERE (? IS NULL OR region = ?)
+       AND (? = 0 OR is_unhealthy = 1)
+     ORDER BY site_id
+     LIMIT ? OFFSET ?`,
+  )
+    .bind(
+      staleMinutesThreshold,
+      region ?? null,
+      region ?? null,
+      onlyUnhealthy ? 1 : 0,
+      limit,
+      offset,
+    )
+    .all<{
+      site_id: string | null;
+      name: string | null;
+      region: string | null;
+      lat: number | null;
+      lon: number | null;
+      total_devices: number | null;
+      online_devices: number | null;
+      offline_devices: number | null;
+      open_alerts: number | null;
+      freshness_min: number | null;
+      is_unhealthy: number | null;
+    }>();
+
+  const totalRow = await c.env.DB.prepare(
+    `${siteSearchCte}
+    SELECT COUNT(*) AS n
+      FROM annotated
+     WHERE (? IS NULL OR region = ?)
+       AND (? = 0 OR is_unhealthy = 1)`,
+  )
+    .bind(staleMinutesThreshold, region ?? null, region ?? null, onlyUnhealthy ? 1 : 0)
+    .first<{ n: number }>();
+
+  const total = toNumber(totalRow?.n) ?? 0;
+  const results = (page.results ?? []).map((row) => {
+    const totalDevices = toNumber(row.total_devices) ?? 0;
+    const onlineDevices = toNumber(row.online_devices) ?? 0;
+    const offlineDevices = toNumber(row.offline_devices) ?? 0;
+    const openAlerts = toNumber(row.open_alerts) ?? 0;
+    const freshnessMin = toNumber(row.freshness_min);
+    const unhealthy = row.is_unhealthy === 1;
+    let health: 'healthy' | 'unhealthy' | 'empty';
+    if (totalDevices === 0) {
+      health = 'empty';
+    } else {
+      health = unhealthy ? 'unhealthy' : 'healthy';
+    }
+    return {
+      site_id: row.site_id,
+      name: row.name,
+      region: row.region,
+      lat: toNumber(row.lat),
+      lon: toNumber(row.lon),
+      total_devices: totalDevices,
+      online_devices: onlineDevices,
+      offline_devices: offlineDevices,
+      open_alerts: openAlerts,
+      freshness_min: freshnessMin,
+      health,
+    };
+  });
+
+  return c.json({ results, total, limit, offset, has_more: offset + limit < total });
+});
+
+app.get('/api/devices/search', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  const site = c.req.query('site_id');
+  const region = c.req.query('region');
+  const health = c.req.query('health');
+  const limitParam = Number(c.req.query('limit') ?? 100);
+  const offsetParam = Number(c.req.query('offset') ?? 0);
+  const limit = Number.isFinite(limitParam) ? Math.min(500, Math.max(1, limitParam)) : 100;
+  const offset = Number.isFinite(offsetParam) ? Math.max(0, offsetParam) : 0;
+
+  const where = `WHERE ( ? IS NULL OR d.site_id = ? )
+                 AND ( ? IS NULL OR s.region = ? )`;
+  const rows = await c.env.DB.prepare(
+    `SELECT d.device_id, d.site_id, d.firmware, d.model, d.online, d.last_seen_at, s.region,
+            COALESCE(SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END),0) AS open_alerts
+       FROM devices d
+       LEFT JOIN sites s ON s.site_id=d.site_id
+       LEFT JOIN alerts a ON a.device_id=d.device_id AND a.state IN ('open','ack')
+       ${where}
+       GROUP BY d.device_id
+       HAVING (? IS NULL) OR (
+         (?='online'    AND d.online=1) OR
+         (?='offline'   AND d.online=0) OR
+         (?='unhealthy' AND (d.online=0 OR open_alerts>0))
+       )
+       ORDER BY d.site_id, d.device_id
+       LIMIT ? OFFSET ?`,
+  )
+    .bind(
+      site ?? null,
+      site ?? null,
+      region ?? null,
+      region ?? null,
+      health ?? null,
+      health ?? null,
+      health ?? null,
+      health ?? null,
+      limit,
+      offset,
+    )
+    .all<{
+      device_id: string;
+      site_id: string | null;
+      firmware: string | null;
+      model: string | null;
+      online: number | null;
+      last_seen_at: string | null;
+      region: string | null;
+      open_alerts: number | null;
+    }>();
+
+  const totalRow = await c.env.DB.prepare(
+    `WITH base AS (
+        SELECT d.device_id, d.online, d.site_id, s.region,
+               COALESCE(SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END),0) AS open_alerts
+          FROM devices d
+          LEFT JOIN sites s ON s.site_id=d.site_id
+          LEFT JOIN alerts a ON a.device_id=d.device_id AND a.state IN ('open','ack')
+          ${where}
+          GROUP BY d.device_id
+      )
+      SELECT COUNT(*) AS n FROM base
+      WHERE (? IS NULL) OR (
+        (?='online'    AND online=1) OR
+        (?='offline'   AND online=0) OR
+        (?='unhealthy' AND (online=0 OR open_alerts>0))
+      )`,
+  )
+    .bind(
+      site ?? null,
+      site ?? null,
+      region ?? null,
+      region ?? null,
+      health ?? null,
+      health ?? null,
+      health ?? null,
+      health ?? null,
+    )
+    .first<{ n: number }>();
+
+  const total = toNumber(totalRow?.n) ?? 0;
+  const results = (rows.results ?? []).map((row) => {
+    const openAlerts = toNumber(row.open_alerts) ?? 0;
+    const isOnline = row.online === 1;
+    const derivedHealth = !isOnline || openAlerts > 0 ? 'unhealthy' : 'healthy';
+    return {
+      device_id: row.device_id,
+      site_id: row.site_id,
+      firmware: row.firmware,
+      model: row.model,
+      online: isOnline,
+      last_seen_at: row.last_seen_at,
+      region: row.region,
+      open_alerts: openAlerts,
+      health: derivedHealth,
+    };
+  });
+
+  return c.json({ results, total, limit, offset, has_more: offset + limit < total });
+});
+
 app.post('/api/commissioning/:deviceId/report', async (c) => {
   const blocked = await guardWrite(c);
   if (blocked) {
@@ -2324,12 +2571,21 @@ app.get('/api/ops/slo', async (c) => {
 });
 
 app.get('/api/ops/burn-series', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
   const url = new URL(c.req.url);
   const windowMinutes = parseDurationMinutes(url.searchParams.get('window')) ?? 10;
   const stepMinutesRaw = parseDurationMinutes(url.searchParams.get('step')) ?? 1;
   const stepMinutes = Math.max(1, stepMinutesRaw);
   const steps = Math.max(1, Math.ceil(windowMinutes / stepMinutes));
   const cappedSteps = Math.min(steps, 600);
+  const targetParam = url.searchParams.get('target');
+  const parsedTarget = targetParam != null ? Number(targetParam) : Number.NaN;
+  const target = Number.isFinite(parsedTarget) && parsedTarget > 0 && parsedTarget < 1 ? parsedTarget : 0.999;
 
   const rows = await c.env.DB.prepare(
     `SELECT CAST(strftime('%s', ts) / (? * 60) AS INTEGER) AS bucket,
@@ -2350,7 +2606,6 @@ app.get('/api/ops/burn-series', async (c) => {
   }
 
   const nowBucket = Math.floor(Date.now() / (stepMinutes * 60 * 1000));
-  const target = 0.999;
   const denom = 1 - target;
   const series: number[] = [];
   for (let i = cappedSteps - 1; i >= 0; i--) {
