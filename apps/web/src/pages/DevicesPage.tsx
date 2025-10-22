@@ -1,9 +1,12 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Link, useSearchParams } from 'react-router-dom';
 
 const THRESHOLD = 500; // switch to server pagination above this
-const PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 100;
+const PAGE_SIZE_OPTIONS = [50, 100, 200] as const;
+const VIRTUALIZATION_THRESHOLD = 1000;
 
 type RegionRow = {
   region: string;
@@ -13,6 +16,7 @@ type RegionRow = {
 type DeviceSearchRow = {
   device_id: string;
   site_id: string | null;
+  site_name?: string | null;
   region: string | null;
   firmware: string | null;
   model: string | null;
@@ -92,7 +96,7 @@ function mapSearchRow(row: DeviceSearchRow): DeviceRow {
   return {
     id: row.device_id,
     siteId: row.site_id ?? undefined,
-    siteName: row.site_id ?? undefined,
+    siteName: row.site_name ?? row.site_id ?? undefined,
     region: row.region ?? undefined,
     lastSeen: row.last_seen_at ?? null,
     online,
@@ -163,6 +167,10 @@ export default function DevicesPage() {
   const health = params.get('health') ?? '';
   const pageParam = Number(params.get('page') ?? '0');
   const page = Number.isFinite(pageParam) && pageParam >= 0 ? pageParam : 0;
+  const limitParam = Number(params.get('limit') ?? '');
+  const pageSize = PAGE_SIZE_OPTIONS.includes(limitParam as (typeof PAGE_SIZE_OPTIONS)[number])
+    ? (limitParam as (typeof PAGE_SIZE_OPTIONS)[number])
+    : DEFAULT_PAGE_SIZE;
   const unhealthyOnly = health === 'unhealthy';
 
   const regions = useQuery({
@@ -212,15 +220,15 @@ export default function DevicesPage() {
   }, [meta.isLoading, page, params, serverMode, setParams]);
 
   const devices = useQuery<DeviceQueryResult>({
-    queryKey: ['devices', { serverMode, site, region, health, page }],
+    queryKey: ['devices', { serverMode, site, region, health, page, pageSize }],
     queryFn: async () => {
       if (serverMode) {
         const url = buildSearchURL('/api/devices/search', {
           site_id: site || undefined,
           region: region || undefined,
           health: health || undefined,
-          limit: String(PAGE_SIZE),
-          offset: String(page * PAGE_SIZE),
+          limit: String(pageSize),
+          offset: String(page * pageSize),
         });
         const response = await fetch(url);
         if (!response.ok) {
@@ -264,6 +272,36 @@ export default function DevicesPage() {
     next.delete('page');
     setParams(next, { replace: true });
   };
+
+  const sites = useQuery({
+    queryKey: ['site-list', { region }],
+    queryFn: async () => {
+      const url = buildSearchURL('/api/site-list', {
+        region: region || undefined,
+        limit: '2000',
+      });
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error('Failed to fetch sites');
+      }
+      const data = (await response.json()) as {
+        sites?: Array<{ site_id: string; name?: string | null; region?: string | null }>;
+      };
+      return data.sites ?? [];
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const siteOptions = useMemo(() => {
+    const options = (sites.data ?? []).map((item) => ({
+      value: item.site_id,
+      label: item.name ? `${item.name} (${item.site_id})` : item.site_id,
+    }));
+    if (site && !options.some((option) => option.value === site)) {
+      options.unshift({ value: site, label: site });
+    }
+    return options;
+  }, [site, sites.data]);
 
   const handleSiteChange = (value: string) => {
     updateSearchParams((next) => {
@@ -314,6 +352,17 @@ export default function DevicesPage() {
     setParams(next, { replace: true });
   };
 
+  const handlePageSizeChange = (value: string) => {
+    const parsed = Number(value);
+    updateSearchParams((next) => {
+      if (PAGE_SIZE_OPTIONS.includes(parsed as (typeof PAGE_SIZE_OPTIONS)[number])) {
+        next.set('limit', String(parsed));
+      } else {
+        next.delete('limit');
+      }
+    });
+  };
+
   const goToPage = (nextPage: number) => {
     const safe = Math.max(0, nextPage);
     const next = new URLSearchParams(params);
@@ -325,12 +374,25 @@ export default function DevicesPage() {
     setParams(next, { replace: true });
   };
 
+  useEffect(() => {
+    if (!site || !sites.data || sites.isLoading || sites.isFetching || sites.isError) {
+      return;
+    }
+    const exists = sites.data.some((item) => item.site_id === site);
+    if (!exists) {
+      const next = new URLSearchParams(params);
+      next.delete('site');
+      setParams(next, { replace: true });
+    }
+  }, [params, setParams, site, sites.data, sites.isError, sites.isFetching, sites.isLoading]);
+
   const total = devices.data?.total ?? 0;
   const rows = devices.data?.results ?? [];
-  const hasNextPage = serverMode && (devices.data?.hasMore ?? false);
+  const hasNextPage =
+    serverMode && (devices.data?.hasMore ?? (page + 1) * pageSize < total);
   const hasPrevPage = serverMode && page > 0;
-  const rangeStart = serverMode ? (total === 0 ? 0 : page * PAGE_SIZE + 1) : 0;
-  const rangeEnd = serverMode ? Math.min(total, page * PAGE_SIZE + rows.length) : 0;
+  const rangeStart = serverMode ? (total === 0 ? 0 : page * pageSize + 1) : 0;
+  const rangeEnd = serverMode ? Math.min(total, page * pageSize + rows.length) : 0;
 
   const activeFilters = useMemo(() => {
     const filters: Array<{ key: string; label: string }> = [];
@@ -353,6 +415,16 @@ export default function DevicesPage() {
   const healthSelectValue = unhealthyOnly ? '' : health;
   const isLoading = meta.isLoading || devices.isLoading;
   const isError = meta.isError || devices.isError;
+  const virtualizationEnabled = !serverMode && rows.length > VIRTUALIZATION_THRESHOLD;
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: virtualizationEnabled ? rows.length : 0,
+    getScrollElement: () => tableScrollRef.current,
+    estimateSize: () => 36,
+    overscan: 12,
+    measureElement: (element) => element.getBoundingClientRect().height,
+  });
+  const virtualRows = virtualizationEnabled ? rowVirtualizer.getVirtualItems() : [];
 
   return (
     <div className="page">
@@ -376,20 +448,26 @@ export default function DevicesPage() {
         className="card"
         style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}
       >
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
           <span className="data-table__muted">Site</span>
-          <input
-            type="text"
+          <select
             value={site}
             onChange={(event) => handleSiteChange(event.target.value)}
-            placeholder="SITE-1234"
+            disabled={sites.isLoading}
             style={{
               padding: '8px 12px',
               borderRadius: 8,
               border: '1px solid #d1d5db',
               fontSize: 14,
             }}
-          />
+          >
+            <option value="">Any</option>
+            {siteOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 180 }}>
           <span className="data-table__muted">Region</span>
@@ -461,44 +539,108 @@ export default function DevicesPage() {
             <strong>Total devices: {total}</strong>
             {serverMode ? (
               <span className="data-table__muted">
-                Page {page + 1} • {PAGE_SIZE} per page
+                Page {page + 1} • {pageSize} per page
                 {devices.isFetching ? ' (updating…)' : ''}
               </span>
             ) : null}
           </div>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Device</th>
-                <th>Status</th>
-                <th>Site</th>
-                <th>Region</th>
-                <th>Last heartbeat</th>
-                <th>Open alerts</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((device) => (
-                <tr key={device.id}>
-                  <td>
-                    <Link to={`/devices/${device.id}`} className="inline-link">
-                      {device.id}
-                    </Link>
-                    {device.siteId ? (
-                      <div className="data-table__muted">Site {device.siteId}</div>
-                    ) : null}
-                  </td>
-                  <td>
-                    <StatusPill status={statusFor(device)} />
-                  </td>
-                  <td>{device.siteName ?? '—'}</td>
-                  <td>{device.region ?? '—'}</td>
-                  <td>{device.lastSeen ? new Date(device.lastSeen).toLocaleString() : '—'}</td>
-                  <td>{device.openAlerts ?? 0}</td>
+          <div
+            ref={tableScrollRef}
+            style={
+              virtualizationEnabled
+                ? {
+                    maxHeight: '70vh',
+                    overflowY: 'auto',
+                  }
+                : undefined
+            }
+          >
+            <table className="data-table" style={{ width: '100%', tableLayout: 'fixed' }}>
+              <thead
+                style={
+                  virtualizationEnabled
+                    ? { display: 'table', width: '100%', tableLayout: 'fixed' }
+                    : undefined
+                }
+              >
+                <tr>
+                  <th>Device</th>
+                  <th>Status</th>
+                  <th>Site</th>
+                  <th>Region</th>
+                  <th>Last heartbeat</th>
+                  <th>Open alerts</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody
+                style={
+                  virtualizationEnabled
+                    ? {
+                        position: 'relative',
+                        display: 'block',
+                        height: `${rowVirtualizer.getTotalSize()}px`,
+                        width: '100%',
+                      }
+                    : undefined
+                }
+              >
+                {virtualizationEnabled
+                  ? virtualRows.map((virtualRow) => {
+                      const device = rows[virtualRow.index];
+                      return (
+                        <tr
+                          key={device.id}
+                          data-index={virtualRow.index}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            transform: `translateY(${virtualRow.start}px)`,
+                            display: 'table',
+                            width: '100%',
+                            tableLayout: 'fixed',
+                            height: `${virtualRow.size}px`,
+                          }}
+                        >
+                          <td>
+                            <Link to={`/devices/${device.id}`} className="inline-link">
+                              {device.id}
+                            </Link>
+                            {device.siteId ? (
+                              <div className="data-table__muted">Site {device.siteId}</div>
+                            ) : null}
+                          </td>
+                          <td>
+                            <StatusPill status={statusFor(device)} />
+                          </td>
+                          <td>{device.siteName ?? '—'}</td>
+                          <td>{device.region ?? '—'}</td>
+                          <td>{device.lastSeen ? new Date(device.lastSeen).toLocaleString() : '—'}</td>
+                          <td>{device.openAlerts ?? 0}</td>
+                        </tr>
+                      );
+                    })
+                  : rows.map((device) => (
+                      <tr key={device.id}>
+                        <td>
+                          <Link to={`/devices/${device.id}`} className="inline-link">
+                            {device.id}
+                          </Link>
+                          {device.siteId ? (
+                            <div className="data-table__muted">Site {device.siteId}</div>
+                          ) : null}
+                        </td>
+                        <td>
+                          <StatusPill status={statusFor(device)} />
+                        </td>
+                        <td>{device.siteName ?? '—'}</td>
+                        <td>{device.region ?? '—'}</td>
+                        <td>{device.lastSeen ? new Date(device.lastSeen).toLocaleString() : '—'}</td>
+                        <td>{device.openAlerts ?? 0}</td>
+                      </tr>
+                    ))}
+              </tbody>
+            </table>
+          </div>
           {serverMode ? (
             <div
               style={{
@@ -511,8 +653,28 @@ export default function DevicesPage() {
             >
               <span className="data-table__muted">
                 Showing {rangeStart}-{rangeEnd} of {total}
+                {devices.isFetching ? ' (updating…)' : ''}
               </span>
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                <label className="data-table__muted" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  Per page
+                  <select
+                    value={String(pageSize)}
+                    onChange={(event) => handlePageSizeChange(event.target.value)}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      border: '1px solid #d1d5db',
+                      fontSize: 14,
+                    }}
+                  >
+                    {PAGE_SIZE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <button
                   type="button"
                   className="app-button"
