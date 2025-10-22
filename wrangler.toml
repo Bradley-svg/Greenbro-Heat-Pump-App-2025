@@ -48,7 +48,7 @@ new_classes = ["DeviceStateDO"]
 
 # ---- Cron jobs ----
 [triggers]
-crons = ["0 2 * * *"]  # 02:00 UTC nightly
+crons = ["0 2 * * *", "*/5 * * * *"]  # 02:00 UTC nightly + every 5 min for burn monitor
 
 # ---- Environment secrets you set via `wrangler secret put ...` ----
 # ACCESS_JWKS_URL : Cloudflare Access JWKS endpoint

@@ -40,6 +40,80 @@ async function setSetting(DB: D1Database, key: string, value: string) {
       "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
   ).bind(key, value).run();
 }
+
+async function notifyOps(env: Env, message: string) {
+  const url = await getSetting(env.DB, 'ops_webhook_url');
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: message }),
+    });
+  } catch {}
+}
+
+type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number };
+
+async function computeBurn(DB: D1Database, minutes = 10, target = 0.999): Promise<BurnSnapshot> {
+  const row = await DB.prepare(
+    `
+    SELECT SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) ok,
+           COUNT(*) total
+    FROM ops_metrics
+    WHERE route='/api/ingest' AND ts >= datetime('now', ?)
+  `,
+  )
+    .bind(`-${minutes} minutes`)
+    .first<{ ok: number; total: number }>();
+  const total = row?.total ?? 0;
+  const ok = row?.ok ?? 0;
+  const errRate = total ? 1 - ok / total : 0;
+  const burn = 1 - target > 0 ? errRate / (1 - target) : 0;
+  return { total, ok, errRate, burn };
+}
+
+async function openP1IfNeeded(env: Env, nowISO: string, meta: BurnSnapshot) {
+  const open = await env.DB.prepare(
+    "SELECT alert_id FROM alerts WHERE type='ingest_degradation' AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
+  ).first<{ alert_id: string }>();
+  if (open) return;
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO alerts (alert_id, device_id, type, severity, state, opened_at, meta_json) VALUES (?, NULL, 'ingest_degradation', 'critical', 'open', ?, ?)",
+  )
+    .bind(id, nowISO, JSON.stringify(meta))
+    .run();
+  await notifyOps(
+    env,
+    `P1: Ingest degradation — burn=${meta.burn.toFixed(2)} (err ${(meta.errRate * 100).toFixed(2)}%, ${meta.ok}/${meta.total} ok)`,
+  );
+}
+
+async function closeP1IfRecovered(env: Env, nowISO: string, meta: BurnSnapshot) {
+  const open = await env.DB.prepare(
+    "SELECT alert_id FROM alerts WHERE type='ingest_degradation' AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
+  ).first<{ alert_id: string }>();
+  if (!open) return;
+  await env.DB.prepare("UPDATE alerts SET state='closed', closed_at=? WHERE alert_id=?")
+    .bind(nowISO, open.alert_id)
+    .run();
+  await notifyOps(
+    env,
+    `Recovered: Ingest degradation — burn=${meta.burn.toFixed(2)} (err ${(meta.errRate * 100).toFixed(2)}%)`,
+  );
+}
+
+async function fastBurnMonitor(env: Env) {
+  const nowISO = new Date().toISOString();
+  const { total, ok, errRate, burn } = await computeBurn(env.DB, 10, 0.999);
+  if (total >= 200 && burn > 2.0) {
+    await openP1IfNeeded(env, nowISO, { total, ok, errRate, burn });
+  }
+  if (total >= 200 && burn <= 1.0) {
+    await closeP1IfRecovered(env, nowISO, { total, ok, errRate, burn });
+  }
+}
 async function isReadOnly(DB: D1Database) {
   return (await getSetting(DB, 'read_only')) === '1';
 }
@@ -968,6 +1042,11 @@ app.get('/', async (c) => {
 });
 
 app.get('/api/ops/slo', async (c) => {
+  try {
+    await fastBurnMonitor(c.env);
+  } catch (error) {
+    console.warn('fast burn monitor error', error);
+  }
   const snapshot = await computeOpsSnapshot(c.env.DB);
   return c.json(snapshot);
 });
@@ -1522,7 +1601,12 @@ async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
   const windowSuccess = toNumber(windowRow?.success) ?? 0;
   const windowError = Math.max(0, windowTotal - windowSuccess);
   const windowSuccessPct = windowTotal > 0 ? (windowSuccess / windowTotal) * 100 : 100;
-  const burnRateRaw = windowTotal > 0 ? windowError / windowTotal / 0.001 : 0;
+  let burnWindow: BurnSnapshot = { total: 0, ok: 0, errRate: 0, burn: 0 };
+  try {
+    burnWindow = await computeBurn(DB, 10, 0.999);
+  } catch (error) {
+    console.warn('computeBurn failed', error);
+  }
 
   const heartbeatRow = await DB.prepare(
     'SELECT COUNT(*) AS total, SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online FROM devices',
@@ -1549,7 +1633,7 @@ async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
         successPct: Number.isFinite(windowSuccessPct) ? windowSuccessPct : 0,
         error: windowError,
       },
-      burnRate: Number.isFinite(burnRateRaw) ? burnRateRaw : 0,
+      burnRate: Number.isFinite(burnWindow.burn) ? burnWindow.burn : 0,
     },
     heartbeat: {
       total: heartbeatTotal,
@@ -1588,6 +1672,11 @@ export default {
   fetch: app.fetch,
   queue,
   scheduled: async (_evt: ScheduledEvent, env: Env) => {
+    try {
+      await fastBurnMonitor(env);
+    } catch (error) {
+      console.error('fast burn monitor error', error);
+    }
     await evaluateHeartbeatAlerts(env, new Date().toISOString()).catch((error) => {
       console.error('heartbeat sweep error', error);
     });

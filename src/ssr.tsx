@@ -33,6 +33,16 @@ export type OpsSnapshot = {
   heartbeat: { total: number; online: number; onlinePct: number };
 };
 
+const readOnlySnippet = `
+if(!window.__roPoller){
+  window.__roPoller = true;
+  async function _ro(){ try{ const s=await (await fetch('/api/settings/public')).json();
+    document.body.toggleAttribute('data-ro', !!s.read_only);
+  } catch{} }
+  _ro(); setInterval(_ro, 60000);
+}
+`;
+
 const overviewScript = `
 (function(){
   const root = document.getElementById('overview');
@@ -244,6 +254,7 @@ const overviewScript = `
   setInterval(refresh, 60000);
   refresh();
 })();
+${readOnlySnippet}
 `;
 
 const encodeJson = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
@@ -298,6 +309,7 @@ const alertsScript = `
   load();
   setInterval(load, 15000);
 })();
+${readOnlySnippet}
 `;
 
 const devicesScript = `
@@ -416,24 +428,10 @@ const devicesScript = `
     await load();
     setInterval(load, 15000);
   })();
+${readOnlySnippet}
 `;
 
-const readOnlyScript = `
-(function(){
-  async function _ro(){
-    try {
-      const res = await fetch('/api/settings/public');
-      if (!res.ok) return;
-      const s = await res.json();
-      document.body.toggleAttribute('data-ro', !!s.read_only);
-    } catch (err) {
-      console.warn('read-only poll failed', err);
-    }
-  }
-  _ro();
-  setInterval(_ro, 60000);
-})();
-`;
+const readOnlyScript = readOnlySnippet;
 
 const opsScript = `
 (function(){
@@ -525,6 +523,7 @@ const opsScript = `
   setInterval(refresh, 30000);
   refresh();
 })();
+${readOnlySnippet}
 `;
 
 function SavedViewsControls(props: { formSelector: string }) {
@@ -680,6 +679,7 @@ const adminSitesScript = `
   listSites();
   listMaps();
 })();
+${readOnlySnippet}
 `;
 
 const maintenanceScript = `
@@ -817,6 +817,7 @@ const maintenanceScript = `
 
   load();
 })();
+${readOnlySnippet}
 `;
 
 export const renderer = jsxRenderer(({ children }) => {
