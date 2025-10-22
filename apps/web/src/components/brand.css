@@ -1,0 +1,224 @@
+:root {
+  --gb-primary-700: #2e9e3f;
+  --gb-primary-500: #39b54a;
+  --gb-primary-300: #6fdb7f;
+  --gb-ink: #0b0e12;
+  --gb-muted: #4b5563;
+  --gb-muted-soft: #8f9aa6;
+  --gb-bg: #04090d;
+  --gb-panel: rgba(12, 20, 14, 0.75);
+  --gb-panel-border: rgba(111, 219, 127, 0.18);
+  --gb-card: #ffffff;
+  --gb-card-border: rgba(46, 158, 63, 0.15);
+  --gb-card-shadow: 0 28px 60px -40px rgba(11, 14, 18, 0.55);
+  --gb-chip-bg: rgba(57, 181, 74, 0.12);
+  --gb-chip-text: var(--gb-primary-700);
+}
+
+html,
+body {
+  background: radial-gradient(120% 120% at 50% 0%, rgba(57, 181, 74, 0.12) 0%, var(--gb-bg) 70%);
+  color: var(--gb-ink);
+}
+
+.app-shell {
+  background: radial-gradient(140% 140% at 50% -20%, rgba(111, 219, 127, 0.18) 0%, transparent 60%),
+    linear-gradient(180deg, rgba(8, 12, 9, 0.9) 0%, rgba(4, 9, 13, 0.95) 100%);
+  color: var(--gb-ink);
+}
+
+.app-sidebar {
+  background: transparent;
+  border-right: 1px solid var(--gb-panel-border);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.app-brand .logo {
+  background: linear-gradient(135deg, var(--gb-primary-700), var(--gb-primary-300));
+  color: var(--gb-ink);
+  box-shadow: 0 10px 24px -12px rgba(57, 181, 74, 0.6);
+}
+
+.app-brand .brand {
+  color: #ecf7ed;
+  letter-spacing: 0.08em;
+}
+
+.app-nav__link {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.app-nav__link:hover {
+  background: rgba(57, 181, 74, 0.15);
+  color: #ffffff;
+}
+
+.app-nav__link--active {
+  background: rgba(57, 181, 74, 0.25);
+  color: #eaffeb;
+  box-shadow: inset 0 0 0 1px rgba(57, 181, 74, 0.25);
+}
+
+.app-main {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(244, 249, 246, 0.94) 60%, rgba(233, 244, 236, 0.9) 100%);
+}
+
+.app-topbar {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(11, 14, 18, 0.08);
+  box-shadow: 0 10px 30px -28px rgba(11, 14, 18, 0.75);
+}
+
+.app-topbar__title {
+  color: var(--gb-ink);
+}
+
+.app-topbar__user-name {
+  color: var(--gb-ink);
+}
+
+.app-topbar__user-roles {
+  color: var(--gb-muted);
+}
+
+.card {
+  background: var(--gb-card);
+  border: 1px solid var(--gb-card-border);
+  box-shadow: var(--gb-card-shadow);
+  color: var(--gb-ink);
+}
+
+.card--error {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(254, 226, 226, 0.75);
+}
+
+.chip {
+  background: var(--gb-chip-bg);
+  color: var(--gb-chip-text);
+  border: 1px solid rgba(57, 181, 74, 0.35);
+  font-weight: 600;
+}
+
+.chip--active {
+  background: var(--gb-primary-500);
+  color: #ffffff;
+  box-shadow: 0 12px 20px -18px rgba(11, 14, 18, 0.6);
+}
+
+.app-button,
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(11, 14, 18, 0.1);
+  background: rgba(11, 14, 18, 0.04);
+  color: var(--gb-ink);
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
+}
+
+.app-button:hover,
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px -20px rgba(11, 14, 18, 0.55);
+  background: rgba(11, 14, 18, 0.08);
+}
+
+.app-button:disabled,
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.app-button--primary,
+.btn-primary,
+.primary-cta {
+  background: linear-gradient(95deg, var(--gb-primary-700) 0%, var(--gb-primary-300) 100%);
+  border-color: rgba(57, 181, 74, 0.3);
+  color: #041205;
+  box-shadow: 0 20px 32px -22px rgba(57, 181, 74, 0.8);
+}
+
+.app-button--primary:hover,
+.btn-primary:hover,
+.primary-cta:hover {
+  background: linear-gradient(95deg, var(--gb-primary-700) -10%, var(--gb-primary-300) 100%);
+}
+
+.status-pill {
+  background: rgba(57, 181, 74, 0.12);
+  color: var(--gb-primary-700);
+  border: 1px solid rgba(57, 181, 74, 0.3);
+}
+
+.status-pill--negative {
+  color: #b4231a;
+  background: rgba(244, 63, 94, 0.12);
+  border-color: rgba(244, 63, 94, 0.32);
+}
+
+.status-pill--warning {
+  color: #b45309;
+  background: rgba(251, 191, 36, 0.16);
+  border-color: rgba(251, 191, 36, 0.34);
+}
+
+.ro-pill {
+  background: rgba(57, 181, 74, 0.12);
+  color: var(--gb-primary-700);
+  border: 1px solid rgba(57, 181, 74, 0.3);
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.ro-pill--locked {
+  background: rgba(244, 63, 94, 0.12);
+  color: #b4231a;
+  border-color: rgba(244, 63, 94, 0.32);
+}
+
+.ro-pill--unlocked {
+  background: rgba(57, 181, 74, 0.12);
+  color: var(--gb-primary-700);
+}
+
+.ro-pill--interactive:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 20px -18px rgba(11, 14, 18, 0.5);
+}
+
+.auth-screen {
+  background: radial-gradient(120% 120% at 50% 10%, rgba(57, 181, 74, 0.25) 0%, var(--gb-bg) 60%);
+}
+
+.auth-card {
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--gb-card-border);
+  box-shadow: 0 40px 80px -60px rgba(11, 14, 18, 0.8);
+}
+
+.auth-card__subtitle {
+  color: var(--gb-muted);
+}
+
+.badge,
+.chip--readonly {
+  background: rgba(11, 14, 18, 0.06);
+  color: var(--gb-muted);
+  border: 1px dashed rgba(11, 14, 18, 0.16);
+}
+
+.table thead {
+  background: rgba(57, 181, 74, 0.08);
+}
+
+.table tbody tr:hover {
+  background: rgba(57, 181, 74, 0.08);
+}

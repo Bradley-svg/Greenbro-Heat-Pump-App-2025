@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { AppProviders } from '@app/providers';
 import { AppRouter } from '@app/router';
 import '@app/styles.css';
+import './components/brand.css';
 
 const root = document.getElementById('root');
 

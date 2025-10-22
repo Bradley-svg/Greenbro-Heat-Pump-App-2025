@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Sparkline } from '@components/charts/Sparkline';
-import { SAFleetMap } from '@components/map/SAFleetMap';
+import { SADevicesMap } from '@components/map/SADevicesMap';
 import { useMemo, useState } from 'react';
 
 export default function OverviewPage(){
@@ -59,7 +59,7 @@ export default function OverviewPage(){
       <div style={{ display:'grid', gridTemplateColumns:'1fr 320px', gap:12 }}>
         <div style={{ border:'1px solid #ddd', borderRadius:8, padding:8 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-            <h3 style={{ margin:0 }}>Fleet map</h3>
+            <h3 style={{ margin:0 }}>Devices map</h3>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               <label style={{ fontSize:12 }}>
                 <input type="checkbox" checked={onlyBad} onChange={e=> setOnlyBad(e.target.checked)} /> show only unhealthy
@@ -70,16 +70,16 @@ export default function OverviewPage(){
               />
             </div>
           </div>
-          <SAFleetMap sites={sdata} width={820} height={420} onClickMarker={onMarkerClick} />
+          <SADevicesMap sites={sdata} width={820} height={420} onClickMarker={onMarkerClick} />
         </div>
 
         <div style={{ display:'grid', gap:12 }}>
           <div className="card">
-            <h4>Fleet ΔT</h4>
+            <h4>Devices ΔT</h4>
             <Sparkline data={sparks.data?.delta_t || []} width={300} height={60} />
           </div>
           <div className="card">
-            <h4>Fleet COP</h4>
+            <h4>Devices COP</h4>
             <Sparkline data={sparks.data?.cop || []} width={300} height={60} />
           </div>
         </div>

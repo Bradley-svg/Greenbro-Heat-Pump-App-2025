@@ -1856,7 +1856,7 @@ export function OverviewPage(props: { data: OverviewData }) {
 
       <div class="card fleet-card">
         <div class="card-header">
-          <h2>Fleet map</h2>
+          <h2>Devices map</h2>
           <span class="card-subtle" data-updated>Updated just now</span>
         </div>
         <div class="fleet-map-wrap">
@@ -1890,7 +1890,7 @@ export function OverviewPage(props: { data: OverviewData }) {
 
       <div class="grid sparkline-grid">
         <div class="card sparkline-card">
-          <h3>ΔT last 24h</h3>
+          <h3>Devices ΔT</h3>
           <svg id="sparkline-delta" class="sparkline-chart" viewBox="0 0 320 80" preserveAspectRatio="none"></svg>
           <div class="sparkline-meta">
             <span>
@@ -1900,7 +1900,7 @@ export function OverviewPage(props: { data: OverviewData }) {
           </div>
         </div>
         <div class="card sparkline-card">
-          <h3>COP last 24h</h3>
+          <h3>Devices COP</h3>
           <svg id="sparkline-cop" class="sparkline-chart" viewBox="0 0 320 80" preserveAspectRatio="none"></svg>
           <div class="sparkline-meta">
             <span>
