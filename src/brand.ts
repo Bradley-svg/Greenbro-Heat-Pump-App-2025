@@ -139,6 +139,45 @@ svg.spark.crit {
   color: var(--gb-chart-crit);
 }
 
+.chart-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.25rem 0;
+  color: var(--gb-chart-text);
+}
+
+.chart-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(17, 24, 34, 0.08);
+  box-shadow: 0 10px 28px -24px rgba(11, 14, 18, 0.9);
+}
+
+.chart-legend__swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 34, 0.18);
+}
+
+.chart-legend__label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--gb-ink);
+}
+
+.chart-legend__hint {
+  font-size: 0.75rem;
+  color: var(--gb-muted);
+}
+
 .app-main {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(244, 249, 246, 0.94) 60%, rgba(233, 244, 236, 0.9) 100%);
 }

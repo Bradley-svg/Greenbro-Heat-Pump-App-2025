@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Navigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@api/client';
 import { useAuthFetch } from '@hooks/useAuthFetch';
 import type { DeviceLatestState, TelemetryPoint } from '@api/types';
+import { Legend } from '@components/charts/Legend';
+import { SeriesChart, type AlertWindow, type SeriesPoint } from '@components/charts/SeriesChart';
 
 const TELEMETRY_RANGES: Array<'24h' | '7d'> = ['24h', '7d'];
 
@@ -28,6 +30,63 @@ export function DeviceDetailPage(): JSX.Element {
     enabled: !!deviceId,
     refetchInterval: range === '24h' ? 20_000 : 60_000,
   });
+
+  const alertWindowsQuery = useQuery({
+    queryKey: ['device', deviceId, 'alert-windows', range],
+    queryFn: () => apiFetch(`/api/alerts?device_id=${deviceId}&range=${range}`, undefined, authFetch),
+    enabled: !!deviceId,
+    refetchInterval: range === '24h' ? 10_000 : 30_000,
+  });
+
+  const deltaSeries = useMemo<SeriesPoint[]>(() => {
+    const points = telemetryQuery.data ?? [];
+    return points
+      .map((point) => {
+        const rawValue =
+          point.metrics?.delta_t ??
+          point.metrics?.deltaT ??
+          point.metrics?.['delta-t'] ??
+          point.metrics?.['deltaT'];
+        if (rawValue == null) {
+          return null;
+        }
+        const value = Number(rawValue);
+        const ts = Date.parse(point.timestamp);
+        if (!Number.isFinite(value) || Number.isNaN(ts)) {
+          return null;
+        }
+        return { ts, v: value } satisfies SeriesPoint;
+      })
+      .filter((entry): entry is SeriesPoint => Boolean(entry));
+  }, [telemetryQuery.data]);
+
+  const alertWindows = useMemo<AlertWindow[]>(() => {
+    const now = Date.now();
+    const raw = alertWindowsQuery.data as
+      | Array<Record<string, unknown>>
+      | { results?: Array<Record<string, unknown>> }
+      | undefined;
+    const collection = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw?.results)
+        ? raw.results
+        : [];
+
+    return collection
+      .map((entry: Record<string, unknown>) => {
+        const openedAt = extractTimestamp(entry, ['opened_at', 'started_at', 'start']);
+        const closedAt = extractTimestamp(entry, ['closed_at', 'ended_at', 'end']);
+        const start = openedAt != null ? Date.parse(openedAt) : Number.NaN;
+        const end = closedAt != null ? Date.parse(closedAt) : now;
+        if (Number.isNaN(start) || Number.isNaN(end) || end <= start) {
+          return null;
+        }
+        const severity = typeof entry.severity === 'string' ? entry.severity.toLowerCase() : '';
+        const kind: AlertWindow['kind'] = severity === 'critical' ? 'crit' : 'warn';
+        return { start, end, kind } satisfies AlertWindow;
+      })
+      .filter((window): window is AlertWindow => Boolean(window));
+  }, [alertWindowsQuery.data]);
 
   const latest = latestQuery.data;
 
@@ -108,34 +167,66 @@ export function DeviceDetailPage(): JSX.Element {
         ) : telemetryQuery.isError ? (
           <p className="card__error">Unable to load telemetry.</p>
         ) : telemetryQuery.data && telemetryQuery.data.length > 0 ? (
-          <table className="data-table data-table--compact">
-            <thead>
-              <tr>
-                <th>Timestamp</th>
-                <th>Metrics</th>
-              </tr>
-            </thead>
-            <tbody>
-              {telemetryQuery.data.slice(0, 20).map((point) => (
-                <tr key={point.timestamp}>
-                  <td>{new Date(point.timestamp).toLocaleString()}</td>
-                  <td>
-                    <div className="kv-inline">
-                      {Object.entries(point.metrics).map(([key, value]) => (
-                        <span key={key}>
-                          {key}: <strong>{value ?? '—'}</strong>
-                        </span>
-                      ))}
-                    </div>
-                  </td>
+          <>
+            {deltaSeries.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
+                <Legend
+                  items={[
+                    { kind: 'ok', label: 'ΔT trend' },
+                    { kind: 'warn', label: 'Warning window' },
+                    { kind: 'crit', label: 'Critical window' },
+                  ]}
+                  ariaLabel="ΔT alert legend"
+                />
+                <SeriesChart
+                  data={deltaSeries}
+                  overlays={alertWindows}
+                  width={720}
+                  height={240}
+                  areaKind="ok"
+                  ariaLabel="Delta temperature trend with alert overlays"
+                />
+              </div>
+            ) : null}
+            <table className="data-table data-table--compact">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Metrics</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {telemetryQuery.data.slice(0, 20).map((point) => (
+                  <tr key={point.timestamp}>
+                    <td>{new Date(point.timestamp).toLocaleString()}</td>
+                    <td>
+                      <div className="kv-inline">
+                        {Object.entries(point.metrics).map(([key, value]) => (
+                          <span key={key}>
+                            {key}: <strong>{value ?? '—'}</strong>
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         ) : (
           <p>No telemetry points for the selected window.</p>
         )}
       </section>
     </div>
   );
+}
+
+function extractTimestamp(entry: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = entry[key];
+    if (typeof value === 'string' && value) {
+      return value;
+    }
+  }
+  return undefined;
 }
