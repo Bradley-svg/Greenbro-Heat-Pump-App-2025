@@ -408,6 +408,89 @@ const devicesScript = `
   })();
 `;
 
+function SavedViewsControls(props: { formSelector: string }) {
+  const formSelector = JSON.stringify(props.formSelector);
+  const script = `(function(){
+    const sel=document.getElementById('views-select');
+    const btn=document.getElementById('save-view');
+    const form=document.querySelector(${formSelector});
+    if(!sel||!btn||!form) return;
+    async function load(){
+      try {
+        const res=await fetch('/api/me/saved-views');
+        if(!res.ok) throw new Error('Failed to load saved views');
+        const payload=await res.json();
+        const views=Array.isArray(payload)?payload.filter(function(v){ return v && v.route===location.pathname; }):[];
+        sel.innerHTML='';
+        const placeholder=document.createElement('option');
+        placeholder.value='';
+        placeholder.textContent='Saved views…';
+        sel.appendChild(placeholder);
+        views.forEach(function(view){
+          const opt=document.createElement('option');
+          opt.value=view.id;
+          opt.textContent=view.name;
+          opt.dataset.params=view.params_json;
+          sel.appendChild(opt);
+        });
+        sel.value='';
+      } catch (err) {
+        console.error('load saved views failed', err);
+      }
+    }
+    sel.addEventListener('change', function(){
+      const opt=sel.selectedOptions[0];
+      if(!opt||!opt.dataset.params) return;
+      try {
+        const params=JSON.parse(opt.dataset.params);
+        Object.entries(params).forEach(function(entry){
+          const key=entry[0];
+          const value=entry[1];
+          const control=form.elements.namedItem(key);
+          if(!control) return;
+          const str=value==null?'':String(value);
+          if (typeof RadioNodeList !== 'undefined' && control instanceof RadioNodeList) {
+            control.value=str;
+          } else if ('value' in control) {
+            control.value=str;
+          }
+        });
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      } catch (err) {
+        console.error('apply saved view failed', err);
+      }
+    });
+    btn.addEventListener('click', async function(){
+      const params={};
+      new FormData(form).forEach(function(value,key){
+        if(typeof value==='string'){
+          params[key]=value;
+        }
+      });
+      const name=prompt('Name this view');
+      if(!name) return;
+      try {
+        await fetch('/api/me/saved-views',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,route:location.pathname,params:params})});
+        await load();
+      } catch (err) {
+        console.error('save view failed', err);
+      }
+    });
+    load();
+  })();`;
+  return (
+    <>
+      <div class="chips" id="saved-views">
+        <select id="views-select">
+          <option value="">Saved views…</option>
+        </select>
+        <button class="btn" id="save-view">Save current</button>
+      </div>
+      <script dangerouslySetInnerHTML={{ __html: script }} />
+    </>
+  );
+}
+
 const adminSitesScript = `
 (function(){
   const sitesBody = document.getElementById('sites-tbody');
@@ -709,6 +792,7 @@ export function AlertsPage(props: { alerts: any[]; filters: { state?: string; se
         </label>
         <button class="btn" type="submit">Apply</button>
       </form>
+      <SavedViewsControls formSelector="#alert-filters" />
       <table>
         <thead><tr><th>Device</th><th>Type</th><th>Severity</th><th>State</th><th>Opened</th><th>Clients</th><th>Action</th></tr></thead>
         <tbody id="alerts-tbody">
@@ -767,6 +851,7 @@ export function DevicesPage(props: { rows: any[] }) {
         </label>
         <button class="btn" id="incident-btn" type="button" disabled>Generate Incident PDF</button>
       </form>
+      <SavedViewsControls formSelector="#device-filters" />
       <table>
         <thead><tr><th>Device</th><th>Site</th><th>Region</th><th>Clients</th><th>Online</th><th>Last seen</th></tr></thead>
         <tbody id="devices-tbody">

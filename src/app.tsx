@@ -97,6 +97,60 @@ app.post('/api/devices/:id/write', async (c) => {
   return new Response(res.body, { status: res.status, headers: res.headers });
 });
 
+app.get('/api/me/saved-views', async (c) => {
+  const auth = c.get('auth');
+  const uid = auth?.sub ?? auth?.email;
+  if (!uid) {
+    return c.json([]);
+  }
+
+  const rows = await c.env.DB.prepare(
+    'SELECT id, name, route, params_json, created_at FROM saved_views WHERE user_id=? ORDER BY created_at DESC',
+  )
+    .bind(uid)
+    .all<{ id: string; name: string; route: string; params_json: string; created_at: string }>();
+
+  return c.json(rows.results ?? []);
+});
+
+app.post('/api/me/saved-views', async (c) => {
+  const auth = c.get('auth');
+  const uid = auth?.sub ?? auth?.email;
+  if (!uid) {
+    return c.text('Unauthorized', 401);
+  }
+
+  const body = await c.req
+    .json<{ name: string; route: string; params: unknown }>()
+    .catch(() => null);
+  if (!body?.name || !body?.route) {
+    return c.text('Bad Request', 400);
+  }
+
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    'INSERT INTO saved_views (id, user_id, name, route, params_json) VALUES (?, ?, ?, ?, ?)',
+  )
+    .bind(id, uid, body.name, body.route, JSON.stringify(body.params ?? {}))
+    .run();
+
+  return c.json({ ok: true, id });
+});
+
+app.delete('/api/me/saved-views/:id', async (c) => {
+  const auth = c.get('auth');
+  const uid = auth?.sub ?? auth?.email;
+  if (!uid) {
+    return c.text('Unauthorized', 401);
+  }
+
+  await c.env.DB.prepare('DELETE FROM saved_views WHERE id=? AND user_id=?')
+    .bind(c.req.param('id'), uid)
+    .run();
+
+  return c.json({ ok: true });
+});
+
 // --- Ingest: Telemetry & Heartbeat ---
 // Simple shape guard (keep strict & small): 256KB max handled by Cloudflare automatically if set.
 type IngestStatus = {
