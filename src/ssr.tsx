@@ -296,6 +296,10 @@ const devicesScript = `
     const tbody = document.getElementById('devices-tbody');
     const regionSel = document.getElementById('region-select');
     const clientSel = document.getElementById('client-select');
+    const siteInput = document.getElementById('site-filter');
+    const incidentBtn = document.getElementById('incident-btn');
+    const hoursInput = document.getElementById('incident-hours');
+    const defaultIncidentLabel = incidentBtn ? incidentBtn.textContent : '';
 
     async function load(){
       const params = new URLSearchParams(new FormData(form));
@@ -334,6 +338,69 @@ const devicesScript = `
 
     form.addEventListener('change', function(e){ e.preventDefault(); load(); });
     form.addEventListener('submit', function(e){ e.preventDefault(); load(); });
+
+    function syncIncidentButton(){
+      if (!incidentBtn) return;
+      const hasSite = siteInput && siteInput.value.trim().length > 0;
+      incidentBtn.disabled = !hasSite;
+    }
+
+    if (siteInput) {
+      siteInput.addEventListener('input', function(){
+        syncIncidentButton();
+      });
+    }
+
+    if (hoursInput) {
+      hoursInput.addEventListener('change', function(){
+        const value = Number(hoursInput.value);
+        if (!Number.isFinite(value) || value <= 0) {
+          hoursInput.value = '24';
+        }
+      });
+    }
+
+    if (incidentBtn && siteInput) {
+      incidentBtn.addEventListener('click', async function(){
+        const siteId = siteInput.value.trim();
+        if (!siteId) {
+          syncIncidentButton();
+          return;
+        }
+
+        let hours = 24;
+        if (hoursInput && hoursInput.value) {
+          const parsed = Number(hoursInput.value);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            hours = parsed;
+          }
+        }
+
+        incidentBtn.disabled = true;
+        incidentBtn.textContent = 'Generating…';
+        try {
+          const params = new URLSearchParams({ siteId: siteId });
+          if (Number.isFinite(hours) && hours > 0) {
+            params.set('hours', String(Math.round(hours)));
+          }
+          const res = await fetch('/api/reports/incident?' + params.toString(), { method: 'POST' });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || 'Request failed');
+          }
+          const data = await res.json();
+          const target = data.path || data.url || ('/api/reports/' + data.key);
+          window.open(target, '_blank', 'noopener');
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          alert('Failed to generate incident report: ' + message);
+        } finally {
+          incidentBtn.textContent = defaultIncidentLabel || 'Generate Incident PDF';
+          syncIncidentButton();
+        }
+      });
+      syncIncidentButton();
+    }
 
     await loadOptions();
     await load();
@@ -674,6 +741,9 @@ export function DevicesPage(props: { rows: any[] }) {
     <div class="card">
       <h2>Devices</h2>
       <form id="device-filters" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px">
+        <label>Site
+          <input type="text" id="site-filter" name="site" placeholder="SITE-CT-001" />
+        </label>
         <label>Region
           <select id="region-select" name="region">
             <option value="">All regions</option>
@@ -692,6 +762,10 @@ export function DevicesPage(props: { rows: any[] }) {
           </select>
         </label>
         <button class="btn" type="submit">Apply</button>
+        <label>Window (h)
+          <input type="number" id="incident-hours" min="1" max="168" step="1" value="24" style="width:80px" />
+        </label>
+        <button class="btn" id="incident-btn" type="button" disabled>Generate Incident PDF</button>
       </form>
       <table>
         <thead><tr><th>Device</th><th>Site</th><th>Region</th><th>Clients</th><th>Online</th><th>Last seen</th></tr></thead>

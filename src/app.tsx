@@ -3,6 +3,7 @@
 import type { ExecutionContext, MessageBatch } from '@cloudflare/workers-types';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import type { Env, IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO } from './do';
@@ -579,6 +580,102 @@ app.post('/api/commissioning/:deviceId/report', async (c) => {
   const payload = await c.req.json<Omit<CommissioningPayload, 'deviceId'>>();
   const res = await generateCommissioningPDF(c.env, { ...payload, deviceId });
   return c.json(res);
+});
+
+app.post('/api/reports/incident', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  const url = new URL(c.req.url);
+  const siteId = url.searchParams.get('siteId');
+  const hoursParam = url.searchParams.get('hours');
+  if (!siteId) {
+    return c.text('siteId required', 400);
+  }
+
+  const hours = Number(hoursParam ?? '24');
+  const windowHours = Number.isFinite(hours) && hours > 0 ? hours : 24;
+
+  const site = await c.env.DB.prepare('SELECT site_id, name, region FROM sites WHERE site_id=?')
+    .bind(siteId)
+    .first<{ site_id: string; name: string | null; region: string | null }>();
+
+  const counts = await c.env.DB.prepare(
+    `SELECT severity, COUNT(*) as n
+     FROM alerts
+     WHERE device_id IN (SELECT device_id FROM devices WHERE site_id=?) AND state IN ('open','ack')
+     GROUP BY severity`,
+  )
+    .bind(siteId)
+    .all<{ severity: string; n: number }>();
+
+  const top = await c.env.DB.prepare(
+    `SELECT d.device_id, SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END) as open_count
+     FROM devices d LEFT JOIN alerts a ON a.device_id = d.device_id
+     WHERE d.site_id=?
+     GROUP BY d.device_id
+     ORDER BY open_count DESC
+     LIMIT 5`,
+  )
+    .bind(siteId)
+    .all<{ device_id: string; open_count: number | null }>();
+
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([595, 842]);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  let y = 800;
+  const draw = (text: string, size = 12) => {
+    page.drawText(text, { x: 40, y, size, font });
+    y -= size + 6;
+  };
+
+  draw(`Incident report — ${site?.name ?? siteId}`, 18);
+  draw(`Region: ${site?.region ?? '—'}`);
+  draw(`Window: last ${Math.round(windowHours * 10) / 10}h`);
+  y -= 6;
+  page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 1 });
+  y -= 12;
+
+  const severityRows = counts.results ?? [];
+  draw('Open alerts by severity:', 14);
+  if (severityRows.length === 0) {
+    draw('• None');
+  } else {
+    for (const row of severityRows) {
+      draw(`• ${row.severity}: ${row.n}`);
+    }
+  }
+
+  y -= 6;
+  const topRows = top.results ?? [];
+  draw('Top devices:', 14);
+  if (topRows.length === 0) {
+    draw('• None');
+  } else {
+    for (const row of topRows) {
+      const count = row.open_count ?? 0;
+      draw(`• ${row.device_id}: ${count}`);
+    }
+  }
+
+  const generatedAt = new Date().toISOString();
+  y -= 6;
+  draw(`Generated at: ${generatedAt}`);
+
+  const bytes = await pdf.save();
+  const key = `reports/incident_${siteId}_${Date.now()}.pdf`;
+  await c.env.REPORTS.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
+
+  return c.json({
+    ok: true,
+    key,
+    path: `/api/reports/${key}`,
+    url: `/api/reports/${key}`,
+    generatedAt,
+  });
 });
 
 app.get('/api/reports/*', async (c) => {
