@@ -300,6 +300,12 @@ export const brandLogoSvg = `<?xml version="1.0" encoding="UTF-8"?>
   <path d="M18 46c-2-3-3-7-3-14 0-11 6-20 17-20 9 0 14 6 14 14 0 7-4 12-10 12-4 0-7-2-8-5h-3c1 7 6 12 14 12 9 0 16-7 16-17 0-10-7-19-19-19-14 0-23 11-23 25 0 7 2 12 5 15z" fill="url(#gb-gradient)" />
 </svg>`;
 
+export const brandLogoMonoSvg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#04090d" />
+  <path d="M18 46c-2-3-3-7-3-14 0-11 6-20 17-20 9 0 14 6 14 14 0 7-4 12-10 12-4 0-7-2-8-5h-3c1 7 6 12 14 12 9 0 16-7 16-17 0-10-7-19-19-19-14 0-23 11-23 25 0 7 2 12 5 15z" fill="#ffffff" />
+</svg>`;
+
 type BrandEmailOptions = {
   title: string;
   introLines?: string[];
@@ -320,7 +326,12 @@ function escapeHtml(value: string): string {
 
 export function brandEmail(options: BrandEmailOptions): string {
   const { title, introLines = [], detailLines = [], footerLines = [], cta, previewText } = options;
-  const inlineLogo = `data:image/svg+xml,${encodeURIComponent(brandLogoSvg)}`;
+  const logoPictureMarkup = [
+    '<picture>',
+    '<source media="(prefers-color-scheme: dark)" srcset="/brand/logo-mono.svg" />',
+    '<img src="/brand/logo.svg" alt="GreenBro" width="48" height="48" style="display:block;margin:0 auto;border-radius:16px;" />',
+    '</picture>',
+  ].join('');
   const introMarkup = introLines
     .map((line) => `<p style="margin:0 0 12px;font-size:15px;line-height:1.5;color:#e9f9ec;">${escapeHtml(line)}</p>`)
     .join('');
@@ -363,7 +374,7 @@ export function brandEmail(options: BrandEmailOptions): string {
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:560px;background:rgba(12,20,14,0.92);border:1px solid rgba(111,219,127,0.25);border-radius:18px;box-shadow:0 32px 60px -40px rgba(8,12,9,0.85);padding:32px;">
             <tr>
               <td style="text-align:center;padding-bottom:12px;">
-                <img src="${inlineLogo}" alt="GreenBro" width="48" height="48" style="display:block;margin:0 auto;border-radius:16px;" />
+                ${logoPictureMarkup}
               </td>
             </tr>
             <tr>

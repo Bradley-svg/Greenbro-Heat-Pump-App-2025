@@ -17,7 +17,7 @@ import {
   type CommissioningPayload,
   type IncidentReportV2Payload,
 } from './pdf';
-import { brandCss, brandEmail, brandLogoSvg } from './brand';
+import { brandCss, brandEmail, brandLogoSvg, brandLogoMonoSvg } from './brand';
 import {
   renderer,
   OverviewPage,
@@ -526,6 +526,30 @@ app.get('/brand/logo.svg', async (c) => {
   }
 
   return new Response(brandLogoSvg, { headers: baseHeaders });
+});
+
+app.get('/brand/logo-mono.svg', async (c) => {
+  const baseHeaders = new Headers({
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Cache-Control': 'public, max-age=86400, s-maxage=604800',
+    'CDN-Cache-Control': 'public, max-age=86400, s-maxage=604800',
+  });
+
+  try {
+    const logo = await c.env.BRAND.get('logo-mono.svg');
+    if (logo) {
+      const headers = new Headers(baseHeaders);
+      logo.writeHttpMetadata(headers);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'image/svg+xml; charset=utf-8');
+      }
+      return new Response(logo.body, { headers });
+    }
+  } catch (error) {
+    console.warn('Failed to load monochrome brand logo from R2', error);
+  }
+
+  return new Response(brandLogoMonoSvg, { headers: baseHeaders });
 });
 
 app.use('/api/*', async (c, next) => {
