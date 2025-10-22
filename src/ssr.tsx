@@ -291,86 +291,54 @@ const alertsScript = `
 `;
 
 const devicesScript = `
-(function(){
-  const form = document.getElementById('device-filters');
-  const tbody = document.getElementById('devices-tbody');
-  const regionSelect = document.getElementById('region-select');
-  const clientSelect = document.getElementById('client-select');
+  (async function(){
+    const form = document.getElementById('device-filters');
+    const tbody = document.getElementById('devices-tbody');
+    const regionSel = document.getElementById('region-select');
+    const clientSel = document.getElementById('client-select');
 
-  if(!form || !tbody) return;
-
-  function renderRow(r){
-    return '<tr>'
-      + '<td>' + r.device_id + '</td>'
-      + '<td>' + (r.site_name ?? r.site_id ?? '') + '</td>'
-      + '<td>' + (r.region ?? '\u2014') + '</td>'
-      + '<td>' + (r.clients ?? '\u2014') + '</td>'
-      + '<td>' + (r.online ? 'Yes' : 'No') + '</td>'
-      + '<td>' + (r.last_seen_at ?? '\u2014') + '</td>'
-      + '</tr>';
-  }
-
-  async function loadDevices(){
-    const params = new URLSearchParams(new FormData(form));
-    const res = await fetch('/api/devices?' + params.toString());
-    const data = await res.json();
-    tbody.innerHTML = data.map(renderRow).join('');
-  }
-
-  function populateSelect(select, rows, placeholder){
-    if(!select) return;
-    const current = select.value;
-    select.innerHTML = '';
-    const base = document.createElement('option');
-    base.value = '';
-    base.textContent = placeholder;
-    select.appendChild(base);
-    rows.forEach(function(row){
-      if(!row.value) return;
-      const opt = document.createElement('option');
-      opt.value = row.value;
-      opt.textContent = row.label;
-      select.appendChild(opt);
-    });
-    if(current && Array.prototype.some.call(select.options, function(opt){ return opt.value === current; })){
-      select.value = current;
+    async function load(){
+      const params = new URLSearchParams(new FormData(form));
+      const res = await fetch('/api/devices?' + params.toString());
+      const data = await res.json();
+      tbody.innerHTML = data.map(function(r){
+        return '<tr>' +
+          '<td>' + r.device_id + '</td>' +
+          '<td>' + (r.site_name ?? r.site_id) + '</td>' +
+          '<td>' + (r.region ?? '—') + '</td>' +
+          '<td>' + (r.clients ?? '—') + '</td>' +
+          '<td>' + (r.online ? 'Yes' : 'No') + '</td>' +
+          '<td>' + (r.last_seen_at ?? '—') + '</td>' +
+        '</tr>';
+      }).join('');
     }
-  }
 
-  async function hydrateFilters(){
-    if(regionSelect){
+    async function loadOptions(){
       try {
-        const res = await fetch('/api/admin/distinct/regions');
-        if(res.ok){
-          const rows = await res.json();
-          const mapped = rows.map(function(r){ return { value: r.region, label: r.region }; }).filter(function(r){ return !!r.value; });
-          populateSelect(regionSelect, mapped, 'All regions');
+        const [rRes, cRes] = await Promise.all([
+          fetch('/api/admin/distinct/regions'),
+          fetch('/api/admin/distinct/clients')
+        ]);
+        if (rRes.ok) {
+          const regions = await rRes.json();
+          regionSel.innerHTML = '<option value="">All</option>' +
+            regions.map(function(r){ return '<option value="' + r.region + '">' + r.region + '</option>'; }).join('');
         }
-      } catch (err) {
-        console.warn('Failed to load regions', err);
-      }
-    }
-    if(clientSelect){
-      try {
-        const res = await fetch('/api/admin/distinct/clients');
-        if(res.ok){
-          const rows = await res.json();
-          const mapped = rows.map(function(r){ return { value: r.client_id, label: r.name || r.client_id }; });
-          populateSelect(clientSelect, mapped, 'All clients');
+        if (cRes.ok) {
+          const clients = await cRes.json();
+          clientSel.innerHTML = '<option value="">All</option>' +
+            clients.map(function(c){ return '<option value="' + c.client_id + '">' + (c.name ?? c.client_id) + '</option>'; }).join('');
         }
-      } catch (err) {
-        console.warn('Failed to load clients', err);
-      }
+      } catch { /* non-admin users may 403: ignore and keep empty dropdowns */ }
     }
-  }
 
-  form.addEventListener('change', function(e){ e.preventDefault(); loadDevices(); });
-  form.addEventListener('submit', function(e){ e.preventDefault(); loadDevices(); });
+    form.addEventListener('change', function(e){ e.preventDefault(); load(); });
+    form.addEventListener('submit', function(e){ e.preventDefault(); load(); });
 
-  hydrateFilters();
-  loadDevices();
-  setInterval(loadDevices, 15000);
-})();
+    await loadOptions();
+    await load();
+    setInterval(load, 15000);
+  })();
 `;
 
 const adminSitesScript = `
