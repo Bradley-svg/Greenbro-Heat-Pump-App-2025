@@ -33,6 +33,52 @@ export type OpsSnapshot = {
   heartbeat: { total: number; online: number; onlinePct: number };
 };
 
+export type ReportHistoryRow = {
+  delivery_id: string;
+  type: string;
+  client_id: string | null;
+  site_id: string | null;
+  path: string | null;
+  subject: string | null;
+  status: string;
+  recipients: string[];
+  meta: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export type ReportHistoryFilters = {
+  clientId: string;
+  siteId: string;
+  type: string;
+  status: string;
+  limit: string;
+};
+
+export type ClientSloSummary = {
+  clientId: string;
+  clientName: string;
+  month: { key: string; label: string; start: string; end: string; effectiveEnd: string };
+  siteCount: number;
+  deviceCount: number;
+  metrics: {
+    uptimePct: number | null;
+    ingestSuccessPct: number | null;
+    avgCop: number | null;
+    alerts: Array<{ type: string; severity: string; count: number }>;
+    alertsBySeverity: Record<string, number>;
+  };
+  targets: {
+    uptimeTarget: number | null;
+    ingestTarget: number | null;
+    copTarget: number | null;
+  };
+  recipients: string | null;
+  copSparkline: Array<{ ts: string; value: number | null }>;
+  heartbeatFreshnessMinutes: number;
+  window: { start: string; end: string };
+  updatedAt: string;
+};
+
 const readOnlySnippet = `
 if(!window.__roPoller){
   window.__roPoller = true;
@@ -972,6 +1018,280 @@ const adminReportsScript = `
 ${readOnlySnippet}
 `;
 
+const reportHistoryScript = `
+(function(){
+  const form = document.getElementById('report-history-filters');
+  const tbody = document.getElementById('report-history-tbody');
+  const statusEl = document.getElementById('report-history-status');
+  const dataEl = document.getElementById('report-history-data');
+
+  function esc(value){
+    return String(value ?? '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  function render(rows){
+    if(!tbody) return;
+    if(!Array.isArray(rows) || rows.length === 0){
+      tbody.innerHTML = '<tr><td colspan="9" class="table-empty">No deliveries recorded yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(function(row){
+      const recipients = Array.isArray(row.recipients) && row.recipients.length
+        ? row.recipients.map(esc).join('<br/>')
+        : '—';
+      const meta = row.meta ? esc(JSON.stringify(row.meta)) : '—';
+      const path = row.path ? '<code>' + esc(row.path) + '</code>' : '—';
+      return '<tr>' +
+        '<td>' + esc(row.created_at) + '</td>' +
+        '<td>' + esc(row.type) + '</td>' +
+        '<td>' + esc(row.status) + '</td>' +
+        '<td>' + (row.client_id ? esc(row.client_id) : '—') + '</td>' +
+        '<td>' + (row.site_id ? esc(row.site_id) : '—') + '</td>' +
+        '<td>' + (row.subject ? esc(row.subject) : '—') + '</td>' +
+        '<td>' + recipients + '</td>' +
+        '<td>' + path + '</td>' +
+        '<td>' + meta + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  let initial = null;
+  if(dataEl){
+    try {
+      initial = JSON.parse(dataEl.textContent || 'null');
+    } catch (err) {
+      console.warn('report history initial parse failed', err);
+    }
+  }
+
+  if(initial && Array.isArray(initial.rows)){
+    render(initial.rows);
+  }
+
+  async function load(){
+    if(!form) return;
+    if(statusEl) statusEl.textContent = 'Refreshing…';
+    try {
+      const params = new URLSearchParams(new FormData(form));
+      const query = params.toString();
+      const res = await fetch('/api/reports/history' + (query ? '?' + query : ''));
+      if(!res.ok) throw new Error('http');
+      const rows = await res.json();
+      render(rows);
+      if(statusEl) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch (err) {
+      console.warn('report history refresh failed', err);
+      if(statusEl) statusEl.textContent = 'Failed to refresh';
+    }
+  }
+
+  if(form){
+    form.addEventListener('submit', function(e){ e.preventDefault(); load(); });
+    form.addEventListener('change', function(){ load(); });
+  }
+
+  setInterval(load, 15000);
+  if(!initial || !Array.isArray(initial.rows)){
+    load();
+  }
+})();
+${readOnlySnippet}
+`;
+
+const clientSloScript = `
+(function(){
+  const form = document.getElementById('client-slo-form');
+  const statusEl = document.getElementById('client-slo-status');
+  const dataEl = document.getElementById('client-slo-data');
+  const spark = document.getElementById('client-slo-sparkline');
+  const latestEl = document.querySelector('[data-slo-cop-latest]');
+  const rangeEl = document.querySelector('[data-slo-cop-range]');
+  const recipientsEl = document.getElementById('client-slo-recipients');
+  const metaEl = document.getElementById('client-slo-meta');
+  const severityList = document.getElementById('client-slo-alerts-list');
+
+  const valueEls = {
+    uptime: document.querySelector('[data-slo-value="uptime"]'),
+    ingest: document.querySelector('[data-slo-value="ingest"]'),
+    cop: document.querySelector('[data-slo-value="cop"]'),
+  };
+  const targetEls = {
+    uptime: document.querySelector('[data-slo-target="uptime"]'),
+    ingest: document.querySelector('[data-slo-target="ingest"]'),
+    cop: document.querySelector('[data-slo-target="cop"]'),
+  };
+  const chipEls = {
+    uptime: document.querySelector('[data-slo-chip="uptime"]'),
+    ingest: document.querySelector('[data-slo-chip="ingest"]'),
+    cop: document.querySelector('[data-slo-chip="cop"]'),
+  };
+
+  function esc(value){
+    return String(value ?? '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  function formatPct(value){
+    return value == null || !Number.isFinite(value) ? '—' : (value * 100).toFixed(2) + '%';
+  }
+
+  function formatNumber(value, digits){
+    return value == null || !Number.isFinite(value) ? '—' : Number(value).toFixed(digits);
+  }
+
+  function setChip(el, status){
+    if(!el) return;
+    el.classList.remove('pass','fail','idle');
+    if(status === 'pass'){ el.classList.add('pass'); el.textContent = 'Met'; }
+    else if(status === 'fail'){ el.classList.add('fail'); el.textContent = 'Miss'; }
+    else { el.classList.add('idle'); el.textContent = '—'; }
+  }
+
+  function renderSparkline(series){
+    if(!spark) return;
+    const width = 320;
+    const height = 80;
+    const values = series.map(function(point){ return typeof point.value === 'number' ? point.value : null; }).filter(function(v){ return v != null; });
+    if(values.length === 0){
+      spark.setAttribute('viewBox','0 0 ' + width + ' ' + height);
+      spark.innerHTML = '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="#0b1119" stroke="#1e2632" />';
+      if(latestEl) latestEl.textContent = '—';
+      if(rangeEl) rangeEl.textContent = '';
+      return;
+    }
+    let min = Math.min.apply(null, values);
+    let max = Math.max.apply(null, values);
+    if(min === max){
+      max = min + 0.1;
+    }
+    const span = max - min;
+    let path = '';
+    series.forEach(function(point, idx){
+      const value = typeof point.value === 'number' ? point.value : null;
+      const x = series.length <= 1 ? width : (idx / (series.length - 1)) * width;
+      if(value == null){
+        return;
+      }
+      const y = height - ((value - min) / span) * height;
+      path += (path ? ' L' : 'M') + x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    spark.setAttribute('viewBox','0 0 ' + width + ' ' + height);
+    spark.innerHTML = '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="#0b1119" stroke="#1e2632" />' +
+      '<path d="' + path + '" fill="none" stroke="#3fb950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />';
+    if(latestEl){
+      for(let i=series.length-1;i>=0;i--){
+        const val = series[i] && typeof series[i].value === 'number' ? series[i].value : null;
+        if(val != null){ latestEl.textContent = formatNumber(val, 2); break; }
+      }
+    }
+    if(rangeEl){
+      rangeEl.textContent = values.length ? formatNumber(Math.min.apply(null, values), 2) + ' – ' + formatNumber(Math.max.apply(null, values), 2) : '';
+    }
+  }
+
+  function render(summary){
+    if(!summary) return;
+    if(form && form.month){
+      form.month.value = summary.month && summary.month.key ? summary.month.key : '';
+    }
+    if(metaEl){
+      metaEl.textContent = 'Sites ' + summary.siteCount + ' · Devices ' + summary.deviceCount + ' · Window ' + summary.window.start + ' → ' + summary.window.end;
+    }
+    if(valueEls.uptime) valueEls.uptime.textContent = formatPct(summary.metrics.uptimePct);
+    if(valueEls.ingest) valueEls.ingest.textContent = formatPct(summary.metrics.ingestSuccessPct);
+    if(valueEls.cop) valueEls.cop.textContent = formatNumber(summary.metrics.avgCop, 2);
+    if(targetEls.uptime) targetEls.uptime.textContent = summary.targets.uptimeTarget == null ? 'Target: —' : 'Target: ' + (summary.targets.uptimeTarget * 100).toFixed(2) + '%';
+    if(targetEls.ingest) targetEls.ingest.textContent = summary.targets.ingestTarget == null ? 'Target: —' : 'Target: ' + (summary.targets.ingestTarget * 100).toFixed(2) + '%';
+    if(targetEls.cop) targetEls.cop.textContent = summary.targets.copTarget == null ? 'Target: —' : 'Target: ' + summary.targets.copTarget.toFixed(2);
+
+    const uptimeStatus = summary.targets.uptimeTarget == null || summary.metrics.uptimePct == null
+      ? 'idle'
+      : summary.metrics.uptimePct >= summary.targets.uptimeTarget ? 'pass' : 'fail';
+    const ingestStatus = summary.targets.ingestTarget == null || summary.metrics.ingestSuccessPct == null
+      ? 'idle'
+      : summary.metrics.ingestSuccessPct >= summary.targets.ingestTarget ? 'pass' : 'fail';
+    const copStatus = summary.targets.copTarget == null || summary.metrics.avgCop == null
+      ? 'idle'
+      : summary.metrics.avgCop >= summary.targets.copTarget ? 'pass' : 'fail';
+
+    setChip(chipEls.uptime, uptimeStatus);
+    setChip(chipEls.ingest, ingestStatus);
+    setChip(chipEls.cop, copStatus);
+
+    if(recipientsEl){
+      recipientsEl.textContent = summary.recipients ? summary.recipients : '—';
+    }
+
+    if(severityList){
+      const entries = Object.entries(summary.metrics.alertsBySeverity || {});
+      if(entries.length === 0){
+        severityList.innerHTML = '<li>No alerts recorded for this window.</li>';
+      } else {
+        severityList.innerHTML = entries
+          .sort(function(a,b){ return b[1] - a[1]; })
+          .map(function(entry){ return '<li><strong>' + esc(entry[0]) + '</strong>: ' + entry[1] + '</li>'; })
+          .join('');
+      }
+    }
+
+    renderSparkline(summary.copSparkline || []);
+
+    if(statusEl){
+      statusEl.textContent = 'Updated ' + new Date(summary.updatedAt || Date.now()).toLocaleTimeString();
+    }
+  }
+
+  let initial = null;
+  if(dataEl){
+    try {
+      initial = JSON.parse(dataEl.textContent || 'null');
+    } catch (err) {
+      console.warn('client slo initial parse failed', err);
+    }
+  }
+  if(initial){
+    render(initial.summary);
+  }
+
+  async function load(){
+    if(!form) return;
+    const clientId = form.getAttribute('data-client');
+    if(!clientId) return;
+    if(statusEl) statusEl.textContent = 'Refreshing…';
+    try {
+      const params = new URLSearchParams(new FormData(form));
+      const res = await fetch('/api/clients/' + encodeURIComponent(clientId) + '/slo-summary?' + params.toString());
+      if(!res.ok) throw new Error('http');
+      const summary = await res.json();
+      render(summary);
+    } catch (err) {
+      console.warn('client slo refresh failed', err);
+      if(statusEl) statusEl.textContent = 'Failed to refresh';
+    }
+  }
+
+  if(form){
+    form.addEventListener('submit', function(e){ e.preventDefault(); load(); });
+  }
+  const refreshBtn = document.getElementById('client-slo-refresh');
+  if(refreshBtn){
+    refreshBtn.addEventListener('click', function(){ load(); });
+  }
+
+  setInterval(load, 60000);
+})();
+${readOnlySnippet}
+`;
+
 const maintenanceScript = `
 (function(){
   const form = document.getElementById('maintenance-form');
@@ -1178,6 +1498,27 @@ export const renderer = jsxRenderer(({ children }) => {
         .ops-header .ops-subtext{font-size:12px}
         .maintenance-form{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
         .maintenance-form input,.maintenance-form select{min-width:160px}
+        #report-history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
+        #report-history-filters input,#report-history-filters select{min-width:160px}
+        #report-history-status{margin-bottom:10px}
+        .report-history-table tbody tr:hover{background:#111a27}
+        .slo-form{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:12px 0 18px}
+        .slo-form input[type=month]{min-width:160px}
+        .slo-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:18px}
+        .slo-card{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:8px}
+        .slo-metric-value{font-size:28px;font-weight:600}
+        .slo-target{font-size:12px;color:var(--muted)}
+        .slo-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
+        .slo-chip.pass{background:#122418;color:#3fb950}
+        .slo-chip.fail{background:#2a1417;color:#f85149}
+        .slo-chip.idle{background:#1a2332;color:var(--muted)}
+        .slo-spark{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;margin-bottom:16px}
+        #client-slo-sparkline{width:100%;height:auto;display:block}
+        .slo-spark-meta{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:8px}
+        .slo-meta{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--muted);margin-bottom:18px}
+        .slo-alerts{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;margin-top:16px}
+        .slo-alerts ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
+        .slo-alerts strong{color:var(--text)}
         .badge{display:inline-block;border-radius:999px;padding:2px 8px;font-size:12px}
         .badge[data-state="active"]{background:rgba(63,185,80,0.18);color:#3fb950}
         .badge[data-state="scheduled"]{background:rgba(240,136,62,0.18);color:#f0883e}
@@ -1651,6 +1992,265 @@ export function AdminReportsPage() {
         </tbody>
       </table>
       <script dangerouslySetInnerHTML={{ __html: adminReportsScript }} />
+    </div>
+  );
+}
+
+type AdminReportsHistoryProps = { rows: ReportHistoryRow[]; filters: ReportHistoryFilters };
+
+export function AdminReportsHistoryPage(props: AdminReportsHistoryProps) {
+  const statusText = props.rows.length === 0 ? 'No deliveries logged yet.' : `Showing ${props.rows.length} deliveries.`;
+  const initialPayload = encodeJson({ rows: props.rows, filters: props.filters });
+
+  const body = props.rows.length === 0 ? (
+    <tr>
+      <td colSpan={9} class="table-empty">
+        No deliveries recorded yet.
+      </td>
+    </tr>
+  ) : (
+    props.rows.map((row) => {
+      const recipients = row.recipients.length > 0 ? row.recipients.join('\n') : null;
+      const meta = row.meta ? JSON.stringify(row.meta) : null;
+      return (
+        <tr>
+          <td>{row.created_at}</td>
+          <td>{row.type}</td>
+          <td>{row.status}</td>
+          <td>{row.client_id ?? '—'}</td>
+          <td>{row.site_id ?? '—'}</td>
+          <td>{row.subject ?? '—'}</td>
+          <td>
+            {recipients
+              ? recipients.split('\n').map((value, idx) => (
+                  <div key={idx}>{value}</div>
+                ))
+              : '—'}
+          </td>
+          <td>{row.path ? <code>{row.path}</code> : '—'}</td>
+          <td>{meta ? <code>{meta}</code> : '—'}</td>
+        </tr>
+      );
+    })
+  );
+
+  return (
+    <div class="card">
+      <h2>Admin — Report Delivery History</h2>
+      <form id="report-history-filters" class="report-history-filters">
+        <label>
+          Client
+          <input type="text" name="client_id" placeholder="client_123" value={props.filters.clientId} />
+        </label>
+        <label>
+          Site
+          <input type="text" name="site_id" placeholder="SITE-001" value={props.filters.siteId} />
+        </label>
+        <label>
+          Type
+          <input type="text" name="type" placeholder="monthly" value={props.filters.type} />
+        </label>
+        <label>
+          Status
+          <input type="text" name="status" placeholder="generated" value={props.filters.status} />
+        </label>
+        <label>
+          Limit
+          <input type="number" name="limit" min="1" max="500" value={props.filters.limit || '100'} />
+        </label>
+        <button class="btn" type="submit">
+          Apply
+        </button>
+      </form>
+      <p class="card-subtle" id="report-history-status">
+        {statusText}
+      </p>
+      <table class="report-history-table">
+        <thead>
+          <tr>
+            <th>Created</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Client</th>
+            <th>Site</th>
+            <th>Subject</th>
+            <th>Recipients</th>
+            <th>Path</th>
+            <th>Meta</th>
+          </tr>
+        </thead>
+        <tbody id="report-history-tbody">{body}</tbody>
+      </table>
+      <script id="report-history-data" type="application/json">
+        {initialPayload}
+      </script>
+      <script dangerouslySetInnerHTML={{ __html: reportHistoryScript }} />
+    </div>
+  );
+}
+
+type ClientSloPageProps = { summary: ClientSloSummary; filters: { month: string } };
+
+function buildSparklinePath(series: Array<{ value: number | null }>, width: number, height: number) {
+  const values = series
+    .map((point) => (typeof point.value === 'number' && Number.isFinite(point.value) ? point.value : null))
+    .filter((value): value is number => value != null);
+  if (values.length === 0) {
+    return { path: '', width, height };
+  }
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    max = min + 0.1;
+  }
+  const span = max - min;
+  let path = '';
+  series.forEach((point, idx) => {
+    if (typeof point.value !== 'number' || !Number.isFinite(point.value)) {
+      return;
+    }
+    const x = series.length <= 1 ? width : (idx / (series.length - 1)) * width;
+    const y = height - ((point.value - min) / span) * height;
+    path += `${path ? ' L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  return { path, width, height };
+}
+
+export function ClientSloPage({ summary, filters }: ClientSloPageProps) {
+  const monthValue = filters.month || summary.month.key;
+  const uptimeValue = summary.metrics.uptimePct;
+  const ingestValue = summary.metrics.ingestSuccessPct;
+  const copValue = summary.metrics.avgCop;
+
+  const uptimeTarget = summary.targets.uptimeTarget;
+  const ingestTarget = summary.targets.ingestTarget;
+  const copTarget = summary.targets.copTarget;
+
+  const uptimeStatus =
+    uptimeTarget == null || uptimeValue == null ? 'idle' : uptimeValue >= uptimeTarget ? 'pass' : 'fail';
+  const ingestStatus =
+    ingestTarget == null || ingestValue == null ? 'idle' : ingestValue >= ingestTarget ? 'pass' : 'fail';
+  const copStatus = copTarget == null || copValue == null ? 'idle' : copValue >= copTarget ? 'pass' : 'fail';
+
+  const uptimeDisplay = uptimeValue == null ? '—' : `${(uptimeValue * 100).toFixed(2)}%`;
+  const ingestDisplay = ingestValue == null ? '—' : `${(ingestValue * 100).toFixed(2)}%`;
+  const copDisplay = copValue == null ? '—' : copValue.toFixed(2);
+
+  const uptimeTargetLabel = uptimeTarget == null ? 'Target: —' : `Target: ${(uptimeTarget * 100).toFixed(2)}%`;
+  const ingestTargetLabel = ingestTarget == null ? 'Target: —' : `Target: ${(ingestTarget * 100).toFixed(2)}%`;
+  const copTargetLabel = copTarget == null ? 'Target: —' : `Target: ${copTarget.toFixed(2)}`;
+
+  const spark = buildSparklinePath(summary.copSparkline, 320, 80);
+  const copLatest = latestValue(summary.copSparkline);
+  const copRangeText = rangeLabel(summary.copSparkline, 2);
+
+  const severityEntries = Object.entries(summary.metrics.alertsBySeverity).sort((a, b) => b[1] - a[1]);
+  const recipients = summary.recipients ?? '—';
+  const statusText = `Updated ${summary.updatedAt}`;
+  const initialPayload = encodeJson({ summary });
+
+  return (
+    <div class="card">
+      <h2>Client SLO — {summary.clientName}</h2>
+      <div class="slo-meta" id="client-slo-meta">
+        Sites {summary.siteCount} · Devices {summary.deviceCount} · Window {summary.window.start} → {summary.window.end}
+      </div>
+      <form id="client-slo-form" class="slo-form" data-client={summary.clientId}>
+        <label>
+          Month
+          <input type="month" name="month" value={monthValue} />
+        </label>
+        <button class="btn" type="submit">
+          Apply
+        </button>
+        <button class="btn" type="button" id="client-slo-refresh">
+          Refresh
+        </button>
+      </form>
+      <p class="card-subtle" id="client-slo-status">
+        {statusText}
+      </p>
+      <div class="slo-grid">
+        <div class="slo-card">
+          <span>Uptime</span>
+          <span class="slo-metric-value" data-slo-value="uptime">
+            {uptimeDisplay}
+          </span>
+          <span class={`slo-chip ${uptimeStatus}`} data-slo-chip="uptime">
+            {uptimeStatus === 'pass' ? 'Met' : uptimeStatus === 'fail' ? 'Miss' : '—'}
+          </span>
+          <span class="slo-target" data-slo-target="uptime">
+            {uptimeTargetLabel}
+          </span>
+        </div>
+        <div class="slo-card">
+          <span>Ingest success</span>
+          <span class="slo-metric-value" data-slo-value="ingest">
+            {ingestDisplay}
+          </span>
+          <span class={`slo-chip ${ingestStatus}`} data-slo-chip="ingest">
+            {ingestStatus === 'pass' ? 'Met' : ingestStatus === 'fail' ? 'Miss' : '—'}
+          </span>
+          <span class="slo-target" data-slo-target="ingest">
+            {ingestTargetLabel}
+          </span>
+        </div>
+        <div class="slo-card">
+          <span>Average COP</span>
+          <span class="slo-metric-value" data-slo-value="cop">
+            {copDisplay}
+          </span>
+          <span class={`slo-chip ${copStatus}`} data-slo-chip="cop">
+            {copStatus === 'pass' ? 'Met' : copStatus === 'fail' ? 'Miss' : '—'}
+          </span>
+          <span class="slo-target" data-slo-target="cop">
+            {copTargetLabel}
+          </span>
+        </div>
+      </div>
+      <div class="slo-spark">
+        <h3 style="margin-top:0">COP trend (last 7 days)</h3>
+        <svg id="client-slo-sparkline" viewBox={`0 0 ${spark.width} ${spark.height}`}>
+          <rect x="0" y="0" width={spark.width} height={spark.height} fill="#0b1119" stroke="#1e2632" />
+          {spark.path ? (
+            <path
+              d={spark.path}
+              fill="none"
+              stroke="#3fb950"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ) : null}
+        </svg>
+        <div class="slo-spark-meta">
+          <span>
+            Latest: <strong data-slo-cop-latest>{copLatest != null ? copLatest.toFixed(2) : '—'}</strong>
+          </span>
+          <span data-slo-cop-range>{copRangeText}</span>
+        </div>
+      </div>
+      <div class="slo-alerts">
+        <h3 style="margin-top:0">Alerts by severity</h3>
+        <ul id="client-slo-alerts-list">
+          {severityEntries.length === 0 ? (
+            <li>No alerts recorded for this window.</li>
+          ) : (
+            severityEntries.map(([severity, count]) => (
+              <li>
+                <strong>{severity}</strong>: {count}
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
+      <div class="slo-meta" style="margin-top:16px">
+        Recipients: <span id="client-slo-recipients">{recipients}</span>
+      </div>
+      <script id="client-slo-data" type="application/json">
+        {initialPayload}
+      </script>
+      <script dangerouslySetInnerHTML={{ __html: clientSloScript }} />
     </div>
   );
 }

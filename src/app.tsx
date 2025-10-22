@@ -27,9 +27,13 @@ import {
   AdminMaintenancePage,
   AdminSettingsPage,
   AdminReportsPage,
+  AdminReportsHistoryPage,
+  ClientSloPage,
   OpsPage,
   type OverviewData,
   type OpsSnapshot,
+  type ClientSloSummary,
+  type ReportHistoryRow,
 } from './ssr';
 import { handleQueueBatch as baseQueueHandler } from './queue';
 import { sweepIncidents } from './incidents';
@@ -72,6 +76,147 @@ function parseRecipientList(value?: string | null): string[] {
   }
   const parts = value.split(/[,;\n]+/);
   return dedupeRecipients(parts);
+}
+
+function canAccessClient(auth: AccessContext, clientId: string) {
+  if (auth.roles.includes('admin') || auth.roles.includes('ops')) {
+    return true;
+  }
+  if ((auth.roles.includes('client') || auth.roles.includes('contractor')) && auth.clientIds) {
+    return auth.clientIds.includes(clientId);
+  }
+  return false;
+}
+
+type ReportDeliveryLogEntry = {
+  type: string;
+  status: string;
+  clientId?: string | null;
+  siteId?: string | null;
+  path?: string | null;
+  subject?: string | null;
+  to?: string[] | string | null;
+  meta?: Record<string, unknown> | null;
+};
+
+type ReportDeliveryFilters = {
+  clientId?: string | null;
+  siteId?: string | null;
+  type?: string | null;
+  status?: string | null;
+  limit?: number | null;
+};
+
+async function logReportDelivery(DB: D1Database, entry: ReportDeliveryLogEntry) {
+  try {
+    const toList =
+      entry.to == null
+        ? []
+        : Array.isArray(entry.to)
+          ? dedupeRecipients(entry.to)
+          : parseRecipientList(entry.to);
+    const recipients = toList.length > 0 ? toList.join(', ') : null;
+    const metaJson = entry.meta ? JSON.stringify(entry.meta) : null;
+    await DB.prepare(
+      `INSERT INTO report_deliveries (delivery_id, type, client_id, site_id, path, recipients, subject, status, meta_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        entry.type,
+        entry.clientId ?? null,
+        entry.siteId ?? null,
+        entry.path ?? null,
+        recipients,
+        entry.subject ?? null,
+        entry.status,
+        metaJson,
+      )
+      .run();
+  } catch (error) {
+    console.warn('logReportDelivery failed', error);
+  }
+}
+
+async function listReportDeliveries(DB: D1Database, filters: ReportDeliveryFilters = {}): Promise<ReportHistoryRow[]> {
+  let sql =
+    'SELECT delivery_id, type, client_id, site_id, path, recipients, subject, status, meta_json, created_at FROM report_deliveries WHERE 1=1';
+  const bind: Array<string | number> = [];
+  if (filters.clientId) {
+    sql += ' AND client_id = ?';
+    bind.push(filters.clientId);
+  }
+  if (filters.siteId) {
+    sql += ' AND site_id = ?';
+    bind.push(filters.siteId);
+  }
+  if (filters.type) {
+    sql += ' AND type = ?';
+    bind.push(filters.type);
+  }
+  if (filters.status) {
+    sql += ' AND status = ?';
+    bind.push(filters.status);
+  }
+  const limit = (() => {
+    const raw = filters.limit ?? 100;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      return 100;
+    }
+    return Math.min(Math.max(Math.floor(parsed), 1), 500);
+  })();
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  bind.push(limit);
+
+  const rows = await DB.prepare(sql)
+    .bind(...bind)
+    .all<{
+      delivery_id: string;
+      type: string;
+      client_id: string | null;
+      site_id: string | null;
+      path: string | null;
+      recipients: string | null;
+      subject: string | null;
+      status: string;
+      meta_json: string | null;
+      created_at: string;
+    }>();
+
+  const parseRecipients = (value: string | null): string[] => {
+    if (!value) return [];
+    return value
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+  };
+
+  return (rows.results ?? []).map((row) => {
+    let meta: Record<string, unknown> | null = null;
+    if (row.meta_json) {
+      try {
+        const parsed = JSON.parse(row.meta_json);
+        if (parsed && typeof parsed === 'object') {
+          meta = parsed as Record<string, unknown>;
+        }
+      } catch (error) {
+        console.warn('report history meta parse failed', error);
+      }
+    }
+    return {
+      delivery_id: row.delivery_id,
+      type: row.type,
+      client_id: row.client_id ?? null,
+      site_id: row.site_id ?? null,
+      path: row.path ?? null,
+      subject: row.subject ?? null,
+      status: row.status,
+      recipients: parseRecipients(row.recipients ?? null),
+      meta,
+      created_at: row.created_at,
+    };
+  });
 }
 
 type EmailSettings = { webhook: string | null; from: string | null };
@@ -1555,6 +1700,17 @@ app.post('/api/reports/incident/v2', async (c) => {
   const path = keyToPath(pdf.key);
 
   const { clients, recipients } = await collectSiteRecipients(c.env.DB, siteId);
+  const primaryClientId = clients.length > 0 ? clients[0].id : null;
+
+  await logReportDelivery(c.env.DB, {
+    type: 'incident',
+    status: 'generated',
+    clientId: primaryClientId,
+    siteId,
+    path,
+    meta: { hours: windowHours, windowStart: payload.windowStart, windowEnd: payload.windowEnd },
+  });
+
   let emailed = false;
   if (recipients.length > 0) {
     const emailSettings = await loadEmailSettings(c.env.DB);
@@ -1572,6 +1728,7 @@ app.post('/api/reports/incident/v2', async (c) => {
       `R2 path: ${path}`,
     ];
     emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), emailSettings);
+    // To capture email sends in the audit log, call logReportDelivery(c.env.DB, { ...status: 'sent' }) here.
   }
 
   return c.json({
@@ -1616,6 +1773,16 @@ app.post('/api/reports/client-monthly', async (c) => {
 
   const pdf = await generateClientMonthlyReport(c.env, payload);
 
+  await logReportDelivery(c.env.DB, {
+    type: 'monthly',
+    status: 'generated',
+    clientId: client.id,
+    siteId: null,
+    path: keyToPath(pdf.key),
+    subject: `Monthly report — ${payload.monthLabel} (${client.name})`,
+    meta: { month: monthParam, version: 'v1' },
+  });
+
   return c.json({
     ok: true,
     key: pdf.key,
@@ -1657,6 +1824,16 @@ app.post('/api/reports/client-monthly/v2', async (c) => {
   const { payload, client } = prepared;
 
   const pdf = await generateClientMonthlyReport(c.env, payload);
+  const path = keyToPath(pdf.key);
+  await logReportDelivery(c.env.DB, {
+    type: 'monthly',
+    status: 'generated',
+    clientId: client.id,
+    siteId: null,
+    path,
+    subject: `Monthly report — ${payload.monthLabel} (${client.name})`,
+    meta: { month: monthParam, version: 'v2' },
+  });
   const recipients = parseRecipientList(payload.recipients ?? null);
   let emailed = false;
   if (recipients.length > 0) {
@@ -1670,15 +1847,16 @@ app.post('/api/reports/client-monthly/v2', async (c) => {
         ? 'Uptime: n/a'
         : `Uptime: ${(payload.metrics.uptimePct * 100).toFixed(2)}%`,
       `Download: ${pdf.url}`,
-      `R2 path: ${keyToPath(pdf.key)}`,
+      `R2 path: ${path}`,
     ];
     emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), settings);
+    // To capture email sends in the audit log, call logReportDelivery(c.env.DB, { ...status: 'sent' }) here.
   }
 
   return c.json({
     ok: true,
     key: pdf.key,
-    path: keyToPath(pdf.key),
+    path,
     url: pdf.url,
     client,
     month: monthParam,
@@ -1714,6 +1892,53 @@ app.get('/api/reports/client-monthly', async (c) => {
     url: `/api/reports/${obj.key}`,
   }));
   return c.json(out);
+});
+
+app.get('/api/reports/history', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const normalize = (key: string) => {
+    const value = url.searchParams.get(key);
+    if (!value) return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  const limitParam = url.searchParams.get('limit');
+  const rows = await listReportDeliveries(c.env.DB, {
+    clientId: normalize('client_id'),
+    siteId: normalize('site_id'),
+    type: normalize('type'),
+    status: normalize('status'),
+    limit: limitParam ? Number(limitParam) : undefined,
+  });
+  return c.json(rows);
+});
+
+app.get('/api/clients/:clientId/slo-summary', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const clientId = c.req.param('clientId');
+  if (!canAccessClient(auth, clientId)) {
+    return c.text('Forbidden', 403);
+  }
+  const url = new URL(c.req.url);
+  const month = url.searchParams.get('month');
+  try {
+    const summary = await buildClientSloSummary(c.env, clientId, month);
+    return c.json(summary);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to build summary';
+    if (message === 'Client not found') {
+      return c.text(message, 404);
+    }
+    return c.text(message, 400);
+  }
 });
 
 app.post('/api/ops/monthly-run', async (c) => {
@@ -1887,6 +2112,40 @@ app.get('/alerts', async (c) => {
   return c.render(<AlertsPage alerts={alerts} filters={{ state, severity, type, deviceId }} />);
 });
 
+app.get('/clients/:clientId/slo', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const clientId = c.req.param('clientId');
+  if (!canAccessClient(auth, clientId)) {
+    return c.text('Forbidden', 403);
+  }
+  const url = new URL(c.req.url);
+  const monthParam = url.searchParams.get('month');
+  try {
+    const summary = await buildClientSloSummary(c.env, clientId, monthParam);
+    return c.render(
+      <ClientSloPage
+        summary={summary}
+        filters={{
+          month: monthParam ?? summary.month.key,
+        }}
+      />,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load summary';
+    if (message === 'Client not found') {
+      return c.text(message, 404);
+    }
+    return c.text(message, 400);
+  }
+});
+
 app.get('/devices', async (c) => {
   const { DB } = c.env;
   const jwt = c.req.header('Cf-Access-Jwt-Assertion');
@@ -1989,6 +2248,43 @@ app.get('/admin/reports', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   return c.render(<AdminReportsPage />);
+});
+
+app.get('/admin/reports/history', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const get = (key: string) => {
+    const value = url.searchParams.get(key);
+    return value ?? '';
+  };
+  const limitParam = url.searchParams.get('limit');
+  const rows = await listReportDeliveries(c.env.DB, {
+    clientId: get('client_id') ? get('client_id') : null,
+    siteId: get('site_id') ? get('site_id') : null,
+    type: get('type') ? get('type') : null,
+    status: get('status') ? get('status') : null,
+    limit: limitParam ? Number(limitParam) : undefined,
+  });
+  return c.render(
+    <AdminReportsHistoryPage
+      rows={rows}
+      filters={{
+        clientId: get('client_id'),
+        siteId: get('site_id'),
+        type: get('type'),
+        status: get('status'),
+        limit: limitParam ?? '',
+      }}
+    />,
+  );
 });
 
 function createEmptyOverview(): OverviewData {
@@ -2668,6 +2964,131 @@ async function buildClientMonthlyReportPayload(
   };
 
   return { payload, client: { id: clientId, name: client.name ?? clientId } };
+}
+
+async function buildClientSloSummary(env: Env, clientId: string, monthParam?: string | null): Promise<ClientSloSummary> {
+  const now = new Date();
+  let monthKey = monthParam ?? formatMonthKey(now);
+  let range = parseMonthRange(monthKey);
+  if (!range) {
+    monthKey = formatMonthKey(now);
+    range = parseMonthRange(monthKey);
+  }
+  if (!range) {
+    throw new Error('Invalid month');
+  }
+
+  const client = await env.DB.prepare('SELECT client_id, name FROM clients WHERE client_id=?')
+    .bind(clientId)
+    .first<{ client_id: string; name: string | null }>();
+  if (!client) {
+    throw new Error('Client not found');
+  }
+
+  const mapRows = await env.DB.prepare(
+    `SELECT DISTINCT d.device_id, d.site_id
+       FROM devices d
+       JOIN site_clients sc ON sc.site_id = d.site_id
+      WHERE sc.client_id = ?`,
+  )
+    .bind(clientId)
+    .all<{ device_id: string | null; site_id: string | null }>();
+
+  const deviceIds = (mapRows.results ?? [])
+    .map((row) => row.device_id)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const siteIds = new Set<string>();
+  for (const row of mapRows.results ?? []) {
+    if (row.site_id) {
+      siteIds.add(row.site_id);
+    }
+  }
+
+  const startIso = range.start.toISOString();
+  const monthEndMs = range.end.getTime();
+  const nowMs = now.getTime();
+  let effectiveEnd = range.end;
+  if (nowMs >= range.start.getTime()) {
+    effectiveEnd = nowMs < monthEndMs ? new Date(nowMs) : range.end;
+  }
+  const endIso = effectiveEnd.toISOString();
+
+  const metrics = await computeClientMonthlyMetricsV2(env.DB, clientId, deviceIds, startIso, endIso);
+
+  const alertsBySeverity: Record<string, number> = {};
+  for (const alert of metrics.alerts) {
+    alertsBySeverity[alert.severity] = (alertsBySeverity[alert.severity] ?? 0) + alert.count;
+  }
+
+  const slo = await env.DB.prepare(
+    'SELECT uptime_target, ingest_target, cop_target, report_recipients FROM client_slos WHERE client_id=?',
+  )
+    .bind(clientId)
+    .first<{ uptime_target: number | null; ingest_target: number | null; cop_target: number | null; report_recipients: string | null }>();
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const sparkEnd = new Date(nowMs);
+  const sparkStart = new Date(sparkEnd.getTime() - 6 * dayMs);
+  const copSparkline: Array<{ ts: string; value: number | null }> = [];
+  for (let i = 0; i < 7; i += 1) {
+    const point = new Date(sparkStart.getTime() + i * dayMs);
+    copSparkline.push({ ts: point.toISOString().slice(0, 10), value: null });
+  }
+
+  if (deviceIds.length > 0) {
+    const placeholders = deviceIds.map(() => '?').join(',');
+    const rows = await env.DB.prepare(
+      `SELECT strftime('%Y-%m-%d', ts) AS day, AVG(cop) AS avg_cop
+         FROM telemetry
+        WHERE device_id IN (${placeholders})
+          AND ts >= ?
+          AND ts <= ?
+        GROUP BY day
+        ORDER BY day`,
+    )
+      .bind(...deviceIds, sparkStart.toISOString(), sparkEnd.toISOString())
+      .all<{ day: string; avg_cop: number | null }>();
+
+    const lookup = new Map<string, number | null>();
+    for (const row of rows.results ?? []) {
+      lookup.set(row.day, toNumber(row.avg_cop));
+    }
+    copSparkline.forEach((point, idx) => {
+      const value = lookup.has(point.ts) ? lookup.get(point.ts) ?? null : null;
+      copSparkline[idx] = { ts: point.ts, value };
+    });
+  }
+
+  return {
+    clientId: client.client_id,
+    clientName: client.name ?? client.client_id,
+    month: {
+      key: monthKey,
+      label: range.label,
+      start: startIso,
+      end: range.end.toISOString(),
+      effectiveEnd: endIso,
+    },
+    siteCount: siteIds.size,
+    deviceCount: deviceIds.length,
+    metrics: {
+      uptimePct: metrics.uptimePct,
+      ingestSuccessPct: metrics.ingestSuccessPct,
+      avgCop: metrics.avgCop,
+      alerts: metrics.alerts,
+      alertsBySeverity,
+    },
+    targets: {
+      uptimeTarget: toNumber(slo?.uptime_target),
+      ingestTarget: toNumber(slo?.ingest_target),
+      copTarget: toNumber(slo?.cop_target),
+    },
+    recipients: slo?.report_recipients ?? null,
+    copSparkline,
+    heartbeatFreshnessMinutes: 5,
+    window: { start: startIso, end: endIso },
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
