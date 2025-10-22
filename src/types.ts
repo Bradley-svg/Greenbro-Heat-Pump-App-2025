@@ -4,7 +4,7 @@ export interface Env {
   DB: D1Database;
   CONFIG: KVNamespace;
   REPORTS: R2Bucket;
-  INGEST_QUEUE: Queue<IngestMessage>;
+  INGEST_Q: Queue<IngestMessage>;
 
   DeviceState: DurableObjectNamespace;
   DEVICE_DO: DurableObjectNamespace;
@@ -50,5 +50,5 @@ export type HeartbeatPayload = {
 };
 
 export type IngestMessage =
-  | { kind: 'telemetry'; profileId: string; body: TelemetryPayload }
-  | { kind: 'heartbeat'; profileId: string; body: HeartbeatPayload };
+  | { type: 'telemetry'; profileId: string; body: TelemetryPayload }
+  | { type: 'heartbeat'; profileId: string; body: HeartbeatPayload };

@@ -28,14 +28,13 @@ bucket_name = "greenbro-reports"
 # ---- Queues (ingest fan-in → batch processing) ----
 # Producer (HTTP ingest → Queue)
 [[queues.producers]]
-queue = "greenbro-ingest"
-binding = "INGEST_QUEUE"
+queue = "ingest-q"
+binding = "INGEST_Q"
 
 # Consumer (same worker handles queue batches via `export default { queue }`)
 [[queues.consumers]]
-queue = "greenbro-ingest"
-max_batch_size = 64
-max_batch_timeout = 2
+queue = "ingest-q"
+max_batch_size = 100
 
 # ---- Durable Object (per-device coordinator) ----
 [[durable_objects.bindings]]

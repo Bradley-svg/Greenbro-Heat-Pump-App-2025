@@ -8,7 +8,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import type { Env, IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO, DeviceDO } from './do';
-import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, openAlertIfNeeded, type Derived } from './alerts';
+import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
 import { generateCommissioningPDF, type CommissioningPayload } from './pdf';
 import {
   renderer,
@@ -402,6 +402,7 @@ app.post('/api/ingest/:profileId', async (c) => {
       return c.text('Forbidden', 403);
     }
 
+    const profileId = c.req.param('profileId');
     const idemKey =
       body.idempotencyKey ??
       (await (async () => {
@@ -444,116 +445,19 @@ app.post('/api/ingest/:profileId', async (c) => {
       status: telemetryStatus,
     };
 
-    const derived = computeDerived(telemetryMetrics);
-    const onlineFlag = telemetryStatus.online === false ? 0 : 1;
+    await c.env.INGEST_Q.send({ type: 'telemetry', profileId, body: telemetry });
 
-    const statusJson = Object.values(telemetryStatus ?? {}).some((v) => v !== undefined)
-      ? JSON.stringify(telemetryStatus)
-      : null;
-
-    await c.env.DB.prepare(
-      `INSERT INTO telemetry (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-    )
-      .bind(
-        telemetry.deviceId,
-        telemetry.ts,
-        JSON.stringify(telemetryMetrics),
-        derived.deltaT,
-        derived.thermalKW,
-        derived.cop,
-        derived.copQuality,
-        statusJson,
-      )
-      .run();
-
-    await c.env.DB.prepare(
-      `INSERT INTO latest_state
-        (device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW,
-         deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-       ON CONFLICT(device_id) DO UPDATE SET
-         ts = excluded.ts,
-         supplyC = excluded.supplyC,
-         returnC = excluded.returnC,
-         tankC = excluded.tankC,
-         ambientC = excluded.ambientC,
-         flowLps = excluded.flowLps,
-         compCurrentA = excluded.compCurrentA,
-         eevSteps = excluded.eevSteps,
-         powerKW = excluded.powerKW,
-         deltaT = excluded.deltaT,
-         thermalKW = excluded.thermalKW,
-         cop = excluded.cop,
-         cop_quality = excluded.cop_quality,
-         mode = excluded.mode,
-         defrost = excluded.defrost,
-         online = excluded.online,
-         faults_json = excluded.faults_json,
-         updated_at = datetime('now')`,
-    )
-      .bind(
-        body.deviceId,
-        body.ts,
-        telemetryMetrics.supplyC ?? null,
-        telemetryMetrics.returnC ?? null,
-        telemetryMetrics.tankC ?? null,
-        telemetryMetrics.ambientC ?? null,
-        telemetryMetrics.flowLps ?? null,
-        telemetryMetrics.compCurrentA ?? null,
-        telemetryMetrics.eevSteps ?? null,
-        telemetryMetrics.powerKW ?? null,
-        telemetryStatus.mode ?? null,
-        telemetryStatus.defrost ? 1 : 0,
-        onlineFlag,
-        derived.deltaT,
-        derived.thermalKW,
-        derived.cop,
-        derived.copQuality,
-      )
-      .run();
-
-    await c.env.DB.prepare('UPDATE devices SET last_seen_at=?, online=? WHERE device_id=?')
-      .bind(body.ts, onlineFlag, body.deviceId)
-      .run();
-
-    const latest = await c.env.DB
-      .prepare('SELECT deltaT, thermalKW, cop, cop_quality as copQuality FROM latest_state WHERE device_id=?')
-      .bind(body.deviceId)
-      .first<{ deltaT: number | null; thermalKW: number | null; cop: number | null; copQuality: string | null }>();
-
-    await evaluateTelemetryAlerts(
-      c.env,
-      telemetry,
-      latest ?? { deltaT: null, thermalKW: null, cop: null, copQuality: null },
-    );
-
-    const baseline = await c.env.DB.prepare(
-      'SELECT dt_mean, dt_std, cop_mean, cop_std FROM baselines_hourly WHERE device_id=? AND how=?',
-    )
-      .bind(body.deviceId, hourOfWeek(body.ts))
-      .first<{
-        dt_mean: number | null;
-        dt_std: number | null;
-        cop_mean: number | null;
-        cop_std: number | null;
-      }>();
-
-    if (baseline) {
-      if (derived.deltaT != null && z(derived.deltaT, baseline.dt_mean, baseline.dt_std) < -2.5) {
-        await openAlertIfNeeded(c.env, body.deviceId, 'delta_t_anomaly', 'minor', body.ts, {
-          deltaT: derived.deltaT,
-        });
-      }
-      if (derived.cop != null && z(derived.cop, baseline.cop_mean, baseline.cop_std) < -2.5) {
-        await openAlertIfNeeded(c.env, body.deviceId, 'low_cop_anomaly', 'major', body.ts, {
-          cop: derived.cop,
-        });
-      }
+    if (body.heartbeat) {
+      const rssi = toNumber(body.heartbeat.rssi);
+      await c.env.INGEST_Q.send({
+        type: 'heartbeat',
+        profileId,
+        body: { deviceId: body.deviceId, ts: body.ts, rssi },
+      });
     }
 
     status = 200;
-    return c.json({ ok: true });
+    return c.json({ ok: true, queued: true });
   } catch (error) {
     console.error('Failed to ingest telemetry', error);
     status = 500;
@@ -1039,8 +943,40 @@ app.post('/api/reports/incident', async (c) => {
     .bind(siteId)
     .all<{ device_id: string; open_count: number | null }>();
 
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - windowHours * 60 * 60 * 1000);
+  const windowStartIso = windowStart.toISOString();
+  const windowEndIso = windowEnd.toISOString();
+
+  const latestP1 = await c.env.DB.prepare(
+    `SELECT opened_at, closed_at, state
+       FROM alerts
+       WHERE type='ingest_degradation'
+       ORDER BY opened_at DESC
+       LIMIT 1`,
+  ).first<{ opened_at: string; closed_at: string | null; state: string }>();
+
+  const maintenance = await c.env.DB.prepare(
+    `SELECT site_id, device_id, start_ts, end_ts, reason
+       FROM maintenance_windows
+       WHERE (site_id = ? OR site_id IS NULL)
+         AND (device_id IS NULL OR device_id IN (SELECT device_id FROM devices WHERE site_id=?))
+         AND end_ts >= ?
+         AND start_ts <= ?
+       ORDER BY start_ts DESC
+       LIMIT 5`,
+  )
+    .bind(siteId, siteId, windowStartIso, windowEndIso)
+    .all<{
+      site_id: string | null;
+      device_id: string | null;
+      start_ts: string;
+      end_ts: string | null;
+      reason: string | null;
+    }>();
+
   const pdf = await PDFDocument.create();
-  const page = pdf.addPage([595, 842]);
+  let page = pdf.addPage([595, 842]);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   let y = 800;
   const draw = (text: string, size = 12) => {
@@ -1080,6 +1016,54 @@ app.post('/api/reports/incident', async (c) => {
   const generatedAt = new Date().toISOString();
   y -= 6;
   draw(`Generated at: ${generatedAt}`);
+
+  const normalizeIso = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.valueOf())) return null;
+    return parsed.toISOString();
+  };
+
+  if (y < 140) {
+    page = pdf.addPage([595, 842]);
+    y = 780;
+  }
+
+  y -= 6;
+  page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 0.5 });
+  y -= 12;
+
+  draw('Context timeline:', 14);
+
+  if (latestP1) {
+    const opened = normalizeIso(latestP1.opened_at) ?? latestP1.opened_at;
+    const closed = normalizeIso(latestP1.closed_at) ?? (latestP1.closed_at ? latestP1.closed_at : 'ongoing');
+    draw(`P1 ingest degradation: ${opened} → ${closed} (${latestP1.state})`);
+  } else {
+    draw('P1 ingest degradation: none recorded.');
+  }
+
+  const maintenanceRows = maintenance.results ?? [];
+  if (maintenanceRows.length === 0) {
+    draw('Maintenance windows: none overlapping reporting window.');
+  } else {
+    draw('Maintenance windows impacting window:');
+    for (const row of maintenanceRows) {
+      if (y < 60) {
+        page = pdf.addPage([595, 842]);
+        y = 780;
+      }
+      const scope = row.device_id
+        ? `Device ${row.device_id}`
+        : row.site_id
+          ? `Site ${row.site_id}`
+          : 'Global';
+      const startIso = normalizeIso(row.start_ts) ?? row.start_ts;
+      const endIso = normalizeIso(row.end_ts) ?? (row.end_ts ? row.end_ts : 'open');
+      const reason = row.reason ? ` — ${row.reason.slice(0, 80)}` : '';
+      draw(`• ${scope}: ${startIso} → ${endIso}${reason}`);
+    }
+  }
 
   const bytes = await pdf.save();
   const key = `reports/incident_${siteId}_${Date.now()}.pdf`;
@@ -1728,7 +1712,7 @@ export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: E
   await baseQueueHandler(batch, env, ctx);
 
   for (const message of batch.messages) {
-    if (message.body?.kind !== 'telemetry') continue;
+    if (message.body?.type !== 'telemetry') continue;
     const telemetry = message.body.body;
     try {
       const latest = await env.DB.prepare(

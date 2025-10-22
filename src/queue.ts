@@ -6,17 +6,19 @@ export async function handleQueueBatch(
   ctx: ExecutionContext,
 ): Promise<void> {
   for (const message of batch.messages) {
+    const started = Date.now();
     try {
       const receivedAt = new Date().toISOString();
 
-      if (message.body.kind === 'telemetry') {
+      if (message.body.type === 'telemetry') {
         const telemetry = sanitizeTelemetry(message.body.body);
         const derived = computeDerived(telemetry);
 
         await persistTelemetry(env, telemetry, derived);
         await upsertLatest(env, telemetry, derived);
         await dispatchTelemetry(env, ctx, telemetry, derived, receivedAt);
-      } else {
+        await logQueueMetric(env, '/queue/ingest', 200, Date.now() - started, telemetry.deviceId);
+      } else if (message.body.type === 'heartbeat') {
         const heartbeat = {
           deviceId: message.body.body.deviceId,
           ts: message.body.body.ts,
@@ -24,11 +26,17 @@ export async function handleQueueBatch(
         };
 
         await handleHeartbeat(env, ctx, heartbeat, receivedAt);
+        await logQueueMetric(env, '/queue/ingest', 200, Date.now() - started, heartbeat.deviceId);
+      } else {
+        await logQueueMetric(env, '/queue/ingest', 422, Date.now() - started, null);
       }
 
       message.ack();
     } catch (error) {
       console.error('Failed to process queue message', error);
+      const body = message.body;
+      const deviceId = body?.type === 'telemetry' || body?.type === 'heartbeat' ? body.body.deviceId : null;
+      await logQueueMetric(env, '/queue/ingest', 500, Date.now() - started, deviceId ?? null);
       message.retry();
     }
   }
@@ -219,4 +227,22 @@ async function handleHeartbeat(
       body: JSON.stringify({ ...heartbeat, receivedAt }),
     }),
   );
+}
+
+async function logQueueMetric(
+  env: Env,
+  route: string,
+  statusCode: number,
+  durationMs: number,
+  deviceId: string | null,
+) {
+  try {
+    await env.DB.prepare(
+      'INSERT INTO ops_metrics (ts, route, status_code, duration_ms, device_id) VALUES (?, ?, ?, ?, ?)',
+    )
+      .bind(new Date().toISOString(), route, statusCode, durationMs, deviceId)
+      .run();
+  } catch (error) {
+    console.warn('logQueueMetric failed', error);
+  }
 }

@@ -8,14 +8,20 @@ export type AccessContext = {
   clientIds?: string[];
 };
 
-let jwksCache: ReturnType<typeof createRemoteJWKSet> | null = null;
+type CachedJwks = {
+  url: string;
+  expiresAt: number;
+  set: ReturnType<typeof createRemoteJWKSet>;
+};
+
+const JWKS_CACHE_TTL_MS = 10 * 60_000;
+
+let jwksCache: CachedJwks | null = null;
 
 export async function verifyAccessJWT(env: Env, jwt: string): Promise<AccessContext> {
-  if (!jwksCache) {
-    jwksCache = createRemoteJWKSet(new URL(env.ACCESS_JWKS_URL));
-  }
+  const jwks = getCachedJwks(env);
 
-  const { payload } = await jwtVerify(jwt, jwksCache, {
+  const { payload } = await jwtVerify(jwt, jwks, {
     audience: env.ACCESS_AUD,
   });
 
@@ -23,6 +29,20 @@ export async function verifyAccessJWT(env: Env, jwt: string): Promise<AccessCont
   const clientIds = extractClientIds(payload);
 
   return { sub: String(payload.sub), email: str(payload, 'email'), roles, clientIds };
+}
+
+function getCachedJwks(env: Env): ReturnType<typeof createRemoteJWKSet> {
+  const now = Date.now();
+  if (!jwksCache || jwksCache.url !== env.ACCESS_JWKS_URL || jwksCache.expiresAt <= now) {
+    jwksCache = {
+      url: env.ACCESS_JWKS_URL,
+      expiresAt: now + JWKS_CACHE_TTL_MS,
+      set: createRemoteJWKSet(new URL(env.ACCESS_JWKS_URL)),
+    };
+  } else {
+    jwksCache.expiresAt = now + JWKS_CACHE_TTL_MS;
+  }
+  return jwksCache.set;
 }
 
 function normalizeRoles(payload: JWTPayload): Role[] {
