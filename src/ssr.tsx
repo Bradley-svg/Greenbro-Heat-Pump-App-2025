@@ -662,6 +662,45 @@ function SavedViewsControls(props: { formSelector: string }) {
   );
 }
 
+const adminEmailScript = `
+(function(){
+  const form = document.getElementById('email-form');
+  const status = document.getElementById('email-status');
+  async function load(){
+    try {
+      status.textContent = 'Loading…';
+      const res = await fetch('/api/admin/settings');
+      const rows = await res.json();
+      const map = Object.fromEntries(rows.map(function(row){ return [row.key, row.value]; }));
+      form.email_webhook_url.value = map.email_webhook_url || '';
+      form.email_from.value = map.email_from || '';
+      if(map.email_webhook_url && map.email_from){
+        status.textContent = 'Email delivery configured.';
+      } else {
+        status.textContent = 'Email delivery not configured yet.';
+      }
+    } catch (err) {
+      console.error('load email settings failed', err);
+      status.textContent = 'Failed to load email settings.';
+    }
+  }
+  form.addEventListener('submit', async function(e){
+    e.preventDefault();
+    status.textContent = 'Saving…';
+    try {
+      await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'email_webhook_url',value:form.email_webhook_url.value})});
+      await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'email_from',value:form.email_from.value})});
+      status.textContent = 'Saved!';
+    } catch (err) {
+      console.error('save email settings failed', err);
+      status.textContent = 'Failed to save settings.';
+    }
+    load();
+  });
+  load();
+})();
+`;
+
 const adminSitesScript = `
 (function(){
   const sitesBody = document.getElementById('sites-tbody');
@@ -1168,6 +1207,9 @@ export const renderer = jsxRenderer(({ children }) => {
             <a href="/admin/reports" class={isActive('/admin/reports') ? 'active' : undefined}>
               Reports
             </a>
+            <a href="/admin/email" class={isActive('/admin/email') ? 'active' : undefined}>
+              Email
+            </a>
             <a href="/admin/maintenance" class={isActive('/admin/maintenance') ? 'active' : undefined}>
               Maintenance
             </a>
@@ -1474,6 +1516,25 @@ export function DevicesPage(props: { rows: any[] }) {
         </tbody>
       </table>
       <script dangerouslySetInnerHTML={{ __html: devicesScript }} />
+    </div>
+  );
+}
+
+export function AdminEmailPage() {
+  return (
+    <div class="card">
+      <h2>Admin — Email delivery</h2>
+      <p class="card-subtle" id="email-status">Loading…</p>
+      <form id="email-form" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px">
+        <label style="flex:1 1 320px">Webhook URL
+          <input type="url" name="email_webhook_url" placeholder="https://hooks.example.com/..." required />
+        </label>
+        <label style="flex:1 1 220px">From address
+          <input type="email" name="email_from" placeholder="reports@greenbro.example" required />
+        </label>
+        <button class="btn" type="submit">Save</button>
+      </form>
+      <script dangerouslySetInnerHTML={{ __html: adminEmailScript }} />
     </div>
   );
 }

@@ -33,6 +33,35 @@ export type ClientMonthlyReportPayload = {
   recipients?: string | null;
 };
 
+export type IncidentReportV2Payload = {
+  siteId: string;
+  siteName?: string | null;
+  region?: string | null;
+  windowLabel: string;
+  windowStart: string;
+  windowEnd: string;
+  generatedAt: string;
+  summary: {
+    severities: Array<{ severity: string; count: number }>;
+    topDevices: Array<{ deviceId: string; openCount: number }>;
+  };
+  incidents: Array<{
+    incidentId: string;
+    startedAt: string;
+    resolvedAt: string | null;
+    lastAlertAt: string | null;
+    stateCounts: Record<string, number>;
+    alertBreakdown: Array<{ type: string; severity: string; count: number }>;
+  }>;
+  maintenance: Array<{
+    siteId?: string | null;
+    deviceId?: string | null;
+    startTs: string;
+    endTs: string | null;
+    reason?: string | null;
+  }>;
+};
+
 export async function generateCommissioningPDF(
   env: Env,
   payload: CommissioningPayload,
@@ -252,6 +281,138 @@ export async function generateClientMonthlyReport(
   const bytes = await pdfDoc.save();
   const key = `client-reports/${payload.clientId}/${payload.monthKey}.pdf`;
 
+  await env.REPORTS.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
+
+  return { key, url: `/api/reports/${encodeURIComponent(key)}` };
+}
+
+export async function generateIncidentReportV2(
+  env: Env,
+  payload: IncidentReportV2Payload,
+): Promise<{ key: string; url: string }> {
+  const pdfDoc = await PDFDocument.create();
+  let page = pdfDoc.addPage([595, 842]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+  const ensureSpace = (minY: number) => {
+    if (payload == null) {
+      return;
+    }
+    if (minY < 0) {
+      return;
+    }
+    if (y < minY) {
+      page = pdfDoc.addPage([595, 842]);
+      y = 780;
+    }
+  };
+
+  const drawText = (text: string, x = 40, size = 12, lineGap = 6) => {
+    if (y < 60) {
+      page = pdfDoc.addPage([595, 842]);
+      y = 780;
+    }
+    page.drawText(text, { x, y, size, font });
+    y -= size + lineGap;
+  };
+
+  const drawSectionTitle = (title: string) => {
+    ensureSpace(120);
+    drawText(title, 40, 14);
+  };
+
+  const summarizeStateCounts = (stateCounts: Record<string, number>) => {
+    const entries = Object.entries(stateCounts).filter(([, value]) => Number.isFinite(value) && value > 0);
+    if (entries.length === 0) {
+      return 'States: none recorded';
+    }
+    return `States: ${entries
+      .map(([state, value]) => `${state}: ${value}`)
+      .join(', ')}`;
+  };
+
+  let y = 800;
+  const siteLabel = payload.siteName ? `${payload.siteName} (${payload.siteId})` : payload.siteId;
+  drawText('GreenBro Incident Report', 40, 18);
+  drawText(`Site: ${siteLabel}`);
+  drawText(`Region: ${payload.region ?? '—'}`);
+  drawText(`Window: ${payload.windowLabel}`);
+  drawText(`Range: ${payload.windowStart} → ${payload.windowEnd}`);
+  y -= 6;
+  page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 1 });
+  y -= 12;
+
+  drawSectionTitle('Alert snapshot');
+  if (payload.summary.severities.length === 0) {
+    drawText('• No open alerts by severity in this window.');
+  } else {
+    payload.summary.severities.forEach((row) => {
+      drawText(`• ${row.severity}: ${row.count}`);
+    });
+  }
+
+  y -= 2;
+  if (payload.summary.topDevices.length > 0) {
+    drawText('Top devices by open alerts:', 40, 12);
+    payload.summary.topDevices.forEach((device) => {
+      drawText(`• ${device.deviceId}: ${device.openCount} open`);
+    });
+  } else {
+    drawText('No devices with open alerts in this window.');
+  }
+
+  y -= 4;
+  page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 0.5 });
+  y -= 12;
+
+  drawSectionTitle('Incidents during window');
+  if (payload.incidents.length === 0) {
+    drawText('No incidents intersecting this window.');
+  } else {
+    payload.incidents.forEach((incident) => {
+      ensureSpace(100);
+      drawText(`Incident ${incident.incidentId}`, 40, 13);
+      drawText(`• Started: ${incident.startedAt}`);
+      drawText(`• Last alert: ${incident.lastAlertAt ?? '—'}`);
+      drawText(`• Resolved: ${incident.resolvedAt ?? 'Open'}`);
+      drawText(`• ${summarizeStateCounts(incident.stateCounts)}`);
+      if (incident.alertBreakdown.length > 0) {
+        drawText('• Alerts:', 40, 12);
+        incident.alertBreakdown.forEach((row) => {
+          drawText(`    - ${row.type} (${row.severity}): ${row.count}`);
+        });
+      }
+      y -= 4;
+    });
+  }
+
+  y -= 4;
+  page.drawLine({ start: { x: 40, y }, end: { x: 555, y }, thickness: 0.5 });
+  y -= 12;
+
+  drawSectionTitle('Maintenance windows');
+  if (payload.maintenance.length === 0) {
+    drawText('No maintenance windows recorded.');
+  } else {
+    payload.maintenance.forEach((row) => {
+      ensureSpace(80);
+      const scope = row.deviceId
+        ? `Device ${row.deviceId}`
+        : row.siteId
+          ? `Site ${row.siteId}`
+          : 'Global';
+      drawText(`• ${scope}`);
+      drawText(`  Window: ${row.startTs} → ${row.endTs ?? 'ongoing'}`);
+      drawText(`  Reason: ${row.reason?.trim() ? row.reason : '—'}`);
+      y -= 4;
+    });
+  }
+
+  y -= 8;
+  drawText(`Generated at: ${payload.generatedAt}`, 40, 10, 4);
+
+  const bytes = await pdfDoc.save();
+  const key = `reports/incident_${payload.siteId}_${Date.now()}_v2.pdf`;
   await env.REPORTS.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
 
   return { key, url: `/api/reports/${encodeURIComponent(key)}` };

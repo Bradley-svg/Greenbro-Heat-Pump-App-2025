@@ -12,8 +12,10 @@ import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from '
 import {
   generateCommissioningPDF,
   generateClientMonthlyReport,
+  generateIncidentReportV2,
   type ClientMonthlyReportPayload,
   type CommissioningPayload,
+  type IncidentReportV2Payload,
 } from './pdf';
 import {
   renderer,
@@ -21,6 +23,7 @@ import {
   AlertsPage,
   DevicesPage,
   AdminSitesPage,
+  AdminEmailPage,
   AdminMaintenancePage,
   AdminSettingsPage,
   AdminReportsPage,
@@ -50,6 +53,65 @@ async function setSetting(DB: D1Database, key: string, value: string) {
   ).bind(key, value).run();
 }
 
+function dedupeRecipients(values: string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (!seen.has(key)) {
+      seen.set(key, trimmed);
+    }
+  }
+  return Array.from(seen.values());
+}
+
+function parseRecipientList(value?: string | null): string[] {
+  if (!value) {
+    return [];
+  }
+  const parts = value.split(/[,;\n]+/);
+  return dedupeRecipients(parts);
+}
+
+type EmailSettings = { webhook: string | null; from: string | null };
+
+async function loadEmailSettings(DB: D1Database): Promise<EmailSettings> {
+  const [webhook, from] = await Promise.all([
+    getSetting(DB, 'email_webhook_url'),
+    getSetting(DB, 'email_from'),
+  ]);
+  return { webhook, from };
+}
+
+async function sendEmail(
+  env: Env,
+  to: string[] | string,
+  subject: string,
+  text: string,
+  settings?: EmailSettings,
+): Promise<boolean> {
+  const recipients = Array.isArray(to) ? dedupeRecipients(to) : parseRecipientList(to);
+  if (recipients.length === 0) {
+    return false;
+  }
+  const cfg = settings ?? (await loadEmailSettings(env.DB));
+  if (!cfg.webhook || !cfg.from) {
+    return false;
+  }
+  try {
+    await fetch(cfg.webhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: cfg.from, to: recipients, subject, text }),
+    });
+    return true;
+  } catch (error) {
+    console.error('sendEmail failed', error);
+    return false;
+  }
+}
+
 async function notifyOps(env: Env, message: string) {
   const url = await getSetting(env.DB, 'ops_webhook_url');
   if (!url) return;
@@ -60,6 +122,47 @@ async function notifyOps(env: Env, message: string) {
       body: JSON.stringify({ text: message }),
     });
   } catch {}
+}
+
+async function collectSiteRecipients(DB: D1Database, siteId: string) {
+  const rows = await DB.prepare(
+    `SELECT c.client_id, c.name, cs.report_recipients
+       FROM site_clients sc
+       JOIN clients c ON c.client_id = sc.client_id
+       LEFT JOIN client_slos cs ON cs.client_id = c.client_id
+      WHERE sc.site_id = ?`,
+  )
+    .bind(siteId)
+    .all<{ client_id: string; name: string | null; report_recipients: string | null }>();
+
+  const clients: Array<{ id: string; name: string | null }> = [];
+  let recipients: string[] = [];
+  for (const row of rows.results ?? []) {
+    clients.push({ id: row.client_id, name: row.name ?? null });
+    if (row.report_recipients) {
+      recipients = recipients.concat(parseRecipientList(row.report_recipients));
+    }
+  }
+  return { clients, recipients: dedupeRecipients(recipients) };
+}
+
+function formatWindowLabel(hours: number): string {
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return 'Custom window';
+  }
+  if (hours % 24 === 0) {
+    const days = hours / 24;
+    if (days === 1) {
+      return 'Last 24h';
+    }
+    return `Last ${days} days`;
+  }
+  const rounded = Math.round(hours * 10) / 10;
+  return `Last ${rounded} hours`;
+}
+
+function keyToPath(key: string): string {
+  return `/${key}`;
 }
 
 type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number };
@@ -1289,6 +1392,202 @@ app.post('/api/reports/incident', async (c) => {
   });
 });
 
+app.post('/api/reports/incident/v2', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  const url = new URL(c.req.url);
+  const siteId = url.searchParams.get('siteId');
+  const hoursParam = url.searchParams.get('hours');
+  if (!siteId) {
+    return c.text('siteId required', 400);
+  }
+
+  const hoursRaw = Number(hoursParam ?? '24');
+  const windowHours = Number.isFinite(hoursRaw) && hoursRaw > 0 ? hoursRaw : 24;
+  const windowEnd = new Date();
+  const windowStart = new Date(windowEnd.getTime() - windowHours * 60 * 60 * 1000);
+  const windowStartIso = windowStart.toISOString();
+  const windowEndIso = windowEnd.toISOString();
+
+  const site = await c.env.DB.prepare('SELECT site_id, name, region FROM sites WHERE site_id=?')
+    .bind(siteId)
+    .first<{ site_id: string; name: string | null; region: string | null }>();
+
+  const severityRows = await c.env.DB.prepare(
+    `SELECT severity, COUNT(*) as n
+       FROM alerts
+      WHERE device_id IN (SELECT device_id FROM devices WHERE site_id=?)
+        AND state IN ('open','ack')
+      GROUP BY severity`,
+  )
+    .bind(siteId)
+    .all<{ severity: string; n: number }>();
+
+  const top = await c.env.DB.prepare(
+    `SELECT d.device_id, SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END) as open_count
+       FROM devices d LEFT JOIN alerts a ON a.device_id = d.device_id
+      WHERE d.site_id=?
+      GROUP BY d.device_id
+      ORDER BY open_count DESC
+      LIMIT 5`,
+  )
+    .bind(siteId)
+    .all<{ device_id: string; open_count: number | null }>();
+
+  const incidentsRows = await c.env.DB.prepare(
+    `SELECT incident_id, site_id, started_at, last_alert_at, resolved_at
+       FROM incidents
+      WHERE site_id=?
+        AND started_at <= ?
+        AND (resolved_at IS NULL OR resolved_at >= ?)
+      ORDER BY started_at DESC
+      LIMIT 50`,
+  )
+    .bind(siteId, windowEndIso, windowStartIso)
+    .all<{
+      incident_id: string;
+      site_id: string;
+      started_at: string;
+      last_alert_at: string | null;
+      resolved_at: string | null;
+    }>();
+
+  const incidents = incidentsRows.results ?? [];
+  let incidentMeta = new Map<
+    string,
+    {
+      states: Record<string, number>;
+      alerts: Map<string, { type: string; severity: string; count: number }>;
+    }
+  >();
+
+  if (incidents.length > 0) {
+    const ids = incidents.map((row) => row.incident_id);
+    const placeholders = ids.map(() => '?').join(',');
+    const metaRows = await c.env.DB.prepare(
+      `SELECT ia.incident_id, a.type, a.severity, a.state, COUNT(*) as count
+         FROM incident_alerts ia
+         JOIN alerts a ON a.alert_id = ia.alert_id
+        WHERE ia.incident_id IN (${placeholders})
+        GROUP BY ia.incident_id, a.type, a.severity, a.state`,
+    )
+      .bind(...ids)
+      .all<{ incident_id: string; type: string; severity: string; state: string | null; count: number }>();
+
+    incidentMeta = new Map();
+    for (const row of metaRows.results ?? []) {
+      if (!incidentMeta.has(row.incident_id)) {
+        incidentMeta.set(row.incident_id, { states: {}, alerts: new Map() });
+      }
+      const bucket = incidentMeta.get(row.incident_id)!;
+      if (row.state) {
+        bucket.states[row.state] = (bucket.states[row.state] ?? 0) + row.count;
+      }
+      const key = `${row.type}:${row.severity}`;
+      if (!bucket.alerts.has(key)) {
+        bucket.alerts.set(key, { type: row.type, severity: row.severity, count: row.count });
+      } else {
+        const existing = bucket.alerts.get(key)!;
+        existing.count += row.count;
+      }
+    }
+  }
+
+  const maintenanceRows = await c.env.DB.prepare(
+    `SELECT site_id, device_id, start_ts, end_ts, reason
+       FROM maintenance_windows
+      WHERE (site_id = ? OR site_id IS NULL)
+        AND (device_id IS NULL OR device_id IN (SELECT device_id FROM devices WHERE site_id=?))
+        AND end_ts >= ?
+        AND start_ts <= ?
+      ORDER BY start_ts DESC
+      LIMIT 20`,
+  )
+    .bind(siteId, siteId, windowStartIso, windowEndIso)
+    .all<{
+      site_id: string | null;
+      device_id: string | null;
+      start_ts: string;
+      end_ts: string | null;
+      reason: string | null;
+    }>();
+
+  const payload: IncidentReportV2Payload = {
+    siteId,
+    siteName: site?.name ?? null,
+    region: site?.region ?? null,
+    windowLabel: formatWindowLabel(windowHours),
+    windowStart: windowStartIso,
+    windowEnd: windowEndIso,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      severities: (severityRows.results ?? []).map((row) => ({ severity: row.severity, count: row.n })),
+      topDevices: (top.results ?? []).map((row) => ({ deviceId: row.device_id, openCount: row.open_count ?? 0 })),
+    },
+    incidents: incidents.map((row) => {
+      const bucket = incidentMeta.get(row.incident_id);
+      const alertBreakdown = bucket
+        ? Array.from(bucket.alerts.values()).sort((a, b) => b.count - a.count)
+        : [];
+      return {
+        incidentId: row.incident_id,
+        startedAt: row.started_at,
+        lastAlertAt: row.last_alert_at ?? null,
+        resolvedAt: row.resolved_at ?? null,
+        stateCounts: bucket?.states ?? {},
+        alertBreakdown,
+      };
+    }),
+    maintenance: (maintenanceRows.results ?? []).map((row) => ({
+      siteId: row.site_id,
+      deviceId: row.device_id,
+      startTs: row.start_ts,
+      endTs: row.end_ts,
+      reason: row.reason ?? null,
+    })),
+  };
+
+  const pdf = await generateIncidentReportV2(c.env, payload);
+  const path = keyToPath(pdf.key);
+
+  const { clients, recipients } = await collectSiteRecipients(c.env.DB, siteId);
+  let emailed = false;
+  if (recipients.length > 0) {
+    const emailSettings = await loadEmailSettings(c.env.DB);
+    const subject = `Incident report — ${payload.siteName ?? payload.siteId}`;
+    const lines = [
+      `Incident report for ${payload.siteName ?? payload.siteId}`,
+      `Window: ${payload.windowStart} → ${payload.windowEnd}`,
+      payload.incidents.length === 0
+        ? 'Incidents: none recorded in this window'
+        : `Incidents: ${payload.incidents.length}`,
+      payload.maintenance.length === 0
+        ? 'Maintenance windows: none'
+        : `Maintenance windows: ${payload.maintenance.length}`,
+      `Download: ${pdf.url}`,
+      `R2 path: ${path}`,
+    ];
+    emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), emailSettings);
+  }
+
+  return c.json({
+    ok: true,
+    key: pdf.key,
+    path,
+    url: pdf.url,
+    window: { start: payload.windowStart, end: payload.windowEnd, hours: windowHours },
+    incidents: payload.incidents.length,
+    maintenance: payload.maintenance.length,
+    emailed,
+    recipients,
+    clients,
+  });
+});
+
 app.post('/api/reports/client-monthly', async (c) => {
   const auth = c.get('auth');
   if (!auth) {
@@ -1331,6 +1630,67 @@ app.post('/api/reports/client-monthly', async (c) => {
   });
 });
 
+app.post('/api/reports/client-monthly/v2', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const clientId = url.searchParams.get('client_id');
+  const monthParam = url.searchParams.get('month');
+  if (!clientId || !monthParam) {
+    return c.text('client_id and month required', 400);
+  }
+
+  let prepared;
+  try {
+    prepared = await buildClientMonthlyReportPayload(c.env, clientId, monthParam, { version: 'v2' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to prepare report';
+    if (message === 'Client not found') {
+      return c.text(message, 404);
+    }
+    return c.text(message, 400);
+  }
+
+  const { payload, client } = prepared;
+
+  const pdf = await generateClientMonthlyReport(c.env, payload);
+  const recipients = parseRecipientList(payload.recipients ?? null);
+  let emailed = false;
+  if (recipients.length > 0) {
+    const settings = await loadEmailSettings(c.env.DB);
+    const subject = `Monthly report — ${payload.monthLabel} (${client.name})`;
+    const lines = [
+      `Client: ${client.name} (${client.id})`,
+      `Period: ${payload.periodStart} → ${payload.periodEnd}`,
+      `Sites: ${payload.siteCount} · Devices: ${payload.deviceCount}`,
+      payload.metrics.uptimePct == null
+        ? 'Uptime: n/a'
+        : `Uptime: ${(payload.metrics.uptimePct * 100).toFixed(2)}%`,
+      `Download: ${pdf.url}`,
+      `R2 path: ${keyToPath(pdf.key)}`,
+    ];
+    emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), settings);
+  }
+
+  return c.json({
+    ok: true,
+    key: pdf.key,
+    path: keyToPath(pdf.key),
+    url: pdf.url,
+    client,
+    month: monthParam,
+    metrics: payload.metrics,
+    targets: payload.targets,
+    siteCount: payload.siteCount,
+    deviceCount: payload.deviceCount,
+    recipients,
+    emailed,
+  });
+});
+
 app.get('/api/reports/client-monthly', async (c) => {
   const auth = c.get('auth');
   if (!auth) {
@@ -1354,6 +1714,74 @@ app.get('/api/reports/client-monthly', async (c) => {
     url: `/api/reports/${obj.key}`,
   }));
   return c.json(out);
+});
+
+app.post('/api/ops/monthly-run', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  let body: { month?: string } | null = null;
+  try {
+    body = await c.req.json<{ month?: string }>();
+  } catch {}
+
+  const month = body?.month ?? previousMonthKey();
+  if (!parseMonthRange(month)) {
+    return c.text('Invalid month format', 400);
+  }
+
+  const rows = await c.env.DB.prepare('SELECT client_id FROM client_slos').all<{ client_id: string }>();
+  const emailSettings = await loadEmailSettings(c.env.DB);
+  const results: Array<{
+    clientId: string;
+    ok: boolean;
+    key?: string;
+    path?: string;
+    url?: string;
+    recipients?: string[];
+    emailed?: boolean;
+    error?: string;
+  }> = [];
+
+  for (const row of rows.results ?? []) {
+    try {
+      const { payload, client } = await buildClientMonthlyReportPayload(c.env, row.client_id, month, { version: 'v2' });
+      const pdf = await generateClientMonthlyReport(c.env, payload);
+      const recipients = parseRecipientList(payload.recipients ?? null);
+      let emailed = false;
+      if (recipients.length > 0) {
+        const subject = `Monthly report — ${payload.monthLabel} (${client.name})`;
+        const lines = [
+          `Client: ${client.name} (${client.id})`,
+          `Period: ${payload.periodStart} → ${payload.periodEnd}`,
+          `Sites: ${payload.siteCount} · Devices: ${payload.deviceCount}`,
+          payload.metrics.uptimePct == null
+            ? 'Uptime: n/a'
+            : `Uptime: ${(payload.metrics.uptimePct * 100).toFixed(2)}%`,
+          `Download: ${pdf.url}`,
+          `R2 path: ${keyToPath(pdf.key)}`,
+        ];
+        emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), emailSettings);
+      }
+      results.push({
+        clientId: client.id,
+        ok: true,
+        key: pdf.key,
+        path: keyToPath(pdf.key),
+        url: pdf.url,
+        recipients,
+        emailed,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to generate report';
+      results.push({ clientId: row.client_id, ok: false, error: message });
+    }
+  }
+
+  return c.json({ ok: true, month, total: results.length, results });
 });
 
 app.get('/api/reports/*', async (c) => {
@@ -1509,6 +1937,19 @@ app.get('/admin/sites', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   return c.render(<AdminSitesPage />);
+});
+
+app.get('/admin/email', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  return c.render(<AdminEmailPage />);
 });
 
 app.get('/admin/maintenance', async (c) => {
@@ -1963,6 +2404,113 @@ function previousMonthKey(reference: Date = new Date()): string {
   return formatMonthKey(base);
 }
 
+async function computeTimeWeightedUptime(
+  DB: D1Database,
+  deviceIds: string[],
+  startIso: string,
+  endIso: string,
+  freshnessMinutes = 5,
+): Promise<number | null> {
+  if (deviceIds.length === 0) {
+    return null;
+  }
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  const startMs = start.getTime();
+  const endMs = end.getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return null;
+  }
+
+  const placeholders = deviceIds.map(() => '?').join(',');
+  const heartbeats = await DB.prepare(
+    `SELECT device_id, ts
+       FROM heartbeat
+      WHERE device_id IN (${placeholders})
+        AND ts >= ?
+        AND ts <= ?
+      ORDER BY device_id, ts`,
+  )
+    .bind(...deviceIds, startIso, endIso)
+    .all<{ device_id: string; ts: string }>()
+    .catch(() => ({ results: [] }));
+
+  const previous = await DB.prepare(
+    `SELECT device_id, MAX(ts) as ts
+       FROM heartbeat
+      WHERE device_id IN (${placeholders})
+        AND ts < ?
+      GROUP BY device_id`,
+  )
+    .bind(...deviceIds, startIso)
+    .all<{ device_id: string; ts: string | null }>()
+    .catch(() => ({ results: [] }));
+
+  const perDevice = new Map<string, number[]>();
+  for (const id of deviceIds) {
+    perDevice.set(id, []);
+  }
+
+  for (const row of heartbeats.results ?? []) {
+    const bucket = perDevice.get(row.device_id);
+    if (!bucket) continue;
+    const ts = new Date(row.ts).getTime();
+    if (!Number.isFinite(ts)) continue;
+    bucket.push(ts);
+  }
+
+  for (const row of previous.results ?? []) {
+    if (!row.ts) continue;
+    const bucket = perDevice.get(row.device_id);
+    if (!bucket) continue;
+    const ts = new Date(row.ts).getTime();
+    if (!Number.isFinite(ts)) continue;
+    bucket.push(ts);
+  }
+
+  const thresholdMs = freshnessMinutes * 60 * 1000;
+  const windowMs = endMs - startMs;
+  let totalOnlineMs = 0;
+
+  for (const id of deviceIds) {
+    const beats = perDevice.get(id) ?? [];
+    if (beats.length === 0) {
+      continue;
+    }
+    beats.sort((a, b) => a - b);
+    const intervals: Array<{ start: number; end: number }> = [];
+    for (const beatMs of beats) {
+      const intervalStart = Math.max(beatMs, startMs);
+      const intervalEnd = Math.min(beatMs + thresholdMs, endMs);
+      if (intervalEnd <= intervalStart) {
+        continue;
+      }
+      intervals.push({ start: intervalStart, end: intervalEnd });
+    }
+    if (intervals.length === 0) {
+      continue;
+    }
+    intervals.sort((a, b) => a.start - b.start);
+    let current = intervals[0];
+    for (let i = 1; i < intervals.length; i++) {
+      const next = intervals[i];
+      if (next.start <= current.end) {
+        current.end = Math.max(current.end, next.end);
+      } else {
+        totalOnlineMs += current.end - current.start;
+        current = { ...next };
+      }
+    }
+    totalOnlineMs += current.end - current.start;
+  }
+
+  const denominator = windowMs * deviceIds.length;
+  if (denominator <= 0) {
+    return null;
+  }
+  return totalOnlineMs / denominator;
+}
+
 type ClientMonthlyMetrics = {
   uptimePct: number | null;
   ingestSuccessPct: number | null;
@@ -1970,7 +2518,7 @@ type ClientMonthlyMetrics = {
   alerts: Array<{ type: string; severity: string; count: number }>;
 };
 
-async function computeClientMonthlyMetrics(
+async function computeClientMonthlyMetricsV1(
   DB: D1Database,
   clientId: string,
   deviceIds: string[],
@@ -2038,10 +2586,23 @@ async function computeClientMonthlyMetrics(
   return { uptimePct, ingestSuccessPct, avgCop, alerts };
 }
 
+async function computeClientMonthlyMetricsV2(
+  DB: D1Database,
+  clientId: string,
+  deviceIds: string[],
+  startIso: string,
+  endIso: string,
+): Promise<ClientMonthlyMetrics> {
+  const base = await computeClientMonthlyMetricsV1(DB, clientId, deviceIds, startIso, endIso);
+  const weighted = await computeTimeWeightedUptime(DB, deviceIds, startIso, endIso, 5);
+  return { ...base, uptimePct: weighted ?? base.uptimePct };
+}
+
 async function buildClientMonthlyReportPayload(
   env: Env,
   clientId: string,
   monthKey: string,
+  options?: { version?: 'v1' | 'v2' },
 ): Promise<{ payload: ClientMonthlyReportPayload; client: { id: string; name: string } }> {
   const range = parseMonthRange(monthKey);
   if (!range) {
@@ -2075,7 +2636,10 @@ async function buildClientMonthlyReportPayload(
   const startIso = range.start.toISOString();
   const endIso = range.end.toISOString();
 
-  const metrics = await computeClientMonthlyMetrics(env.DB, clientId, deviceIds, startIso, endIso);
+  const metrics =
+    options?.version === 'v2'
+      ? await computeClientMonthlyMetricsV2(env.DB, clientId, deviceIds, startIso, endIso)
+      : await computeClientMonthlyMetricsV1(env.DB, clientId, deviceIds, startIso, endIso);
 
   const slo = await env.DB.prepare(
     'SELECT uptime_target, ingest_target, cop_target, report_recipients FROM client_slos WHERE client_id=?',
