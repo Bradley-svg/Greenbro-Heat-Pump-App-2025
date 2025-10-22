@@ -1018,6 +1018,145 @@ const adminReportsScript = `
 ${readOnlySnippet}
 `;
 
+const reportsOutboxScript = `
+(function(){
+  const form = document.getElementById('reports-outbox-filters');
+  const tbody = document.getElementById('reports-outbox-tbody');
+  const statusEl = document.getElementById('reports-outbox-status');
+  const dataEl = document.getElementById('reports-outbox-data');
+
+  function esc(value){
+    return String(value ?? '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  function render(rows){
+    if(!tbody) return;
+    if(!Array.isArray(rows) || rows.length === 0){
+      tbody.innerHTML = '<tr><td colspan="9" class="table-empty">No reports found.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(function(row){
+      const recipients = Array.isArray(row.recipients) && row.recipients.length
+        ? row.recipients.map(esc).join('<br/>')
+        : '—';
+      const path = row.path ? '<code>' + esc(row.path) + '</code>' : '—';
+      const subject = row.subject ? esc(row.subject) : '—';
+      const action = row.path
+        ? '<button class="btn" type="button" data-action="send-report" data-type="' + esc(row.type) + '" data-client="' + (row.client_id ? esc(row.client_id) : '') + '" data-site="' + (row.site_id ? esc(row.site_id) : '') + '" data-path="' + esc(row.path) + '" data-subject="' + (row.subject ? esc(row.subject) : '') + '">Email now</button>'
+        : '—';
+      return '<tr>' +
+        '<td>' + esc(row.created_at) + '</td>' +
+        '<td>' + esc(row.type) + '</td>' +
+        '<td>' + esc(row.status) + '</td>' +
+        '<td>' + (row.client_id ? esc(row.client_id) : '—') + '</td>' +
+        '<td>' + (row.site_id ? esc(row.site_id) : '—') + '</td>' +
+        '<td>' + subject + '</td>' +
+        '<td>' + recipients + '</td>' +
+        '<td>' + path + '</td>' +
+        '<td>' + action + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  let initial = null;
+  if(dataEl){
+    try {
+      initial = JSON.parse(dataEl.textContent || 'null');
+    } catch (err) {
+      console.warn('reports outbox initial parse failed', err);
+    }
+  }
+
+  if(initial && Array.isArray(initial.rows)){
+    render(initial.rows);
+  }
+
+  async function load(){
+    if(!form) return;
+    if(statusEl) statusEl.textContent = 'Refreshing…';
+    try {
+      const params = new URLSearchParams(new FormData(form));
+      const query = params.toString();
+      const res = await fetch('/api/reports/history' + (query ? '?' + query : ''));
+      if(!res.ok) throw new Error('http');
+      const rows = await res.json();
+      render(rows);
+      if(statusEl) statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch (err) {
+      console.warn('reports outbox refresh failed', err);
+      if(statusEl) statusEl.textContent = 'Failed to refresh';
+    }
+  }
+
+  if(form){
+    form.addEventListener('submit', function(e){ e.preventDefault(); load(); });
+    form.addEventListener('change', function(){ load(); });
+  }
+
+  if(tbody){
+    tbody.addEventListener('click', function(event){
+      const target = event.target;
+      if(!target) return;
+      const button = target.closest('button[data-action="send-report"]');
+      if(!button) return;
+      send(button);
+    });
+  }
+
+  async function send(button){
+    const type = button.getAttribute('data-type') || '';
+    const path = button.getAttribute('data-path') || '';
+    if(!type || !path){
+      return;
+    }
+    const payload = { type: type, path: path };
+    const clientId = button.getAttribute('data-client') || '';
+    const siteId = button.getAttribute('data-site') || '';
+    const subject = button.getAttribute('data-subject') || '';
+    if(clientId) payload.client_id = clientId;
+    if(siteId) payload.site_id = siteId;
+    if(subject) payload.subject = subject;
+    if(statusEl) statusEl.textContent = 'Sending email…';
+    const originalText = button.textContent;
+    button.textContent = 'Sending…';
+    button.disabled = true;
+    try {
+      const res = await fetch('/api/reports/email-existing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if(!res.ok){
+        const text = await res.text().catch(function(){ return ''; });
+        throw new Error(text || 'http');
+      }
+      if(statusEl) statusEl.textContent = 'Email sent ' + new Date().toLocaleTimeString();
+      load();
+    } catch (err) {
+      console.warn('reports outbox send failed', err);
+      if(statusEl){
+        const message = err && err.message ? String(err.message) : '';
+        statusEl.textContent = message && message !== 'http' ? 'Failed to send email: ' + message : 'Failed to send email';
+      }
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+
+  setInterval(load, 15000);
+  if(!initial || !Array.isArray(initial.rows)){
+    load();
+  }
+})();
+${readOnlySnippet}
+`;
+
 const reportHistoryScript = `
 (function(){
   const form = document.getElementById('report-history-filters');
@@ -1114,6 +1253,10 @@ const clientSloScript = `
   const recipientsEl = document.getElementById('client-slo-recipients');
   const metaEl = document.getElementById('client-slo-meta');
   const severityList = document.getElementById('client-slo-alerts-list');
+  const heatmapGrid = document.getElementById('client-slo-heatmap');
+  const heatmapEmpty = document.getElementById('client-slo-heatmap-empty');
+  const heatmapStatus = document.getElementById('client-slo-heatmap-status');
+  const heatmapTitle = document.getElementById('client-slo-heatmap-title');
 
   const valueEls = {
     uptime: document.querySelector('[data-slo-value="uptime"]'),
@@ -1130,6 +1273,7 @@ const clientSloScript = `
     ingest: document.querySelector('[data-slo-chip="ingest"]'),
     cop: document.querySelector('[data-slo-chip="cop"]'),
   };
+  let heatmapRequestId = 0;
 
   function esc(value){
     return String(value ?? '')
@@ -1154,6 +1298,89 @@ const clientSloScript = `
     if(status === 'pass'){ el.classList.add('pass'); el.textContent = 'Met'; }
     else if(status === 'fail'){ el.classList.add('fail'); el.textContent = 'Miss'; }
     else { el.classList.add('idle'); el.textContent = '—'; }
+  }
+
+  function heatColor(pct){
+    const value = Math.max(0, Math.min(1, pct));
+    const hue = 120 * value;
+    return 'hsl(' + hue.toFixed(0) + ', 70%, 45%)';
+  }
+
+  function renderHeatmap(data){
+    if(!heatmapGrid) return;
+    if(!data || !Array.isArray(data.series) || data.series.length === 0){
+      heatmapGrid.innerHTML = '';
+      if(heatmapEmpty){
+        heatmapEmpty.style.display = '';
+        heatmapEmpty.textContent = 'No uptime data yet.';
+      }
+      return;
+    }
+    const first = data.series[0];
+    let offset = 0;
+    if(first && first.date){
+      const dt = new Date(first.date + 'T00:00:00Z');
+      if(!Number.isNaN(dt.valueOf())){
+        offset = dt.getUTCDay();
+      }
+    }
+    const cells = [];
+    for(let i=0;i<offset;i++){
+      cells.push('<div class="slo-heatmap-cell" data-empty="true"></div>');
+    }
+    data.series.forEach(function(entry){
+      const date = entry && entry.date ? entry.date : '';
+      const dt = date ? new Date(date + 'T00:00:00Z') : null;
+      const day = dt && !Number.isNaN(dt.valueOf()) ? dt.getUTCDate() : '';
+      const pct = typeof entry.uptimePct === 'number' && Number.isFinite(entry.uptimePct)
+        ? Math.max(0, Math.min(1, entry.uptimePct))
+        : null;
+      const color = pct == null ? '#1a2332' : heatColor(pct);
+      const tooltip = pct == null ? 'No data' : (pct * 100).toFixed(1) + '%';
+      cells.push('<div class="slo-heatmap-cell" style="background:' + color + '" title="' + esc(date + ': ' + tooltip) + '"><span>' + day + '</span></div>');
+    });
+    heatmapGrid.innerHTML = cells.join('');
+    if(heatmapEmpty){
+      heatmapEmpty.style.display = 'none';
+    }
+  }
+
+  async function loadHeatmap(monthKey){
+    if(!heatmapGrid || !form) return;
+    const clientId = form.getAttribute('data-client');
+    if(!clientId) return;
+    if(!monthKey){
+      if(heatmapEmpty){
+        heatmapEmpty.style.display = '';
+        heatmapEmpty.textContent = 'Select a month to view uptime.';
+      }
+      return;
+    }
+    const requestId = ++heatmapRequestId;
+    if(heatmapStatus) heatmapStatus.textContent = 'Loading…';
+    if(heatmapGrid){
+      heatmapGrid.innerHTML = '';
+    }
+    if(heatmapEmpty){
+      heatmapEmpty.style.display = '';
+      heatmapEmpty.textContent = 'Loading…';
+    }
+    try {
+      const res = await fetch('/api/clients/' + encodeURIComponent(clientId) + '/uptime-daily?month=' + encodeURIComponent(monthKey));
+      if(!res.ok) throw new Error('http');
+      const payload = await res.json();
+      if(requestId !== heatmapRequestId) return;
+      renderHeatmap(payload);
+      if(heatmapStatus) heatmapStatus.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    } catch (err) {
+      console.warn('client slo heatmap load failed', err);
+      if(requestId !== heatmapRequestId) return;
+      if(heatmapStatus) heatmapStatus.textContent = 'Failed to load';
+      if(heatmapEmpty){
+        heatmapEmpty.style.display = '';
+        heatmapEmpty.textContent = 'Failed to load uptime data.';
+      }
+    }
   }
 
   function renderSparkline(series){
@@ -1205,6 +1432,10 @@ const clientSloScript = `
     }
     if(metaEl){
       metaEl.textContent = 'Sites ' + summary.siteCount + ' · Devices ' + summary.deviceCount + ' · Window ' + summary.window.start + ' → ' + summary.window.end;
+    }
+    if(heatmapTitle){
+      const label = summary.month && summary.month.label ? summary.month.label : '';
+      heatmapTitle.textContent = label ? '(' + label + ')' : '';
     }
     if(valueEls.uptime) valueEls.uptime.textContent = formatPct(summary.metrics.uptimePct);
     if(valueEls.ingest) valueEls.ingest.textContent = formatPct(summary.metrics.ingestSuccessPct);
@@ -1260,6 +1491,9 @@ const clientSloScript = `
   }
   if(initial){
     render(initial.summary);
+    if(initial.summary && initial.summary.month && initial.summary.month.key){
+      loadHeatmap(initial.summary.month.key);
+    }
   }
 
   async function load(){
@@ -1273,6 +1507,9 @@ const clientSloScript = `
       if(!res.ok) throw new Error('http');
       const summary = await res.json();
       render(summary);
+      if(summary && summary.month && summary.month.key){
+        loadHeatmap(summary.month.key);
+      }
     } catch (err) {
       console.warn('client slo refresh failed', err);
       if(statusEl) statusEl.textContent = 'Failed to refresh';
@@ -1498,6 +1735,9 @@ export const renderer = jsxRenderer(({ children }) => {
         .ops-header .ops-subtext{font-size:12px}
         .maintenance-form{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
         .maintenance-form input,.maintenance-form select{min-width:160px}
+        #reports-outbox-filters{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
+        #reports-outbox-filters input{min-width:140px}
+        .reports-outbox-table tbody tr:hover{background:#111a27}
         #report-history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
         #report-history-filters input,#report-history-filters select{min-width:160px}
         #report-history-status{margin-bottom:10px}
@@ -1519,6 +1759,17 @@ export const renderer = jsxRenderer(({ children }) => {
         .slo-alerts{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;margin-top:16px}
         .slo-alerts ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
         .slo-alerts strong{color:var(--text)}
+        .slo-heatmap{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:16px;margin-top:16px}
+        .slo-heatmap-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:13px;color:var(--muted)}
+        .slo-heatmap-month{font-size:12px;color:var(--muted);margin-left:8px;font-weight:400}
+        .slo-heatmap-grid{display:grid;grid-template-columns:repeat(7, minmax(0,1fr));gap:6px}
+        .slo-heatmap-cell{position:relative;padding-top:100%;border-radius:8px;background:#1a2332;overflow:hidden}
+        .slo-heatmap-cell span{position:absolute;top:4px;left:6px;font-size:11px;font-weight:600;color:rgba(255,255,255,0.85)}
+        .slo-heatmap-cell[data-empty="true"]{background:#101724}
+        .slo-heatmap-cell:hover{outline:1px solid #f9f9f915}
+        .slo-heatmap-legend{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:11px;color:var(--muted)}
+        .slo-heatmap-legend .bar{flex:1;height:8px;border-radius:999px;background:linear-gradient(90deg,#f85149,#f0883e,#fbd25d,#3fb950)}
+        .slo-heatmap-empty{font-size:13px;color:var(--muted)}
         .badge{display:inline-block;border-radius:999px;padding:2px 8px;font-size:12px}
         .badge[data-state="active"]{background:rgba(63,185,80,0.18);color:#3fb950}
         .badge[data-state="scheduled"]{background:rgba(240,136,62,0.18);color:#f0883e}
@@ -1547,6 +1798,12 @@ export const renderer = jsxRenderer(({ children }) => {
             </a>
             <a href="/admin/reports" class={isActive('/admin/reports') ? 'active' : undefined}>
               Reports
+            </a>
+            <a
+              href="/admin/reports/outbox"
+              class={isActive('/admin/reports/outbox') ? 'active' : undefined}
+            >
+              Outbox
             </a>
             <a href="/admin/email" class={isActive('/admin/email') ? 'active' : undefined}>
               Email
@@ -1996,6 +2253,120 @@ export function AdminReportsPage() {
   );
 }
 
+type AdminReportsOutboxProps = {
+  rows: ReportHistoryRow[];
+  filters: { clientId: string; siteId: string; type: string; status: string; limit: string };
+};
+
+export function AdminReportsOutboxPage(props: AdminReportsOutboxProps) {
+  const statusText = props.rows.length === 0 ? 'No reports ready to send.' : `Showing ${props.rows.length} deliveries.`;
+  const initialPayload = encodeJson({ rows: props.rows, filters: props.filters });
+  const body =
+    props.rows.length === 0
+      ? (
+          <tr>
+            <td colSpan={9} class="table-empty">
+              No reports found.
+            </td>
+          </tr>
+        )
+      : (
+          props.rows.map((row) => {
+            const recipients = row.recipients.length > 0 ? row.recipients : null;
+            return (
+              <tr>
+                <td>{row.created_at}</td>
+                <td>{row.type}</td>
+                <td>{row.status}</td>
+                <td>{row.client_id ?? '—'}</td>
+                <td>{row.site_id ?? '—'}</td>
+                <td>{row.subject ?? '—'}</td>
+                <td>
+                  {recipients
+                    ? recipients.map((value, idx) => (
+                        <div key={idx}>{value}</div>
+                      ))
+                    : '—'}
+                </td>
+                <td>{row.path ? <code>{row.path}</code> : '—'}</td>
+                <td>
+                  {row.path ? (
+                    <button
+                      class="btn"
+                      type="button"
+                      data-action="send-report"
+                      data-type={row.type}
+                      data-client={row.client_id ?? ''}
+                      data-site={row.site_id ?? ''}
+                      data-path={row.path}
+                      data-subject={row.subject ?? ''}
+                    >
+                      Email now
+                    </button>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+              </tr>
+            );
+          })
+        );
+
+  return (
+    <div class="card">
+      <h2>Admin — Reports Outbox</h2>
+      <form id="reports-outbox-filters" class="reports-outbox-filters">
+        <label>
+          Type
+          <input type="text" name="type" placeholder="monthly" value={props.filters.type} />
+        </label>
+        <label>
+          Status
+          <input type="text" name="status" placeholder="generated" value={props.filters.status || 'generated'} />
+        </label>
+        <label>
+          Client
+          <input type="text" name="client_id" placeholder="client_123" value={props.filters.clientId} />
+        </label>
+        <label>
+          Site
+          <input type="text" name="site_id" placeholder="SITE-001" value={props.filters.siteId} />
+        </label>
+        <label>
+          Limit
+          <input type="number" name="limit" min="1" max="200" value={props.filters.limit || '50'} />
+        </label>
+        <button class="btn" type="submit">
+          Apply
+        </button>
+      </form>
+      <p class="card-subtle" id="reports-outbox-status">
+        {statusText}
+      </p>
+      <table class="reports-outbox-table">
+        <thead>
+          <tr>
+            <th>Created</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Client</th>
+            <th>Site</th>
+            <th>Subject</th>
+            <th>Recipients</th>
+            <th>Path</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="reports-outbox-tbody">{body}</tbody>
+      </table>
+      <script id="reports-outbox-data" type="application/json">
+        {initialPayload}
+      </script>
+      <script dangerouslySetInnerHTML={{ __html: reportsOutboxScript }} />
+    </div>
+  );
+}
+
 type AdminReportsHistoryProps = { rows: ReportHistoryRow[]; filters: ReportHistoryFilters };
 
 export function AdminReportsHistoryPage(props: AdminReportsHistoryProps) {
@@ -2228,6 +2599,24 @@ export function ClientSloPage({ summary, filters }: ClientSloPageProps) {
             Latest: <strong data-slo-cop-latest>{copLatest != null ? copLatest.toFixed(2) : '—'}</strong>
           </span>
           <span data-slo-cop-range>{copRangeText}</span>
+        </div>
+      </div>
+      <div class="slo-heatmap">
+        <div class="slo-heatmap-header">
+          <h3 style="margin:0">
+            Uptime calendar
+            <span class="slo-heatmap-month" id="client-slo-heatmap-title">
+              ({summary.month.label})
+            </span>
+          </h3>
+          <span id="client-slo-heatmap-status">Loading…</span>
+        </div>
+        <div class="slo-heatmap-grid" id="client-slo-heatmap"></div>
+        <div class="slo-heatmap-empty" id="client-slo-heatmap-empty">Loading…</div>
+        <div class="slo-heatmap-legend">
+          <span>0%</span>
+          <div class="bar" />
+          <span>100%</span>
         </div>
       </div>
       <div class="slo-alerts">

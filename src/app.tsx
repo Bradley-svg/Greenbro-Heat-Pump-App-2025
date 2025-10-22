@@ -27,6 +27,7 @@ import {
   AdminMaintenancePage,
   AdminSettingsPage,
   AdminReportsPage,
+  AdminReportsOutboxPage,
   AdminReportsHistoryPage,
   ClientSloPage,
   OpsPage,
@@ -308,6 +309,27 @@ function formatWindowLabel(hours: number): string {
 
 function keyToPath(key: string): string {
   return `/${key}`;
+}
+
+function normalizeReportPath(path: string): string | null {
+  if (!path) return null;
+  let value = path.trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    value = parsed.pathname || value;
+  } catch {}
+  if (value.startsWith('/api/reports/')) {
+    return value;
+  }
+  if (value.startsWith('api/reports/')) {
+    return `/${value}`;
+  }
+  value = value.replace(/^\/+/, '');
+  if (!value) {
+    return null;
+  }
+  return `/api/reports/${value}`;
 }
 
 type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number };
@@ -1797,6 +1819,152 @@ app.post('/api/reports/client-monthly', async (c) => {
   });
 });
 
+app.post('/api/reports/email-existing', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+  let body: {
+    type?: string;
+    client_id?: string | null;
+    site_id?: string | null;
+    path?: string | null;
+    subject?: string | null;
+  } | null = null;
+  try {
+    body = await c.req.json();
+  } catch {}
+
+  const type = typeof body?.type === 'string' ? body.type.trim() : '';
+  const clientId = typeof body?.client_id === 'string' ? body.client_id.trim() : '';
+  const siteId = typeof body?.site_id === 'string' ? body.site_id.trim() : '';
+  const subjectInput = typeof body?.subject === 'string' ? body.subject.trim() : '';
+  const normalizedType = type || 'monthly';
+  if (!body?.path) {
+    return c.text('path required', 400);
+  }
+  const normalizedPath = normalizeReportPath(body.path);
+  if (!normalizedPath) {
+    return c.text('Invalid path', 400);
+  }
+  if (normalizedType !== 'monthly' && normalizedType !== 'incident') {
+    return c.text('Unsupported report type', 400);
+  }
+  if (!clientId && !siteId) {
+    return c.text('client_id or site_id required', 400);
+  }
+
+  let resolvedClientId: string | null = clientId || null;
+  let clientName: string | null = null;
+  let siteName: string | null = null;
+  let recipients: string[] = [];
+
+  if (clientId) {
+    const row = await c.env.DB.prepare(
+      `SELECT c.client_id, COALESCE(c.name, c.client_id) AS name, cs.report_recipients
+         FROM clients c
+         LEFT JOIN client_slos cs ON cs.client_id = c.client_id
+        WHERE c.client_id = ?`,
+    )
+      .bind(clientId)
+      .first<{ client_id: string; name: string | null; report_recipients: string | null }>();
+    if (row) {
+      clientName = row.name ?? row.client_id;
+      recipients = recipients.concat(parseRecipientList(row.report_recipients ?? null));
+    }
+  }
+
+  if (siteId) {
+    const siteRow = await c.env.DB.prepare('SELECT site_id, name FROM sites WHERE site_id=?')
+      .bind(siteId)
+      .first<{ site_id: string; name: string | null }>();
+    if (siteRow) {
+      siteName = siteRow.name ?? siteRow.site_id;
+    }
+    const { clients, recipients: siteRecipients } = await collectSiteRecipients(c.env.DB, siteId);
+    recipients = recipients.concat(siteRecipients);
+    if (!resolvedClientId && clients.length === 1) {
+      resolvedClientId = clients[0].id;
+      if (!clientName) {
+        clientName = clients[0].name ?? clients[0].id;
+      }
+    }
+  }
+
+  const uniqueRecipients = dedupeRecipients(recipients);
+  const defaultSubject = (() => {
+    if (normalizedType === 'monthly') {
+      return `Monthly report link — ${clientName ?? resolvedClientId ?? 'GreenBro'}`;
+    }
+    if (normalizedType === 'incident') {
+      const scope = siteName ?? clientName ?? resolvedClientId ?? 'GreenBro';
+      return `Incident report link — ${scope}`;
+    }
+    return 'Report link';
+  })();
+  const subject = subjectInput || defaultSubject;
+  if (uniqueRecipients.length === 0) {
+    await logReportDelivery(c.env.DB, {
+      type: normalizedType,
+      status: 'skipped',
+      clientId: resolvedClientId ?? null,
+      siteId: siteId || null,
+      path: normalizedPath,
+      subject,
+      meta: { resend: true, reason: 'no_recipients', actor: auth.email ?? auth.sub },
+    });
+    return c.text('No recipients configured', 400);
+  }
+
+  const settings = await loadEmailSettings(c.env.DB);
+  if (!settings.webhook || !settings.from) {
+    await logReportDelivery(c.env.DB, {
+      type: normalizedType,
+      status: 'skipped',
+      clientId: resolvedClientId ?? null,
+      siteId: siteId || null,
+      path: normalizedPath,
+      subject,
+      to: uniqueRecipients,
+      meta: { resend: true, reason: 'email_config_missing', actor: auth.email ?? auth.sub },
+    });
+    return c.text('Email settings incomplete', 503);
+  }
+
+  const origin = new URL(c.req.url);
+  const downloadUrl = `${origin.origin}${normalizedPath}`;
+  const lines = [
+    `Report type: ${normalizedType}`,
+    resolvedClientId ? `Client: ${clientName ?? resolvedClientId} (${resolvedClientId})` : clientName ? `Client: ${clientName}` : null,
+    siteId ? `Site: ${siteName ?? siteId} (${siteId})` : siteName ? `Site: ${siteName}` : null,
+    `Download: ${downloadUrl}`,
+    `R2 path: ${normalizedPath}`,
+    `Requested by: ${auth.email ?? auth.sub}`,
+  ].filter((line): line is string => typeof line === 'string' && line.length > 0);
+
+  const emailed = await sendEmail(c.env, uniqueRecipients, subject, lines.join('\n'), settings);
+  const status = emailed ? 'sent' : 'send_failed';
+  await logReportDelivery(c.env.DB, {
+    type: normalizedType,
+    status,
+    clientId: resolvedClientId ?? null,
+    siteId: siteId || null,
+    path: normalizedPath,
+    subject,
+    to: uniqueRecipients,
+    meta: { resend: true, actor: auth.email ?? auth.sub },
+  });
+  if (!emailed) {
+    return c.text('Failed to send email', 502);
+  }
+  return c.json({ ok: true, recipients: uniqueRecipients, subject, path: normalizedPath });
+});
+
 app.post('/api/reports/client-monthly/v2', async (c) => {
   const auth = c.get('auth');
   if (!auth) {
@@ -1850,7 +2018,16 @@ app.post('/api/reports/client-monthly/v2', async (c) => {
       `R2 path: ${path}`,
     ];
     emailed = await sendEmail(c.env, recipients, subject, lines.join('\n'), settings);
-    // To capture email sends in the audit log, call logReportDelivery(c.env.DB, { ...status: 'sent' }) here.
+    await logReportDelivery(c.env.DB, {
+      type: 'monthly',
+      status: emailed ? 'sent' : 'send_failed',
+      clientId: client.id,
+      siteId: null,
+      path,
+      subject,
+      to: recipients,
+      meta: { month: monthParam, version: 'v2', auto: true },
+    });
   }
 
   return c.json({
@@ -1939,6 +2116,91 @@ app.get('/api/clients/:clientId/slo-summary', async (c) => {
     }
     return c.text(message, 400);
   }
+});
+
+app.get('/api/clients/:clientId/uptime-daily', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const clientId = c.req.param('clientId');
+  if (!canAccessClient(auth, clientId)) {
+    return c.text('Forbidden', 403);
+  }
+  const url = new URL(c.req.url);
+  const monthParam = url.searchParams.get('month') ?? formatMonthKey(new Date());
+  const range = parseMonthRange(monthParam);
+  if (!range) {
+    return c.text('Invalid month format', 400);
+  }
+
+  const mapRows = await c.env.DB.prepare(
+    `SELECT DISTINCT d.device_id
+       FROM devices d
+       JOIN site_clients sc ON sc.site_id = d.site_id
+      WHERE sc.client_id = ?`,
+  )
+    .bind(clientId)
+    .all<{ device_id: string | null }>();
+  const deviceIds = (mapRows.results ?? [])
+    .map((row) => row.device_id)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+
+  const now = new Date();
+  const effectiveEndMs = (() => {
+    const monthEnd = range.end.getTime();
+    const nowMs = now.getTime();
+    if (nowMs >= monthEnd) {
+      return monthEnd;
+    }
+    if (nowMs <= range.start.getTime()) {
+      return range.start.getTime();
+    }
+    return nowMs;
+  })();
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const totalDays = Math.max(0, Math.floor((range.end.getTime() - range.start.getTime()) / dayMs));
+  const series: Array<{ date: string; uptimePct: number | null }> = [];
+
+  for (let i = 0; i < totalDays; i += 1) {
+    const dayStart = new Date(range.start.getTime() + i * dayMs);
+    const dayEnd = new Date(dayStart.getTime() + dayMs);
+    const isoDate = dayStart.toISOString().slice(0, 10);
+    if (dayStart.getTime() >= effectiveEndMs || deviceIds.length === 0) {
+      series.push({ date: isoDate, uptimePct: null });
+      continue;
+    }
+    const windowEndMs = Math.min(dayEnd.getTime(), effectiveEndMs);
+    if (windowEndMs <= dayStart.getTime()) {
+      series.push({ date: isoDate, uptimePct: null });
+      continue;
+    }
+    let uptime: number | null = null;
+    try {
+      uptime = await computeTimeWeightedUptime(
+        c.env.DB,
+        deviceIds,
+        dayStart.toISOString(),
+        new Date(windowEndMs).toISOString(),
+        5,
+      );
+    } catch (error) {
+      console.warn('daily uptime compute failed', clientId, isoDate, error);
+    }
+    series.push({ date: isoDate, uptimePct: uptime });
+  }
+
+  return c.json({
+    clientId,
+    month: formatMonthKey(range.start),
+    start: range.start.toISOString(),
+    end: range.end.toISOString(),
+    effectiveEnd: new Date(effectiveEndMs).toISOString(),
+    freshnessMinutes: 5,
+    deviceCount: deviceIds.length,
+    series,
+  });
 });
 
 app.post('/api/ops/monthly-run', async (c) => {
@@ -2235,6 +2497,41 @@ app.get('/admin/settings', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   return c.render(<AdminSettingsPage />);
+});
+
+app.get('/admin/reports/outbox', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const getRaw = (key: string) => url.searchParams.get(key) ?? '';
+  const statusValue = url.searchParams.has('status') ? getRaw('status') : 'generated';
+  const limitParam = getRaw('limit') || '50';
+  const rows = await listReportDeliveries(c.env.DB, {
+    type: getRaw('type') ? getRaw('type') : null,
+    status: statusValue ? statusValue : null,
+    clientId: getRaw('client_id') ? getRaw('client_id') : null,
+    siteId: getRaw('site_id') ? getRaw('site_id') : null,
+    limit: limitParam ? Number(limitParam) : undefined,
+  });
+  return c.render(
+    <AdminReportsOutboxPage
+      rows={rows}
+      filters={{
+        type: getRaw('type'),
+        status: statusValue,
+        clientId: getRaw('client_id'),
+        siteId: getRaw('site_id'),
+        limit: limitParam,
+      }}
+    />,
+  );
 });
 
 app.get('/admin/reports', async (c) => {
