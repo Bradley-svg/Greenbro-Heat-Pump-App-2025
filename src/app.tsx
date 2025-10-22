@@ -9,7 +9,17 @@ import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO } from './do';
 import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, openAlertIfNeeded, type Derived } from './alerts';
 import { generateCommissioningPDF, type CommissioningPayload } from './pdf';
-import { renderer, OverviewPage, AlertsPage, DevicesPage, AdminSitesPage, OpsPage, type OverviewData } from './ssr';
+import {
+  renderer,
+  OverviewPage,
+  AlertsPage,
+  DevicesPage,
+  AdminSitesPage,
+  AdminMaintenancePage,
+  OpsPage,
+  type OverviewData,
+  type OpsSnapshot,
+} from './ssr';
 import { handleQueueBatch as baseQueueHandler } from './queue';
 
 void DeviceStateDO;
@@ -170,159 +180,183 @@ type IngestBody = {
 };
 
 app.post('/api/ingest/:profileId', async (c) => {
-  const body = await c.req.json<IngestBody>().catch(() => null);
-  if (!body?.deviceId || !body?.ts) return c.text('Bad Request', 400);
-  const ok = await verifyDeviceKey(c.env.DB, body.deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
-  if (!ok) return c.text('Forbidden', 403);
-
-  const idemKey =
-    body.idempotencyKey ??
-    (await (async () => {
-      const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(body)));
-      return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    })());
-
-  if (await isDuplicate(c.env.DB, idemKey)) return c.json({ ok: true, deduped: true });
-
-  const rawMetrics: Partial<Record<string, number>> = body.metrics ?? {};
-  const rawStatus: IngestStatus = body.status ?? {};
-
-  const toNumber = (value: unknown): number | undefined =>
-    typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-
-  const telemetryMetrics: TelemetryPayload['metrics'] = {
-    tankC: toNumber(rawMetrics.tankC),
-    supplyC: toNumber(rawMetrics.supplyC),
-    returnC: toNumber(rawMetrics.returnC),
-    ambientC: toNumber(rawMetrics.ambientC),
-    flowLps: toNumber(rawMetrics.flowLps),
-    compCurrentA: toNumber(rawMetrics.compCurrentA),
-    eevSteps: toNumber(rawMetrics.eevSteps),
-    powerKW: toNumber(rawMetrics.powerKW),
-  };
-
-  const telemetryStatus: TelemetryPayload['status'] = {
-    mode: typeof rawStatus.mode === 'string' ? rawStatus.mode : undefined,
-    defrost: typeof rawStatus.defrost === 'boolean' ? rawStatus.defrost : undefined,
-    online: typeof rawStatus.online === 'boolean' ? rawStatus.online : undefined,
-  };
-
-  const telemetry: TelemetryPayload = {
-    deviceId: body.deviceId,
-    ts: body.ts,
-    metrics: telemetryMetrics,
-    status: telemetryStatus,
-  };
-
-  const derived = computeDerived(telemetryMetrics);
-  const onlineFlag = telemetryStatus.online === false ? 0 : 1;
-
-  const statusJson = Object.values(telemetryStatus ?? {}).some((v) => v !== undefined)
-    ? JSON.stringify(telemetryStatus)
-    : null;
-
-  await c.env.DB.prepare(
-    `INSERT INTO telemetry (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-  )
-    .bind(
-      telemetry.deviceId,
-      telemetry.ts,
-      JSON.stringify(telemetryMetrics),
-      derived.deltaT,
-      derived.thermalKW,
-      derived.cop,
-      derived.copQuality,
-      statusJson,
-    )
-    .run();
-
-  await c.env.DB.prepare(
-    `INSERT INTO latest_state
-      (device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW,
-       deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-     ON CONFLICT(device_id) DO UPDATE SET
-       ts = excluded.ts,
-       supplyC = excluded.supplyC,
-       returnC = excluded.returnC,
-       tankC = excluded.tankC,
-       ambientC = excluded.ambientC,
-       flowLps = excluded.flowLps,
-       compCurrentA = excluded.compCurrentA,
-       eevSteps = excluded.eevSteps,
-       powerKW = excluded.powerKW,
-       deltaT = excluded.deltaT,
-       thermalKW = excluded.thermalKW,
-       cop = excluded.cop,
-       cop_quality = excluded.cop_quality,
-       mode = excluded.mode,
-       defrost = excluded.defrost,
-       online = excluded.online,
-       faults_json = excluded.faults_json,
-       updated_at = datetime('now')`,
-  )
-    .bind(
-      body.deviceId,
-      body.ts,
-      telemetryMetrics.supplyC ?? null,
-      telemetryMetrics.returnC ?? null,
-      telemetryMetrics.tankC ?? null,
-      telemetryMetrics.ambientC ?? null,
-      telemetryMetrics.flowLps ?? null,
-      telemetryMetrics.compCurrentA ?? null,
-      telemetryMetrics.eevSteps ?? null,
-      telemetryMetrics.powerKW ?? null,
-      telemetryStatus.mode ?? null,
-      telemetryStatus.defrost ? 1 : 0,
-      onlineFlag,
-      derived.deltaT,
-      derived.thermalKW,
-      derived.cop,
-      derived.copQuality,
-    )
-    .run();
-
-  await c.env.DB.prepare('UPDATE devices SET last_seen_at=?, online=? WHERE device_id=?')
-    .bind(body.ts, onlineFlag, body.deviceId)
-    .run();
-
-  const latest = await c.env.DB
-    .prepare('SELECT deltaT, thermalKW, cop, cop_quality as copQuality FROM latest_state WHERE device_id=?')
-    .bind(body.deviceId)
-    .first<{ deltaT: number | null; thermalKW: number | null; cop: number | null; copQuality: string | null }>();
-
-  await evaluateTelemetryAlerts(
-    c.env,
-    telemetry,
-    latest ?? { deltaT: null, thermalKW: null, cop: null, copQuality: null },
-  );
-
-  const baseline = await c.env.DB.prepare(
-    'SELECT dt_mean, dt_std, cop_mean, cop_std FROM baselines_hourly WHERE device_id=? AND how=?',
-  )
-    .bind(body.deviceId, hourOfWeek(body.ts))
-    .first<{
-      dt_mean: number | null;
-      dt_std: number | null;
-      cop_mean: number | null;
-      cop_std: number | null;
-    }>();
-
-  if (baseline) {
-    if (derived.deltaT != null && z(derived.deltaT, baseline.dt_mean, baseline.dt_std) < -2.5) {
-      await openAlertIfNeeded(c.env.DB, body.deviceId, 'delta_t_anomaly', 'minor', body.ts, {
-        deltaT: derived.deltaT,
-      });
+  const started = Date.now();
+  let status = 500;
+  let deviceId: string | undefined;
+  try {
+    const body = await c.req.json<IngestBody>().catch(() => null);
+    if (!body?.deviceId || !body?.ts) {
+      status = 400;
+      return c.text('Bad Request', 400);
     }
-    if (derived.cop != null && z(derived.cop, baseline.cop_mean, baseline.cop_std) < -2.5) {
-      await openAlertIfNeeded(c.env.DB, body.deviceId, 'low_cop_anomaly', 'major', body.ts, {
-        cop: derived.cop,
-      });
+
+    deviceId = body.deviceId;
+    const ok = await verifyDeviceKey(c.env.DB, body.deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
+    if (!ok) {
+      status = 403;
+      return c.text('Forbidden', 403);
     }
+
+    const idemKey =
+      body.idempotencyKey ??
+      (await (async () => {
+        const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(body)));
+        return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+      })());
+
+    if (await isDuplicate(c.env.DB, idemKey)) {
+      status = 200;
+      return c.json({ ok: true, deduped: true });
+    }
+
+    const rawMetrics: Partial<Record<string, number>> = body.metrics ?? {};
+    const rawStatus: IngestStatus = body.status ?? {};
+
+    const toNumber = (value: unknown): number | undefined =>
+      typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+    const telemetryMetrics: TelemetryPayload['metrics'] = {
+      tankC: toNumber(rawMetrics.tankC),
+      supplyC: toNumber(rawMetrics.supplyC),
+      returnC: toNumber(rawMetrics.returnC),
+      ambientC: toNumber(rawMetrics.ambientC),
+      flowLps: toNumber(rawMetrics.flowLps),
+      compCurrentA: toNumber(rawMetrics.compCurrentA),
+      eevSteps: toNumber(rawMetrics.eevSteps),
+      powerKW: toNumber(rawMetrics.powerKW),
+    };
+
+    const telemetryStatus: TelemetryPayload['status'] = {
+      mode: typeof rawStatus.mode === 'string' ? rawStatus.mode : undefined,
+      defrost: typeof rawStatus.defrost === 'boolean' ? rawStatus.defrost : undefined,
+      online: typeof rawStatus.online === 'boolean' ? rawStatus.online : undefined,
+    };
+
+    const telemetry: TelemetryPayload = {
+      deviceId: body.deviceId,
+      ts: body.ts,
+      metrics: telemetryMetrics,
+      status: telemetryStatus,
+    };
+
+    const derived = computeDerived(telemetryMetrics);
+    const onlineFlag = telemetryStatus.online === false ? 0 : 1;
+
+    const statusJson = Object.values(telemetryStatus ?? {}).some((v) => v !== undefined)
+      ? JSON.stringify(telemetryStatus)
+      : null;
+
+    await c.env.DB.prepare(
+      `INSERT INTO telemetry (device_id, ts, metrics_json, deltaT, thermalKW, cop, cop_quality, status_json, faults_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    )
+      .bind(
+        telemetry.deviceId,
+        telemetry.ts,
+        JSON.stringify(telemetryMetrics),
+        derived.deltaT,
+        derived.thermalKW,
+        derived.cop,
+        derived.copQuality,
+        statusJson,
+      )
+      .run();
+
+    await c.env.DB.prepare(
+      `INSERT INTO latest_state
+        (device_id, ts, supplyC, returnC, tankC, ambientC, flowLps, compCurrentA, eevSteps, powerKW,
+         deltaT, thermalKW, cop, cop_quality, mode, defrost, online, faults_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+       ON CONFLICT(device_id) DO UPDATE SET
+         ts = excluded.ts,
+         supplyC = excluded.supplyC,
+         returnC = excluded.returnC,
+         tankC = excluded.tankC,
+         ambientC = excluded.ambientC,
+         flowLps = excluded.flowLps,
+         compCurrentA = excluded.compCurrentA,
+         eevSteps = excluded.eevSteps,
+         powerKW = excluded.powerKW,
+         deltaT = excluded.deltaT,
+         thermalKW = excluded.thermalKW,
+         cop = excluded.cop,
+         cop_quality = excluded.cop_quality,
+         mode = excluded.mode,
+         defrost = excluded.defrost,
+         online = excluded.online,
+         faults_json = excluded.faults_json,
+         updated_at = datetime('now')`,
+    )
+      .bind(
+        body.deviceId,
+        body.ts,
+        telemetryMetrics.supplyC ?? null,
+        telemetryMetrics.returnC ?? null,
+        telemetryMetrics.tankC ?? null,
+        telemetryMetrics.ambientC ?? null,
+        telemetryMetrics.flowLps ?? null,
+        telemetryMetrics.compCurrentA ?? null,
+        telemetryMetrics.eevSteps ?? null,
+        telemetryMetrics.powerKW ?? null,
+        telemetryStatus.mode ?? null,
+        telemetryStatus.defrost ? 1 : 0,
+        onlineFlag,
+        derived.deltaT,
+        derived.thermalKW,
+        derived.cop,
+        derived.copQuality,
+      )
+      .run();
+
+    await c.env.DB.prepare('UPDATE devices SET last_seen_at=?, online=? WHERE device_id=?')
+      .bind(body.ts, onlineFlag, body.deviceId)
+      .run();
+
+    const latest = await c.env.DB
+      .prepare('SELECT deltaT, thermalKW, cop, cop_quality as copQuality FROM latest_state WHERE device_id=?')
+      .bind(body.deviceId)
+      .first<{ deltaT: number | null; thermalKW: number | null; cop: number | null; copQuality: string | null }>();
+
+    await evaluateTelemetryAlerts(
+      c.env,
+      telemetry,
+      latest ?? { deltaT: null, thermalKW: null, cop: null, copQuality: null },
+    );
+
+    const baseline = await c.env.DB.prepare(
+      'SELECT dt_mean, dt_std, cop_mean, cop_std FROM baselines_hourly WHERE device_id=? AND how=?',
+    )
+      .bind(body.deviceId, hourOfWeek(body.ts))
+      .first<{
+        dt_mean: number | null;
+        dt_std: number | null;
+        cop_mean: number | null;
+        cop_std: number | null;
+      }>();
+
+    if (baseline) {
+      if (derived.deltaT != null && z(derived.deltaT, baseline.dt_mean, baseline.dt_std) < -2.5) {
+        await openAlertIfNeeded(c.env, body.deviceId, 'delta_t_anomaly', 'minor', body.ts, {
+          deltaT: derived.deltaT,
+        });
+      }
+      if (derived.cop != null && z(derived.cop, baseline.cop_mean, baseline.cop_std) < -2.5) {
+        await openAlertIfNeeded(c.env, body.deviceId, 'low_cop_anomaly', 'major', body.ts, {
+          cop: derived.cop,
+        });
+      }
+    }
+
+    status = 200;
+    return c.json({ ok: true });
+  } catch (error) {
+    console.error('Failed to ingest telemetry', error);
+    status = 500;
+    return c.text('Internal Server Error', 500);
+  } finally {
+    const duration = Date.now() - started;
+    await logOpsMetric(c.env.DB, '/api/ingest', status, duration, deviceId);
   }
-
-  return c.json({ ok: true });
 });
 
 app.post('/api/ops/recompute-baselines', async (c) => {
@@ -523,6 +557,85 @@ app.get('/api/admin/sites', async (c) => {
   requireRole(auth, ['admin', 'ops']);
   const rows = await c.env.DB.prepare('SELECT site_id, name, region FROM sites ORDER BY site_id').all();
   return c.json(rows.results ?? []);
+});
+
+app.get('/api/admin/maintenance', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const rows = await c.env.DB.prepare(
+    `SELECT id, site_id, device_id, start_ts, end_ts, reason,
+            CASE WHEN start_ts <= datetime('now') AND (end_ts IS NULL OR end_ts >= datetime('now')) THEN 1 ELSE 0 END AS active
+       FROM maintenance_windows
+       ORDER BY start_ts DESC
+       LIMIT 200`,
+  ).all<{
+    id: string;
+    site_id: string | null;
+    device_id: string | null;
+    start_ts: string;
+    end_ts: string;
+    reason: string | null;
+    active: number | null;
+  }>();
+  const results = (rows.results ?? []).map((row) => ({
+    ...row,
+    active: row.active === 1,
+  }));
+  return c.json(results);
+});
+
+app.post('/api/admin/maintenance', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const body = await c.req
+    .json<{ siteId?: string; deviceId?: string; startTs?: string; endTs?: string; reason?: string }>()
+    .catch(() => null);
+  if (!body) {
+    return c.text('Bad Request', 400);
+  }
+
+  const siteId = body.siteId?.trim() || null;
+  const deviceId = body.deviceId?.trim() || null;
+  if (!siteId && !deviceId) {
+    return c.text('Must provide a siteId or deviceId', 400);
+  }
+
+  const startTs = parseIsoTimestamp(body.startTs);
+  const endTs = parseIsoTimestamp(body.endTs);
+  if (!startTs || !endTs) {
+    return c.text('Invalid start or end timestamp', 400);
+  }
+
+  if (Date.parse(startTs) >= Date.parse(endTs)) {
+    return c.text('End must be after start', 400);
+  }
+
+  const reason = body.reason?.trim();
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    'INSERT INTO maintenance_windows (id, site_id, device_id, start_ts, end_ts, reason) VALUES (?, ?, ?, ?, ?, ?)',
+  )
+    .bind(id, siteId, deviceId, startTs, endTs, reason && reason.length > 0 ? reason.slice(0, 500) : null)
+    .run();
+
+  return c.json({ ok: true, id });
+});
+
+app.delete('/api/admin/maintenance/:id', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const id = c.req.param('id');
+  await c.env.DB.prepare('DELETE FROM maintenance_windows WHERE id=?').bind(id).run();
+  return c.json({ ok: true });
 });
 
 app.post('/api/admin/sites', async (c) => {
@@ -750,43 +863,14 @@ app.get('/', async (c) => {
   return c.render(<OverviewPage data={data} />);
 });
 
+app.get('/api/ops/slo', async (c) => {
+  const snapshot = await computeOpsSnapshot(c.env.DB);
+  return c.json(snapshot);
+});
+
 app.get('/ops', async (c) => {
-  const { DB } = c.env;
-  const ingestOk = await DB.prepare(
-    "SELECT COUNT(*) as n FROM ops_metrics WHERE route='/api/ingest' AND status_code BETWEEN 200 AND 299",
-  )
-    .first<{ n: number }>()
-    .catch(() => null);
-  const ingestAll = await DB.prepare("SELECT COUNT(*) as n FROM ops_metrics WHERE route='/api/ingest'")
-    .first<{ n: number }>()
-    .catch(() => null);
-
-  const total = ingestAll?.n ?? 0;
-  let p95IngestMs = 0;
-  if (total > 0) {
-    const offset = Math.max(0, Math.floor(0.95 * (total - 1)));
-    const p95Row = await DB.prepare(
-      "SELECT duration_ms FROM ops_metrics WHERE route='/api/ingest' ORDER BY duration_ms LIMIT 1 OFFSET ?",
-    )
-      .bind(offset)
-      .first<{ duration_ms: number }>()
-      .catch(() => null);
-    p95IngestMs = p95Row?.duration_ms ?? 0;
-  }
-
-  const lastSeen = await DB.prepare(
-    "SELECT MAX(strftime('%s','now') - strftime('%s', last_seen_at)) as age FROM devices WHERE online=1",
-  )
-    .first<{ age: number | null }>()
-    .catch(() => null);
-
-  const gauges = {
-    ingestSuccessPct: total > 0 ? (100 * (ingestOk?.n ?? 0)) / total : 100,
-    p95IngestMs,
-    heartbeatFreshnessMin: (lastSeen?.age ?? 0) / 60,
-  };
-
-  return c.render(<OpsPage gauges={gauges} />);
+  const snapshot = await computeOpsSnapshot(c.env.DB);
+  return c.render(<OpsPage snapshot={snapshot} />);
 });
 
 app.get('/alerts', async (c) => {
@@ -899,6 +983,19 @@ app.get('/admin/sites', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   return c.render(<AdminSitesPage />);
+});
+
+app.get('/admin/maintenance', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  return c.render(<AdminMaintenancePage />);
 });
 
 function createEmptyOverview(): OverviewData {
@@ -1257,6 +1354,92 @@ function round1(value: number) {
 
 function round2(value: number) {
   return Math.round(value * 100) / 100;
+}
+
+async function logOpsMetric(
+  DB: D1Database,
+  route: string,
+  statusCode: number,
+  durationMs: number,
+  deviceId?: string | null,
+) {
+  try {
+    await DB.prepare(
+      'INSERT INTO ops_metrics (ts, route, status_code, duration_ms, device_id) VALUES (?, ?, ?, ?, ?)',
+    )
+      .bind(new Date().toISOString(), route, statusCode, durationMs, deviceId ?? null)
+      .run();
+  } catch (error) {
+    console.warn('logOpsMetric failed', error);
+  }
+}
+
+function parseIsoTimestamp(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.valueOf())) return null;
+  return parsed.toISOString();
+}
+
+async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
+  const totalRow = await DB.prepare(
+    "SELECT COUNT(*) AS total, SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success FROM ops_metrics WHERE route='/api/ingest'",
+  )
+    .first<{ total: number | null; success: number | null }>()
+    .catch(() => null);
+
+  const overallTotal = toNumber(totalRow?.total) ?? 0;
+  const overallSuccess = toNumber(totalRow?.success) ?? 0;
+  const overallError = Math.max(0, overallTotal - overallSuccess);
+  const overallSuccessPct = overallTotal > 0 ? (overallSuccess / overallTotal) * 100 : 100;
+
+  const windowRow = await DB.prepare(
+    "SELECT COUNT(*) AS total, SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success FROM (SELECT status_code FROM ops_metrics WHERE route='/api/ingest' ORDER BY ts DESC LIMIT 1000)",
+  )
+    .first<{ total: number | null; success: number | null }>()
+    .catch(() => null);
+
+  const windowTotal = toNumber(windowRow?.total) ?? 0;
+  const windowSuccess = toNumber(windowRow?.success) ?? 0;
+  const windowError = Math.max(0, windowTotal - windowSuccess);
+  const windowSuccessPct = windowTotal > 0 ? (windowSuccess / windowTotal) * 100 : 100;
+  const burnRateRaw = windowTotal > 0 ? windowError / windowTotal / 0.001 : 0;
+
+  const heartbeatRow = await DB.prepare(
+    'SELECT COUNT(*) AS total, SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online FROM devices',
+  )
+    .first<{ total: number | null; online: number | null }>()
+    .catch(() => null);
+
+  const heartbeatTotal = toNumber(heartbeatRow?.total) ?? 0;
+  const heartbeatOnline = toNumber(heartbeatRow?.online) ?? 0;
+  const heartbeatPct = heartbeatTotal > 0 ? (heartbeatOnline / heartbeatTotal) * 100 : 0;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    ingest: {
+      total: {
+        total: overallTotal,
+        success: overallSuccess,
+        successPct: Number.isFinite(overallSuccessPct) ? overallSuccessPct : 0,
+        error: overallError,
+      },
+      window1k: {
+        total: windowTotal,
+        success: windowSuccess,
+        successPct: Number.isFinite(windowSuccessPct) ? windowSuccessPct : 0,
+        error: windowError,
+      },
+      burnRate: Number.isFinite(burnRateRaw) ? burnRateRaw : 0,
+    },
+    heartbeat: {
+      total: heartbeatTotal,
+      online: heartbeatOnline,
+      onlinePct: Number.isFinite(heartbeatPct) ? heartbeatPct : 0,
+    },
+  };
 }
 
 export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: ExecutionContext) {

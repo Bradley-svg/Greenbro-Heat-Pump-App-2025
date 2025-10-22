@@ -23,6 +23,16 @@ export type OverviewData = {
   };
 };
 
+export type OpsSnapshot = {
+  generatedAt: string;
+  ingest: {
+    total: { total: number; success: number; successPct: number; error: number };
+    window1k: { total: number; success: number; successPct: number; error: number };
+    burnRate: number;
+  };
+  heartbeat: { total: number; online: number; onlinePct: number };
+};
+
 const overviewScript = `
 (function(){
   const root = document.getElementById('overview');
@@ -408,6 +418,98 @@ const devicesScript = `
   })();
 `;
 
+const opsScript = `
+(function(){
+  const root = document.getElementById('ops-slo');
+  if(!root) return;
+  const dataEl = document.getElementById('ops-slo-data');
+  const fields = {
+    burn: root.querySelector('[data-field="burn-rate"]'),
+    burnStatus: root.querySelector('[data-field="burn-status"]'),
+    totalSuccess: root.querySelector('[data-field="ingest-total-success"]'),
+    totalCount: root.querySelector('[data-field="ingest-total-count"]'),
+    recentSuccess: root.querySelector('[data-field="ingest-recent-success"]'),
+    recentCount: root.querySelector('[data-field="ingest-recent-count"]'),
+    heartbeatPct: root.querySelector('[data-field="heartbeat-pct"]'),
+    heartbeatCount: root.querySelector('[data-field="heartbeat-count"]'),
+    generatedAt: root.querySelector('[data-field="generated-at"]')
+  };
+
+  function pct(value, digits){
+    if(typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return value.toFixed(digits);
+  }
+
+  function fmt(value){
+    if(typeof value !== 'number' || !Number.isFinite(value)) return '0';
+    return value.toLocaleString();
+  }
+
+  function render(data){
+    if(!data || !data.ingest || !data.heartbeat) return;
+    const burnRate = Number(data.ingest.burnRate ?? 0);
+    if(fields.burn) fields.burn.textContent = '×' + burnRate.toFixed(2);
+    if(fields.burnStatus){
+      fields.burnStatus.textContent = burnRate > 1 ? 'Burning budget' : 'Within budget';
+      fields.burnStatus.dataset.state = burnRate > 1 ? 'bad' : 'ok';
+    }
+    const total = data.ingest.total || {};
+    if(fields.totalSuccess) fields.totalSuccess.textContent = pct(total.successPct ?? 0, 2) + '%';
+    if(fields.totalCount){
+      const totalOk = fmt(total.success ?? 0);
+      const totalCount = fmt(total.total ?? 0);
+      const totalErr = fmt(total.error ?? Math.max(0, (total.total ?? 0) - (total.success ?? 0)));
+      fields.totalCount.textContent = totalOk + ' ok / ' + totalCount + ' total (' + totalErr + ' errors)';
+    }
+    const windowData = data.ingest.window1k || {};
+    if(fields.recentSuccess) fields.recentSuccess.textContent = pct(windowData.successPct ?? 0, 2) + '%';
+    if(fields.recentCount){
+      const winOk = fmt(windowData.success ?? 0);
+      const winTotal = fmt(windowData.total ?? 0);
+      const winErr = fmt(windowData.error ?? Math.max(0, (windowData.total ?? 0) - (windowData.success ?? 0)));
+      fields.recentCount.textContent = winOk + ' ok / ' + winTotal + ' (' + winErr + ' errors)';
+    }
+    if(fields.heartbeatPct) fields.heartbeatPct.textContent = pct(data.heartbeat.onlinePct ?? 0, 1) + '%';
+    if(fields.heartbeatCount){
+      const hbOn = fmt(data.heartbeat.online ?? 0);
+      const hbTotal = fmt(data.heartbeat.total ?? 0);
+      fields.heartbeatCount.textContent = hbOn + ' / ' + hbTotal + ' devices';
+    }
+    if(fields.generatedAt){
+      try {
+        fields.generatedAt.textContent = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString() : '';
+      } catch (err) {
+        fields.generatedAt.textContent = data.generatedAt || '';
+      }
+    }
+  }
+
+  let initial = null;
+  if(dataEl){
+    try {
+      initial = JSON.parse(dataEl.textContent || '');
+    } catch (err) {
+      console.warn('ops slo parse failed', err);
+    }
+  }
+  if(initial) render(initial);
+
+  async function refresh(){
+    try {
+      const res = await fetch('/api/ops/slo');
+      if(!res.ok) return;
+      const payload = await res.json();
+      render(payload);
+    } catch (err) {
+      console.warn('ops slo refresh failed', err);
+    }
+  }
+
+  setInterval(refresh, 30000);
+  refresh();
+})();
+`;
+
 function SavedViewsControls(props: { formSelector: string }) {
   const formSelector = JSON.stringify(props.formSelector);
   const script = `(function(){
@@ -563,6 +665,143 @@ const adminSitesScript = `
 })();
 `;
 
+const maintenanceScript = `
+(function(){
+  const form = document.getElementById('maintenance-form');
+  const tbody = document.getElementById('maintenance-tbody');
+
+  function esc(value){
+    return String(value ?? '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
+  }
+
+  function formatDate(value){
+    if(!value) return '—';
+    try {
+      return new Date(value).toLocaleString();
+    } catch (err) {
+      return value;
+    }
+  }
+
+  function render(rows){
+    if(!tbody) return;
+    if(!Array.isArray(rows) || rows.length === 0){
+      tbody.innerHTML = '<tr><td colspan="6" class="table-empty">No maintenance windows scheduled</td></tr>';
+      return;
+    }
+    const now = Date.now();
+    tbody.innerHTML = rows.map(function(row){
+      const scope = row.device_id ? 'Device ' + esc(row.device_id) : (row.site_id ? 'Site ' + esc(row.site_id) : 'Global');
+      const endMs = row.end_ts ? Date.parse(row.end_ts) : 0;
+      let badgeState = row.active ? 'active' : 'scheduled';
+      if(!row.active && endMs && endMs < now) badgeState = 'expired';
+      const badgeLabel = badgeState === 'active' ? 'Active' : (badgeState === 'expired' ? 'Expired' : 'Scheduled');
+      return '<tr>' +
+        '<td>' + scope + '</td>' +
+        '<td>' + formatDate(row.start_ts) + '</td>' +
+        '<td>' + formatDate(row.end_ts) + '</td>' +
+        '<td>' + (row.reason ? esc(row.reason) : '—') + '</td>' +
+        '<td><span class="badge" data-state="' + badgeState + '">' + badgeLabel + '</span></td>' +
+        '<td><button class="btn" type="button" data-del="' + esc(row.id) + '">Remove</button></td>' +
+      '</tr>';
+    }).join('');
+  }
+
+  async function load(){
+    if(!tbody) return;
+    try {
+      const res = await fetch('/api/admin/maintenance');
+      if(!res.ok) throw new Error('Request failed');
+      const payload = await res.json();
+      render(Array.isArray(payload) ? payload : []);
+    } catch (err) {
+      console.warn('maintenance load failed', err);
+      tbody.innerHTML = '<tr><td colspan="6" class="table-empty">Failed to load windows</td></tr>';
+    }
+  }
+
+  if(form){
+    form.addEventListener('submit', async function(e){
+      e.preventDefault();
+      const formData = new FormData(form);
+      const payload = {};
+      const site = formData.get('siteId');
+      const device = formData.get('deviceId');
+      const reason = formData.get('reason');
+      if(site && String(site).trim()) payload.siteId = String(site).trim();
+      if(device && String(device).trim()) payload.deviceId = String(device).trim();
+      if(reason && String(reason).trim()) payload.reason = String(reason).trim();
+      const startRaw = formData.get('startTs');
+      const endRaw = formData.get('endTs');
+      if(!startRaw || !String(startRaw).trim() || !endRaw || !String(endRaw).trim()){
+        alert('Start and end timestamps are required.');
+        return;
+      }
+      const start = new Date(String(startRaw));
+      const end = new Date(String(endRaw));
+      if(Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())){
+        alert('Please provide valid start and end timestamps.');
+        return;
+      }
+      if(start.valueOf() >= end.valueOf()){
+        alert('End must be after start.');
+        return;
+      }
+      payload.startTs = start.toISOString();
+      payload.endTs = end.toISOString();
+      if(!payload.siteId && !payload.deviceId){
+        alert('Provide a site or device scope.');
+        return;
+      }
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if(submitBtn) submitBtn.disabled = true;
+      try {
+        const res = await fetch('/api/admin/maintenance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if(!res.ok){
+          const text = await res.text();
+          throw new Error(text || 'Request failed');
+        }
+        form.reset();
+        await load();
+      } catch (err) {
+        alert('Failed to create maintenance window: ' + (err && err.message ? err.message : err));
+      } finally {
+        if(submitBtn) submitBtn.disabled = false;
+      }
+    });
+  }
+
+  if(tbody){
+    tbody.addEventListener('click', async function(ev){
+      const target = ev.target;
+      if(!target || typeof target.closest !== 'function') return;
+      const btn = target.closest('button[data-del]');
+      if(!btn) return;
+      const id = btn.getAttribute('data-del');
+      if(!id) return;
+      if(!confirm('Remove this maintenance window?')) return;
+      try {
+        await fetch('/api/admin/maintenance/' + encodeURIComponent(id), { method: 'DELETE' });
+        await load();
+      } catch (err) {
+        alert('Failed to remove maintenance window');
+      }
+    });
+  }
+
+  load();
+})();
+`;
+
 export const renderer = jsxRenderer(({ children }) => {
   const c = useRequestContext();
   const path = c.req.path;
@@ -570,8 +809,8 @@ export const renderer = jsxRenderer(({ children }) => {
     if (href === '/') {
       return path === '/';
     }
-    if (href === '/admin/sites') {
-      return path === '/admin' || path.startsWith('/admin/');
+    if (href.startsWith('/admin/')) {
+      return path === href;
     }
     return path === href || path.startsWith(`${href}/`);
   };
@@ -619,6 +858,22 @@ export const renderer = jsxRenderer(({ children }) => {
         .sparkline-meta strong{color:var(--text);font-weight:600}
         .card-header{display:flex;justify-content:space-between;align-items:center;gap:10px}
         .card-subtle{color:var(--muted);font-size:13px}
+        .ops-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+        .ops-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+        .ops-tile{background:#0b1119;border:1px solid #1e2632;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:6px}
+        .ops-label{color:var(--muted);font-size:12px;letter-spacing:0.04em;text-transform:uppercase}
+        .ops-value{font-size:32px;font-weight:600;color:var(--text)}
+        .ops-status{font-size:13px;color:#3fb950}
+        .ops-status[data-state="bad"]{color:#f85149}
+        .ops-subtext{font-size:13px;color:var(--muted)}
+        .ops-header .ops-subtext{font-size:12px}
+        .maintenance-form{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
+        .maintenance-form input,.maintenance-form select{min-width:160px}
+        .badge{display:inline-block;border-radius:999px;padding:2px 8px;font-size:12px}
+        .badge[data-state="active"]{background:rgba(63,185,80,0.18);color:#3fb950}
+        .badge[data-state="scheduled"]{background:rgba(240,136,62,0.18);color:#f0883e}
+        .badge[data-state="expired"]{background:rgba(145,160,180,0.18);color:var(--muted)}
+        .table-empty{text-align:center;font-style:italic;color:var(--muted)}
       `}</style>
       </head>
       <body>
@@ -638,7 +893,10 @@ export const renderer = jsxRenderer(({ children }) => {
               Devices
             </a>
             <a href="/admin/sites" class={isActive('/admin/sites') ? 'active' : undefined}>
-              Admin
+              Admin Sites
+            </a>
+            <a href="/admin/maintenance" class={isActive('/admin/maintenance') ? 'active' : undefined}>
+              Maintenance
             </a>
           </nav>
         </header>
@@ -742,13 +1000,64 @@ export function OverviewPage(props: { data: OverviewData }) {
   );
 }
 
-export function OpsPage(props: { gauges: { ingestSuccessPct: number; p95IngestMs: number; heartbeatFreshnessMin: number } }) {
-  const g = props.gauges;
+export function OpsPage(props: { snapshot: OpsSnapshot }) {
+  const snap = props.snapshot;
+  const burnRate = snap.ingest.burnRate;
+  const burnState = burnRate > 1 ? 'bad' : 'ok';
+  const burnLabel = burnRate > 1 ? 'Burning budget' : 'Within budget';
+  const total = snap.ingest.total;
+  const window1k = snap.ingest.window1k;
+  const heartbeat = snap.heartbeat;
+  const fmt = (value: number) => (Number.isFinite(value) ? value.toLocaleString() : '0');
+  const generatedLabel = (() => {
+    try {
+      return snap.generatedAt ? new Date(snap.generatedAt).toLocaleTimeString() : '—';
+    } catch {
+      return snap.generatedAt ?? '—';
+    }
+  })();
+  const initialJson = encodeJson(snap);
+
   return (
-    <div class="grid">
-      <div class="card"><h3>Ingest success %</h3><div style="font-size:28px">{g.ingestSuccessPct.toFixed(1)}%</div></div>
-      <div class="card"><h3>p95 ingest→cache</h3><div style="font-size:28px">{Math.round(g.p95IngestMs)} ms</div></div>
-      <div class="card"><h3>Heartbeat freshness</h3><div style="font-size:28px">{Math.round(g.heartbeatFreshnessMin)} min</div></div>
+    <div class="card" id="ops-slo">
+      <div class="ops-header">
+        <h2>Ops SLO snapshot</h2>
+        <span class="ops-subtext">
+          Updated <span data-field="generated-at">{generatedLabel}</span>
+        </span>
+      </div>
+      <div class="ops-grid">
+        <div class="ops-tile">
+          <span class="ops-label">Ingest burn (1k ev)</span>
+          <span class="ops-value" data-field="burn-rate">×{burnRate.toFixed(2)}</span>
+          <span class="ops-status" data-field="burn-status" data-state={burnState}>
+            {burnLabel}
+          </span>
+        </div>
+        <div class="ops-tile">
+          <span class="ops-label">Ingest success (total)</span>
+          <span class="ops-value" data-field="ingest-total-success">{total.successPct.toFixed(2)}%</span>
+          <span class="ops-subtext" data-field="ingest-total-count">
+            {fmt(total.success)} ok / {fmt(total.total)} total ({fmt(total.error)} errors)
+          </span>
+        </div>
+        <div class="ops-tile">
+          <span class="ops-label">Ingest success (1k window)</span>
+          <span class="ops-value" data-field="ingest-recent-success">{window1k.successPct.toFixed(2)}%</span>
+          <span class="ops-subtext" data-field="ingest-recent-count">
+            {fmt(window1k.success)} ok / {fmt(window1k.total)} ({fmt(window1k.error)} errors)
+          </span>
+        </div>
+        <div class="ops-tile">
+          <span class="ops-label">Heartbeat online now</span>
+          <span class="ops-value" data-field="heartbeat-pct">{heartbeat.onlinePct.toFixed(1)}%</span>
+          <span class="ops-subtext" data-field="heartbeat-count">
+            {fmt(heartbeat.online)} / {fmt(heartbeat.total)} devices
+          </span>
+        </div>
+      </div>
+      <script id="ops-slo-data" type="application/json">{initialJson}</script>
+      <script dangerouslySetInnerHTML={{ __html: opsScript }} />
     </div>
   );
 }
@@ -898,6 +1207,50 @@ export function AdminSitesPage() {
         <tbody id="maps-tbody"></tbody>
       </table>
       <script dangerouslySetInnerHTML={{ __html: adminSitesScript }} />
+    </div>
+  );
+}
+
+export function AdminMaintenancePage() {
+  return (
+    <div class="card">
+      <h2>Admin — Maintenance windows</h2>
+      <form id="maintenance-form" class="maintenance-form">
+        <label>Site
+          <input type="text" name="siteId" placeholder="SITE-CT-001" />
+        </label>
+        <label>Device
+          <input type="text" name="deviceId" placeholder="GBR-HP-12345" />
+        </label>
+        <label>Start
+          <input type="datetime-local" name="startTs" required />
+        </label>
+        <label>End
+          <input type="datetime-local" name="endTs" required />
+        </label>
+        <label style="flex:1">Reason
+          <input type="text" name="reason" placeholder="Firmware rollout" />
+        </label>
+        <button class="btn" type="submit">Schedule window</button>
+      </form>
+      <table>
+        <thead>
+          <tr>
+            <th>Scope</th>
+            <th>Start</th>
+            <th>End</th>
+            <th>Reason</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="maintenance-tbody">
+          <tr>
+            <td colSpan={6} class="table-empty">Loading…</td>
+          </tr>
+        </tbody>
+      </table>
+      <script dangerouslySetInnerHTML={{ __html: maintenanceScript }} />
     </div>
   );
 }

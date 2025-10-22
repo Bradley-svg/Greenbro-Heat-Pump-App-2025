@@ -25,6 +25,8 @@ export const RULES: Record<RuleName, RuleConfig> = {
   no_heartbeat_crit: { dwellSec: 0, cooldownSec: 0 },
 };
 
+const isRuleName = (value: string): value is RuleName => value in RULES;
+
 export type Derived = {
   deltaT: number | null;
   thermalKW: number | null;
@@ -76,14 +78,21 @@ export async function evaluateTelemetryAlerts(env: Env, t: TelemetryPayload, d: 
 }
 
 export async function openAlertIfNeeded(
-  DB: D1Database,
+  env: Env,
   deviceId: string,
   type: string,
   severity: Severity,
   tsISO: string,
   meta: Record<string, unknown>,
 ) {
-  const open = await DB.prepare(
+  if (await isMaintenanceActive(env, deviceId, tsISO)) {
+    if (isRuleName(type)) {
+      await resetDwell(env, deviceId, type);
+    }
+    return;
+  }
+
+  const open = await env.DB.prepare(
     "SELECT alert_id FROM alerts WHERE device_id=? AND type=? AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
   )
     .bind(deviceId, type)
@@ -92,7 +101,7 @@ export async function openAlertIfNeeded(
   if (open) return;
 
   const alertId = crypto.randomUUID();
-  await DB.prepare(
+  await env.DB.prepare(
     `INSERT INTO alerts (alert_id, device_id, type, severity, state, opened_at, meta_json)
      VALUES (?, ?, ?, ?, 'open', ?, ?)`,
   )
@@ -180,6 +189,11 @@ async function maybeOpen(
   const cfg = RULES[rule];
   const now = Date.parse(tsISO);
 
+  if (await isMaintenanceActive(env, deviceId, tsISO)) {
+    await resetDwell(env, deviceId, rule);
+    return;
+  }
+
   const st = await loadState(env, deviceId, rule);
 
   if (st.cooldown_until_ts && Date.parse(st.cooldown_until_ts) > now) {
@@ -266,6 +280,17 @@ async function loadState(env: Env, deviceId: string, rule: RuleName) {
   );
 }
 
+async function resetDwell(env: Env, deviceId: string, rule: RuleName) {
+  const st = await loadState(env, deviceId, rule);
+  if (st.dwell_start_ts || st.last_trigger_ts) {
+    await saveState(env, deviceId, rule, {
+      ...st,
+      dwell_start_ts: null,
+      last_trigger_ts: null,
+    });
+  }
+}
+
 async function saveState(
   env: Env,
   deviceId: string,
@@ -302,4 +327,28 @@ async function setSuppress(env: Env, deviceId: string, rule: RuleName, shouldSup
     dwell_start_ts: shouldSuppress ? null : st.dwell_start_ts,
     last_trigger_ts: shouldSuppress ? null : st.last_trigger_ts,
   });
+}
+
+async function isMaintenanceActive(env: Env, deviceId: string, tsISO: string): Promise<boolean> {
+  const row = await env.DB.prepare('SELECT site_id FROM devices WHERE device_id=?')
+    .bind(deviceId)
+    .first<{ site_id: string | null }>()
+    .catch(() => null);
+  const siteId = row?.site_id ?? null;
+
+  const active = await env.DB.prepare(
+    `SELECT 1 FROM maintenance_windows
+     WHERE start_ts <= ? AND (end_ts IS NULL OR end_ts >= ?)
+       AND (
+         (device_id IS NOT NULL AND device_id = ?)
+         OR (device_id IS NULL AND site_id IS NOT NULL AND site_id = ?)
+         OR (device_id IS NULL AND site_id IS NULL)
+       )
+     LIMIT 1`,
+  )
+    .bind(tsISO, tsISO, deviceId, siteId)
+    .first<{ 1: number }>()
+    .catch(() => null);
+
+  return Boolean(active);
 }
