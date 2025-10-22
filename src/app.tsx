@@ -336,6 +336,20 @@ type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number }
 type FastBurnAction = 'opened' | 'closed' | 'none';
 type FastBurnResult = { snapshot: BurnSnapshot; action: FastBurnAction };
 
+function parseDurationMinutes(input: string | null | undefined): number | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const match = /^([0-9]+)([mh])$/i.exec(trimmed);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return null;
+  const unit = match[2].toLowerCase();
+  if (unit === 'm') return value;
+  if (unit === 'h') return value * 60;
+  return null;
+}
+
 async function computeBurn(DB: D1Database, minutes = 10, target = 0.999): Promise<BurnSnapshot> {
   const row = await DB.prepare(
     `
@@ -2307,6 +2321,49 @@ app.get('/api/ops/slo', async (c) => {
   }
   const snapshot = await computeOpsSnapshot(c.env.DB);
   return c.json(snapshot);
+});
+
+app.get('/api/ops/burn-series', async (c) => {
+  const url = new URL(c.req.url);
+  const windowMinutes = parseDurationMinutes(url.searchParams.get('window')) ?? 10;
+  const stepMinutesRaw = parseDurationMinutes(url.searchParams.get('step')) ?? 1;
+  const stepMinutes = Math.max(1, stepMinutesRaw);
+  const steps = Math.max(1, Math.ceil(windowMinutes / stepMinutes));
+  const cappedSteps = Math.min(steps, 600);
+
+  const rows = await c.env.DB.prepare(
+    `SELECT CAST(strftime('%s', ts) / (? * 60) AS INTEGER) AS bucket,
+            SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS ok,
+            COUNT(*) AS total
+       FROM ops_metrics
+      WHERE route='/api/ingest' AND ts >= datetime('now', ?)
+      GROUP BY bucket
+      ORDER BY bucket`,
+  )
+    .bind(stepMinutes, `-${windowMinutes} minutes`)
+    .all<{ bucket: number | null; ok: number | null; total: number | null }>();
+
+  const buckets = new Map<number, { ok: number; total: number }>();
+  for (const row of rows.results ?? []) {
+    if (row.bucket == null) continue;
+    buckets.set(row.bucket, { ok: row.ok ?? 0, total: row.total ?? 0 });
+  }
+
+  const nowBucket = Math.floor(Date.now() / (stepMinutes * 60 * 1000));
+  const target = 0.999;
+  const denom = 1 - target;
+  const series: number[] = [];
+  for (let i = cappedSteps - 1; i >= 0; i--) {
+    const bucketIndex = nowBucket - i;
+    const bucket = buckets.get(bucketIndex);
+    const total = bucket?.total ?? 0;
+    const ok = bucket?.ok ?? 0;
+    const errRate = total > 0 ? 1 - ok / total : 0;
+    const burn = denom > 0 ? errRate / denom : 0;
+    series.push(Number.isFinite(burn) ? burn : 0);
+  }
+
+  return c.json({ series });
 });
 
 app.get('/ops', async (c) => {

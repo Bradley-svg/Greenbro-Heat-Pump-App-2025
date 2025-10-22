@@ -1,74 +1,37 @@
-interface FleetMapSite {
-  siteId: string;
-  name: string;
-  region: string;
-  lat: number;
-  lon: number;
-  online: boolean;
-}
+import React from 'react';
 
-interface SAFleetMapProps {
-  sites: FleetMapSite[];
-  onSelectSite?: (siteId: string) => void;
-}
+export function SAFleetMap({ sites, width = 820, height = 420, onClickMarker }:{
+  sites:any[]; width?:number; height?:number; onClickMarker:(siteId:string)=>void
+}){
+  const pts = sites.filter(s=> s.lat!=null && s.lon!=null);
+  if (!pts.length) return <div style={{ padding:12, color:'#666' }}>No geo-tagged sites yet.</div>;
 
-const MAP_WIDTH = 420;
-const MAP_HEIGHT = 360;
-const LAT_RANGE = { min: -35.0, max: -22.0 };
-const LON_RANGE = { min: 16.0, max: 33.0 };
-
-function project(lat: number, lon: number) {
-  const clampedLat = Math.min(Math.max(lat, LAT_RANGE.min), LAT_RANGE.max);
-  const clampedLon = Math.min(Math.max(lon, LON_RANGE.min), LON_RANGE.max);
-  const x = ((clampedLon - LON_RANGE.min) / (LON_RANGE.max - LON_RANGE.min)) * MAP_WIDTH;
-  const y = ((LAT_RANGE.max - clampedLat) / (LAT_RANGE.max - LAT_RANGE.min)) * MAP_HEIGHT;
-  return { x, y };
-}
-
-export function SAFleetMap({ sites, onSelectSite }: SAFleetMapProps): JSX.Element {
-  const markers = sites.filter((site) => Number.isFinite(site.lat) && Number.isFinite(site.lon));
-
+  const minLat = Math.min(...pts.map(p=> p.lat)), maxLat = Math.max(...pts.map(p=> p.lat));
+  const minLon = Math.min(...pts.map(p=> p.lon)), maxLon = Math.max(...pts.map(p=> p.lon));
+  const pad = 12;
+  function xy(lat:number, lon:number){
+    const x = pad + ( (lon - minLon) / (maxLon - minLon || 1) ) * (width - pad*2);
+    const y = pad + ( 1 - (lat - minLat) / (maxLat - minLat || 1) ) * (height - pad*2);
+    return { x, y };
+  }
+  const circles = pts.map(p=>{
+    const {x,y} = xy(p.lat, p.lon);
+    const color = p.health==='unhealthy' || !p.online ? '#ef4444' : '#22c55e';
+    const name = p.name || p.site_id;
+    const alerts = p.open_alerts ?? 'n/a';
+    const fresh = p.freshness_min != null ? `${p.freshness_min} min` : 'n/a';
+    return { x, y, id:p.site_id, color, name, alerts, fresh };
+  });
   return (
-    <div className="fleet-map">
-      <svg
-        className="fleet-map__svg"
-        viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
-        role="img"
-        aria-label="South African fleet map"
-      >
-        <defs>
-          <radialGradient id="map-glow" cx="50%" cy="40%" r="70%">
-            <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <rect x="0" y="0" width={MAP_WIDTH} height={MAP_HEIGHT} rx="16" fill="#0f172a" />
-        <rect x="1" y="1" width={MAP_WIDTH - 2} height={MAP_HEIGHT - 2} rx="15" fill="#111c32" stroke="#1f2937" />
-        <ellipse cx={MAP_WIDTH / 2} cy={MAP_HEIGHT / 2} rx={MAP_WIDTH * 0.45} ry={MAP_HEIGHT * 0.55} fill="url(#map-glow)" />
-        {markers.map((site) => {
-          const { x, y } = project(site.lat, site.lon);
-          const tone = site.online ? '#22c55e' : '#f97316';
-          return (
-            <g
-              key={site.siteId}
-              className="fleet-map__marker"
-              transform={`translate(${x}, ${y})`}
-              onClick={() => onSelectSite?.(site.siteId)}
-              role="button"
-            >
-              <circle r="6" fill="#0f172a" stroke={tone} strokeWidth="2" />
-              <circle r="3" fill={tone} />
-              <text x="10" y="4" className="fleet-map__label">
-                {site.name}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-      <div className="fleet-map__legend" aria-hidden="true">
-        <span className="fleet-map__dot fleet-map__dot--online" /> Online
-        <span className="fleet-map__dot fleet-map__dot--offline" /> Offline
-      </div>
-    </div>
+    <svg width={width} height={height} style={{ width:'100%', height:'auto' }}>
+      <rect x={0} y={0} width={width} height={height} fill="#f8fafc" stroke="#e2e8f0"/>
+      {circles.map(c => (
+        <g key={c.id} onClick={()=> onClickMarker(c.id)} style={{ cursor:'pointer' }}>
+          <circle cx={c.x} cy={c.y} r={7} fill={c.color} stroke="#0b0e12" strokeWidth={1}/>
+          <title>{`${c.name}\nOnline: ${c.color==='#22c55e'?'Yes':'No'}\nOpen alerts: ${c.alerts}\nLast heartbeat: ${c.fresh}`}</title>
+          <text x={c.x+10} y={c.y+4} fontSize={12} fill="#0b0e12">{c.name}</text>
+        </g>
+      ))}
+    </svg>
   );
 }

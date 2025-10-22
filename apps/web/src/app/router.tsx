@@ -6,12 +6,12 @@ import { FullScreenLoader } from '@components/FullScreenLoader';
 import { ROUTE_ROLES } from '@utils/rbac';
 import type { Role } from '@utils/types';
 import { LoginPage } from '@pages/LoginPage';
-import { OverviewPage } from '@pages/OverviewPage';
+import OverviewPage from '@pages/overview/OverviewPage';
 import { DevicesPage } from '@pages/DevicesPage';
 import { DeviceDetailPage } from '@pages/DeviceDetailPage';
 import { AlertsPage } from '@pages/AlertsPage';
 import { CommissioningPage } from '@pages/CommissioningPage';
-import { OpsPage } from '@pages/OpsPage';
+import OpsPage from '@pages/ops/OpsPage';
 import { AdminPage } from '@pages/AdminPage';
 import { UnauthorizedPage } from '@pages/UnauthorizedPage';
 
