@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react';
 
 export default function OverviewPage(){
   const nav = useNavigate();
+  const [onlyBad, setOnlyBad] = useState(false);
 
   const kpi = useQuery({
     queryKey:['kpis'],
@@ -13,8 +14,21 @@ export default function OverviewPage(){
     refetchInterval: 10000
   });
   const sites = useQuery({
-    queryKey:['sites'],
-    queryFn: async ()=> (await (await fetch('/api/sites')).json()),
+    queryKey:['sites', { onlyBad }],
+    queryFn: async ()=>{
+      const url = onlyBad
+        ? '/api/sites/search?only_unhealthy=1&limit=500&offset=0'
+        : '/api/sites';
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error('Failed to load sites');
+      }
+      const payload = await response.json();
+      if (onlyBad) {
+        return Array.isArray(payload?.results) ? payload.results : [];
+      }
+      return Array.isArray(payload) ? payload : [];
+    },
     refetchInterval: 10000
   });
   const sparks = useQuery({
@@ -23,10 +37,11 @@ export default function OverviewPage(){
     refetchInterval: 10000
   });
 
-  const [onlyBad, setOnlyBad] = useState(false);
   const sdataRaw = (sites.data||[]) as any[];
   const sdata = useMemo(
-    ()=> sdataRaw.filter(s=> !onlyBad || s.health==='unhealthy' || !s.online),
+    ()=> onlyBad
+      ? sdataRaw.filter(s=> s.health==='unhealthy' || !s.online)
+      : sdataRaw,
     [sdataRaw, onlyBad]
   );
 
