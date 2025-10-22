@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from './providers/AuthProvider';
 import { ROUTE_ROLES } from '@utils/rbac';
 import type { Role } from '@utils/types';
+import { useReadOnly } from '@hooks/useReadOnly';
 
 interface NavItem {
   to: string;
@@ -20,8 +21,10 @@ const NAV_ITEMS: NavItem[] = [
 
 export function AppLayout(): JSX.Element {
   const { user, logout, status } = useAuth();
+  const { ro, canToggle, toggle, isPending } = useReadOnly();
 
   const permittedNav = NAV_ITEMS.filter((item) => hasAnyRole(user?.roles ?? [], ROUTE_ROLES[item.roleKey]));
+  const allowToggle = Boolean(user?.roles.includes('admin')) && canToggle;
 
   return (
     <div className="app-shell">
@@ -45,18 +48,25 @@ export function AppLayout(): JSX.Element {
       <div className="app-main">
         <header className="app-topbar">
           <div className="app-topbar__title">{status === 'authenticated' ? 'Control Center' : 'Loading…'}</div>
-          <div className="app-topbar__account">
-            {user ? (
-              <>
-                <div className="app-topbar__user">
-                  <span className="app-topbar__user-name">{user.name ?? user.email}</span>
-                  <span className="app-topbar__user-roles">{user.roles.join(', ')}</span>
-                </div>
-                <button className="app-button" onClick={() => void logout()} type="button">
-                  Log out
-                </button>
-              </>
-            ) : null}
+          <div className="app-topbar__actions">
+            <ReadOnlyPill
+              readOnly={ro}
+              onToggle={allowToggle ? toggle : undefined}
+              disabled={isPending}
+            />
+            <div className="app-topbar__account">
+              {user ? (
+                <>
+                  <div className="app-topbar__user">
+                    <span className="app-topbar__user-name">{user.name ?? user.email}</span>
+                    <span className="app-topbar__user-roles">{user.roles.join(', ')}</span>
+                  </div>
+                  <button className="app-button" onClick={() => void logout()} type="button">
+                    Log out
+                  </button>
+                </>
+              ) : null}
+            </div>
           </div>
         </header>
         <main className="app-content">
@@ -70,4 +80,25 @@ export function AppLayout(): JSX.Element {
 function hasAnyRole(userRoles: Role[], allowed: readonly Role[]): boolean {
   if (allowed.length === 0) return true;
   return allowed.some((role) => userRoles.includes(role));
+}
+
+interface ReadOnlyPillProps {
+  readOnly: boolean;
+  onToggle?: () => void;
+  disabled?: boolean;
+}
+
+function ReadOnlyPill({ readOnly, onToggle, disabled }: ReadOnlyPillProps): JSX.Element {
+  const label = readOnly ? 'READ-ONLY' : 'READ/WRITE';
+  const className = `ro-pill ${readOnly ? 'ro-pill--locked' : 'ro-pill--unlocked'}${onToggle ? ' ro-pill--interactive' : ''}`;
+
+  if (onToggle) {
+    return (
+      <button className={className} type="button" onClick={onToggle} disabled={disabled}>
+        {label}
+      </button>
+    );
+  }
+
+  return <span className={className}>{label}</span>;
 }

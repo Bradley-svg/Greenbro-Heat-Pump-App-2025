@@ -1,13 +1,21 @@
 import type { Role } from '@utils/types';
 
+export interface DeviceSiteMeta {
+  id?: string;
+  name: string;
+  location?: string;
+  region?: string;
+  lat?: number;
+  lon?: number;
+}
+
 export interface Device {
   id: string;
   name: string;
   serialNumber?: string;
-  site?: {
-    name: string;
-    location?: string;
-  };
+  siteId?: string;
+  region?: string;
+  site?: DeviceSiteMeta;
   status: 'online' | 'offline' | 'commissioning' | 'maintenance';
   lastHeartbeat?: string;
   clientIds?: string[];
@@ -28,6 +36,29 @@ export interface DeviceLatestState {
 export interface TelemetryPoint {
   timestamp: string;
   metrics: Record<string, number | null>;
+}
+
+export interface OverviewKpis {
+  online_pct: number;
+  open_alerts: number;
+  avg_cop: number;
+  low_dt: number;
+  updated_at?: string;
+}
+
+export interface OverviewSparklineResponse {
+  cop: number[];
+  delta_t: number[];
+}
+
+export interface SiteSummary {
+  siteId: string;
+  name: string;
+  region: string;
+  lat: number;
+  lon: number;
+  online: boolean;
+  health?: 'good' | 'warning' | 'critical' | 'unknown';
 }
 
 export interface OverviewSummary {
@@ -71,4 +102,17 @@ export interface OpsSloSummary {
   updatedAt: string;
   owner?: Role;
   metadata?: Record<string, unknown>;
+}
+
+export interface OpsSloSnapshot {
+  ingest_success_pct: number;
+  heartbeat_freshness_pct: number;
+  p95_ingest_latency_ms: number;
+  burn: number;
+  updated_at?: string;
+}
+
+export interface PublicSettings {
+  readOnly: boolean;
+  canToggle?: boolean;
 }

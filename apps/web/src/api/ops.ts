@@ -1,6 +1,6 @@
 import { apiFetch } from './client';
-import type { OpsSloSummary } from './types';
+import type { OpsSloSnapshot } from './types';
 
-export function getOpsSlo() {
-  return apiFetch<OpsSloSummary[]>('/api/ops/slo');
+export function getOpsSnapshot(fetchImpl?: typeof fetch) {
+  return apiFetch<OpsSloSnapshot>('/api/ops/slo', undefined, fetchImpl);
 }
