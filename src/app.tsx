@@ -54,6 +54,8 @@ async function notifyOps(env: Env, message: string) {
 }
 
 type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number };
+type FastBurnAction = 'opened' | 'closed' | 'none';
+type FastBurnResult = { snapshot: BurnSnapshot; action: FastBurnAction };
 
 async function computeBurn(DB: D1Database, minutes = 10, target = 0.999): Promise<BurnSnapshot> {
   const row = await DB.prepare(
@@ -73,11 +75,11 @@ async function computeBurn(DB: D1Database, minutes = 10, target = 0.999): Promis
   return { total, ok, errRate, burn };
 }
 
-async function openP1IfNeeded(env: Env, nowISO: string, meta: BurnSnapshot) {
+async function openP1IfNeeded(env: Env, nowISO: string, meta: BurnSnapshot): Promise<boolean> {
   const open = await env.DB.prepare(
     "SELECT alert_id FROM alerts WHERE type='ingest_degradation' AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
   ).first<{ alert_id: string }>();
-  if (open) return;
+  if (open) return false;
   const id = crypto.randomUUID();
   await env.DB.prepare(
     "INSERT INTO alerts (alert_id, device_id, type, severity, state, opened_at, meta_json) VALUES (?, NULL, 'ingest_degradation', 'critical', 'open', ?, ?)",
@@ -88,13 +90,14 @@ async function openP1IfNeeded(env: Env, nowISO: string, meta: BurnSnapshot) {
     env,
     `P1: Ingest degradation — burn=${meta.burn.toFixed(2)} (err ${(meta.errRate * 100).toFixed(2)}%, ${meta.ok}/${meta.total} ok)`,
   );
+  return true;
 }
 
-async function closeP1IfRecovered(env: Env, nowISO: string, meta: BurnSnapshot) {
+async function closeP1IfRecovered(env: Env, nowISO: string, meta: BurnSnapshot): Promise<boolean> {
   const open = await env.DB.prepare(
     "SELECT alert_id FROM alerts WHERE type='ingest_degradation' AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
   ).first<{ alert_id: string }>();
-  if (!open) return;
+  if (!open) return false;
   await env.DB.prepare("UPDATE alerts SET state='closed', closed_at=? WHERE alert_id=?")
     .bind(nowISO, open.alert_id)
     .run();
@@ -102,17 +105,24 @@ async function closeP1IfRecovered(env: Env, nowISO: string, meta: BurnSnapshot) 
     env,
     `Recovered: Ingest degradation — burn=${meta.burn.toFixed(2)} (err ${(meta.errRate * 100).toFixed(2)}%)`,
   );
+  return true;
 }
 
-async function fastBurnMonitor(env: Env) {
+async function fastBurnMonitor(env: Env): Promise<FastBurnResult> {
   const nowISO = new Date().toISOString();
-  const { total, ok, errRate, burn } = await computeBurn(env.DB, 10, 0.999);
-  if (total >= 200 && burn > 2.0) {
-    await openP1IfNeeded(env, nowISO, { total, ok, errRate, burn });
+  const snapshot = await computeBurn(env.DB, 10, 0.999);
+  let action: FastBurnAction = 'none';
+  if (snapshot.total >= 200 && snapshot.burn > 2.0) {
+    if (await openP1IfNeeded(env, nowISO, snapshot)) {
+      action = 'opened';
+    }
   }
-  if (total >= 200 && burn <= 1.0) {
-    await closeP1IfRecovered(env, nowISO, { total, ok, errRate, burn });
+  if (snapshot.total >= 200 && snapshot.burn <= 1.0) {
+    if (await closeP1IfRecovered(env, nowISO, snapshot)) {
+      action = 'closed';
+    }
   }
+  return { snapshot, action };
 }
 async function isReadOnly(DB: D1Database) {
   return (await getSetting(DB, 'read_only')) === '1';
@@ -1039,6 +1049,16 @@ app.get('/api/reports/*', async (c) => {
 app.get('/', async (c) => {
   const data = await buildOverviewData(c.env.DB);
   return c.render(<OverviewPage data={data} />);
+});
+
+app.get('/api/ops/check-fastburn', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const result = await fastBurnMonitor(c.env);
+  return c.json(result);
 });
 
 app.get('/api/ops/slo', async (c) => {
