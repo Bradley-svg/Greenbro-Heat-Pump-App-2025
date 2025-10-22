@@ -1,205 +1,284 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { FormEvent } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from '@api/client';
-import { useAuthFetch } from '@hooks/useAuthFetch';
-import type { Device } from '@api/types';
-import { useAuth } from '@app/providers/AuthProvider';
+import { Link, useSearchParams } from 'react-router-dom';
 
+const THRESHOLD = 500; // switch to server pagination above this
 const PAGE_SIZE = 100;
-const SEARCH_THRESHOLD = 500;
 
-interface DeviceSearchRow {
+type RegionRow = {
+  region: string;
+  sites: number;
+};
+
+type DeviceSearchRow = {
   device_id: string;
   site_id: string | null;
+  region: string | null;
   firmware: string | null;
   model: string | null;
-  online: boolean;
+  online: number | boolean | null;
   last_seen_at: string | null;
-  region: string | null;
-  open_alerts: number;
-  health: 'healthy' | 'unhealthy';
-}
+  open_alerts: number | null;
+  health?: 'healthy' | 'unhealthy' | 'empty';
+};
 
-interface DeviceSearchResponse {
+type DeviceSearchResponse = {
   results: DeviceSearchRow[];
   total: number;
   limit: number;
   offset: number;
   has_more: boolean;
+};
+
+type DeviceListRow = {
+  device_id: string;
+  site_id: string | null;
+  site_name?: string | null;
+  region: string | null;
+  online: number | null;
+  last_seen_at: string | null;
+  open_alerts?: number | null;
+  openAlerts?: number | null;
+};
+
+type DeviceRow = {
+  id: string;
+  siteId?: string;
+  siteName?: string;
+  region?: string;
+  lastSeen?: string | null;
+  online?: boolean | null;
+  openAlerts?: number;
+  health?: 'healthy' | 'unhealthy';
+};
+
+type DeviceQueryResult = {
+  results: DeviceRow[];
+  total: number;
+  hasMore: boolean;
+};
+
+function buildSearchURL(base: string, params: Record<string, string | undefined>) {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v) {
+      sp.set(k, v);
+    }
+  }
+  const qs = sp.toString();
+  return qs ? `${base}?${qs}` : base;
 }
 
-export function DevicesPage(): JSX.Element {
-  const authFetch = useAuthFetch();
-  const { hasRole } = useAuth();
-  const canUseSearch = hasRole(['admin', 'ops']);
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function mapSearchRow(row: DeviceSearchRow): DeviceRow {
+  const openAlerts = toNumber(row.open_alerts) ?? 0;
+  const online =
+    row.online === true || row.online === 1
+      ? true
+      : row.online === false || row.online === 0
+        ? false
+        : null;
+  const derivedUnhealthy = row.health === 'unhealthy' || online === false || openAlerts > 0;
+  return {
+    id: row.device_id,
+    siteId: row.site_id ?? undefined,
+    siteName: row.site_id ?? undefined,
+    region: row.region ?? undefined,
+    lastSeen: row.last_seen_at ?? null,
+    online,
+    openAlerts,
+    health: derivedUnhealthy ? 'unhealthy' : 'healthy',
+  };
+}
+
+function mapClientRow(row: DeviceListRow): DeviceRow {
+  const online = row.online === null || row.online === undefined ? null : row.online === 1;
+  const openAlerts =
+    toNumber((row as { open_alerts?: number | null }).open_alerts) ??
+    toNumber((row as { openAlerts?: number | null }).openAlerts) ??
+    0;
+  const derivedUnhealthy = online === false || openAlerts > 0;
+  return {
+    id: row.device_id,
+    siteId: row.site_id ?? undefined,
+    siteName: row.site_name ?? row.site_id ?? undefined,
+    region: row.region ?? undefined,
+    lastSeen: row.last_seen_at ?? null,
+    online,
+    openAlerts,
+    health: derivedUnhealthy ? 'unhealthy' : 'healthy',
+  };
+}
+
+function isUnhealthy(row: DeviceRow): boolean {
+  if (row.health === 'unhealthy') {
+    return true;
+  }
+  if (row.online === false) {
+    return true;
+  }
+  return (row.openAlerts ?? 0) > 0;
+}
+
+function matchesHealth(row: DeviceRow, health: string): boolean {
+  if (!health) {
+    return true;
+  }
+  if (health === 'online') {
+    return row.online === true;
+  }
+  if (health === 'offline') {
+    return row.online === false;
+  }
+  if (health === 'unhealthy') {
+    return isUnhealthy(row);
+  }
+  return true;
+}
+
+function statusFor(row: DeviceRow): 'online' | 'offline' | 'unknown' {
+  if (row.online === true) {
+    return 'online';
+  }
+  if (row.online === false) {
+    return 'offline';
+  }
+  return 'unknown';
+}
+
+export default function DevicesPage() {
   const [params, setParams] = useSearchParams();
-  const selectedSite = params.get('site') ?? '';
-  const selectedRegion = params.get('region') ?? '';
-  const selectedHealth = params.get('health') ?? '';
-  const rawPage = Number(params.get('page') ?? '0');
-  const page = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 0;
+  const site = params.get('site') ?? '';
+  const region = params.get('region') ?? '';
+  const health = params.get('health') ?? '';
+  const pageParam = Number(params.get('page') ?? '0');
+  const page = Number.isFinite(pageParam) && pageParam >= 0 ? pageParam : 0;
+  const unhealthyOnly = health === 'unhealthy';
 
-  const [siteInput, setSiteInput] = useState(selectedSite);
-  const [regionInput, setRegionInput] = useState(selectedRegion);
-
-  useEffect(() => {
-    setSiteInput(selectedSite);
-  }, [selectedSite]);
-
-  useEffect(() => {
-    setRegionInput(selectedRegion);
-  }, [selectedRegion]);
-
-  const filterKey = useMemo(
-    () => ({ site: selectedSite, region: selectedRegion, health: selectedHealth }),
-    [selectedHealth, selectedRegion, selectedSite],
+  const regions = useQuery({
+    queryKey: ['regions'],
+    queryFn: async () =>
+      (await (await fetch('/api/regions')).json()) as { regions: RegionRow[] },
+    staleTime: 5 * 60 * 1000,
+  });
+  const regionOpts = useMemo(
+    () => (regions.data?.regions ?? []).map((r) => r.region).filter(Boolean),
+    [regions.data?.regions],
   );
 
-  const buildSearchQuery = useCallback(
-    (limit: number, offset: number) => {
-      const search = new URLSearchParams();
-      if (selectedSite) {
-        search.set('site_id', selectedSite);
-      }
-      if (selectedRegion) {
-        search.set('region', selectedRegion);
-      }
-      if (selectedHealth) {
-        search.set('health', selectedHealth);
-      }
-      search.set('limit', String(limit));
-      search.set('offset', String(offset));
-      return `/api/devices/search?${search.toString()}`;
+  const meta = useQuery({
+    queryKey: ['devices-meta', { site, region, health }],
+    queryFn: async () => {
+      const url = buildSearchURL('/api/devices/search', {
+        site_id: site || undefined,
+        region: region || undefined,
+        health: health || undefined,
+        limit: '1',
+        offset: '0',
+      });
+      const r = await fetch(url);
+      const j = await r.json();
+      const total =
+        typeof j?.total === 'number'
+          ? j.total
+          : Array.isArray(j)
+            ? j.length
+            : typeof j?.results?.length === 'number'
+              ? j.results.length
+              : 0;
+      return { total } as { total: number };
     },
-    [selectedHealth, selectedRegion, selectedSite],
-  );
-
-  const searchProbe = useQuery({
-    queryKey: ['devices', 'probe', filterKey],
-    queryFn: () => apiFetch<DeviceSearchResponse>(buildSearchQuery(1, 0), undefined, authFetch),
-    enabled: canUseSearch,
-    refetchInterval: 20_000,
+    refetchInterval: 10_000,
   });
 
-  const probeTotal = searchProbe.data?.total;
-  const probeError = searchProbe.isError;
-  const shouldUseSearch = canUseSearch && !probeError && probeTotal !== undefined && probeTotal > SEARCH_THRESHOLD;
-  const enableClientList =
-    !canUseSearch || probeError || (probeTotal !== undefined && probeTotal <= SEARCH_THRESHOLD);
-  const waitingForProbe = canUseSearch && !probeError && probeTotal === undefined;
+  const serverMode = meta.isSuccess ? (meta.data?.total ?? 0) > THRESHOLD : false;
 
   useEffect(() => {
-    if (!shouldUseSearch && params.get('page')) {
+    if (!serverMode && page !== 0 && !meta.isLoading) {
       const next = new URLSearchParams(params);
       next.delete('page');
       setParams(next, { replace: true });
     }
-  }, [params, setParams, shouldUseSearch]);
+  }, [meta.isLoading, page, params, serverMode, setParams]);
 
-  const { data: clientData, isLoading: isClientLoading, isError: isClientError } = useQuery({
-    queryKey: ['devices', 'list'],
-    queryFn: () => apiFetch<Device[]>('/api/devices', undefined, authFetch),
-    refetchInterval: 20_000,
-    enabled: enableClientList,
-  });
-
-  const {
-    data: searchData,
-    isLoading: isSearchLoading,
-    isError: isSearchError,
-    isFetching: isSearchFetching,
-  } = useQuery({
-    queryKey: ['devices', 'search', filterKey, page],
-    queryFn: () => apiFetch<DeviceSearchResponse>(buildSearchQuery(PAGE_SIZE, page * PAGE_SIZE), undefined, authFetch),
-    refetchInterval: 20_000,
-    enabled: shouldUseSearch,
-  });
-
-  const searchDevices = useMemo(
-    () => (searchData?.results ?? []).map(mapSearchRow),
-    [searchData],
-  );
-
-  const filteredDevices = useMemo(() => {
-    if (shouldUseSearch) {
-      return searchDevices;
-    }
-    if (!clientData) {
-      return [];
-    }
-    return clientData.filter((device) => matchesFilters(device, selectedSite, selectedRegion, selectedHealth));
-  }, [clientData, searchDevices, selectedHealth, selectedRegion, selectedSite, shouldUseSearch]);
-
-  const totalDevices = shouldUseSearch
-    ? searchData?.total ?? probeTotal ?? 0
-    : filteredDevices.length;
-
-  const isLoading = shouldUseSearch
-    ? isSearchLoading
-    : enableClientList
-      ? isClientLoading
-      : waitingForProbe;
-  const isError = shouldUseSearch ? isSearchError : enableClientList ? isClientError : searchProbe.isError;
-
-  const hasNextPage = shouldUseSearch ? searchData?.has_more ?? false : false;
-  const hasPrevPage = shouldUseSearch ? page > 0 : false;
-
-  const activeFilters = [
-    selectedSite ? { key: 'site', label: `Site ${selectedSite}` } : null,
-    selectedRegion ? { key: 'region', label: `Region ${selectedRegion}` } : null,
-    selectedHealth
-      ? {
-          key: 'health',
-          label:
-            selectedHealth === 'unhealthy'
-              ? 'Unhealthy only'
-              : `Health ${selectedHealth}`,
+  const devices = useQuery<DeviceQueryResult>({
+    queryKey: ['devices', { serverMode, site, region, health, page }],
+    queryFn: async () => {
+      if (serverMode) {
+        const url = buildSearchURL('/api/devices/search', {
+          site_id: site || undefined,
+          region: region || undefined,
+          health: health || undefined,
+          limit: String(PAGE_SIZE),
+          offset: String(page * PAGE_SIZE),
+        });
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error('Failed to fetch devices');
         }
-      : null,
-  ].filter(Boolean) as Array<{ key: string; label: string }>;
-
-  const unhealthyOnly = selectedHealth === 'unhealthy';
-  const healthSelectValue = unhealthyOnly ? '' : selectedHealth;
-
-  const updateSearchParams = useCallback(
-    (
-      mutator: (next: URLSearchParams) => void,
-      options: { preservePage?: boolean } = {},
-    ) => {
-      const next = new URLSearchParams(params);
-      mutator(next);
-      if (!options.preservePage) {
-        next.delete('page');
+        const data = (await response.json()) as DeviceSearchResponse;
+        const rows = (data.results ?? []).map(mapSearchRow);
+        return {
+          results: rows,
+          total: typeof data.total === 'number' ? data.total : rows.length,
+          hasMore: Boolean(data.has_more),
+        };
       }
-      setParams(next, { replace: true });
-    },
-    [params, setParams],
-  );
 
-  const clearFilters = () => {
-    updateSearchParams((next) => {
-      next.delete('site');
-      next.delete('region');
-      next.delete('health');
-    });
-    setSiteInput('');
-    setRegionInput('');
+      const url = buildSearchURL('/api/devices', {
+        site: site || undefined,
+        region: region || undefined,
+        online: health === 'online' ? '1' : health === 'offline' ? '0' : undefined,
+      });
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error('Failed to fetch devices');
+      }
+      const data = (await response.json()) as DeviceListRow[];
+      const rows = data.map(mapClientRow);
+      const filtered = rows.filter((row) => matchesHealth(row, health));
+      return {
+        results: filtered,
+        total: filtered.length,
+        hasMore: false,
+      };
+    },
+    keepPreviousData: true,
+    refetchInterval: 10_000,
+    enabled: !meta.isLoading,
+  });
+
+  const updateSearchParams = (mutator: (next: URLSearchParams) => void) => {
+    const next = new URLSearchParams(params);
+    mutator(next);
+    next.delete('page');
+    setParams(next, { replace: true });
   };
 
-  const handleFiltersSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const trimmedSite = siteInput.trim();
-    const trimmedRegion = regionInput.trim();
+  const handleSiteChange = (value: string) => {
     updateSearchParams((next) => {
-      if (trimmedSite) {
-        next.set('site', trimmedSite);
+      if (value) {
+        next.set('site', value.trim());
       } else {
         next.delete('site');
       }
-      if (trimmedRegion) {
-        next.set('region', trimmedRegion);
+    });
+  };
+
+  const handleRegionChange = (value: string) => {
+    updateSearchParams((next) => {
+      if (value) {
+        next.set('region', value);
       } else {
         next.delete('region');
       }
@@ -216,36 +295,64 @@ export function DevicesPage(): JSX.Element {
     });
   };
 
-  const goToPage = (nextPage: number) => {
-    updateSearchParams(
-      (next) => {
-        if (nextPage <= 0) {
-          next.delete('page');
-        } else {
-          next.set('page', String(nextPage));
-        }
-      },
-      { preservePage: true },
-    );
-  };
-
   const handleUnhealthyToggle = (checked: boolean) => {
     updateSearchParams((next) => {
       if (checked) {
         next.set('health', 'unhealthy');
-      } else if (selectedHealth === 'unhealthy') {
+      } else if (next.get('health') === 'unhealthy') {
         next.delete('health');
       }
     });
   };
 
-  const renderPagination = shouldUseSearch && (searchDevices.length > 0 || totalDevices > 0);
-  const rangeStart = shouldUseSearch ? (totalDevices === 0 ? 0 : page * PAGE_SIZE + 1) : 0;
-  const rangeEnd = shouldUseSearch
-    ? searchDevices.length > 0
-      ? page * PAGE_SIZE + searchDevices.length
-      : rangeStart
-    : 0;
+  const clearFilters = () => {
+    const next = new URLSearchParams(params);
+    next.delete('site');
+    next.delete('region');
+    next.delete('health');
+    next.delete('page');
+    setParams(next, { replace: true });
+  };
+
+  const goToPage = (nextPage: number) => {
+    const safe = Math.max(0, nextPage);
+    const next = new URLSearchParams(params);
+    if (safe === 0) {
+      next.delete('page');
+    } else {
+      next.set('page', String(safe));
+    }
+    setParams(next, { replace: true });
+  };
+
+  const total = devices.data?.total ?? 0;
+  const rows = devices.data?.results ?? [];
+  const hasNextPage = serverMode && (devices.data?.hasMore ?? false);
+  const hasPrevPage = serverMode && page > 0;
+  const rangeStart = serverMode ? (total === 0 ? 0 : page * PAGE_SIZE + 1) : 0;
+  const rangeEnd = serverMode ? Math.min(total, page * PAGE_SIZE + rows.length) : 0;
+
+  const activeFilters = useMemo(() => {
+    const filters: Array<{ key: string; label: string }> = [];
+    if (site) {
+      filters.push({ key: 'site', label: `Site ${site}` });
+    }
+    if (region) {
+      filters.push({ key: 'region', label: `Region ${region}` });
+    }
+    if (health) {
+      if (health === 'unhealthy') {
+        filters.push({ key: 'health', label: 'Unhealthy only' });
+      } else {
+        filters.push({ key: 'health', label: `Health ${health}` });
+      }
+    }
+    return filters;
+  }, [health, region, site]);
+
+  const healthSelectValue = unhealthyOnly ? '' : health;
+  const isLoading = meta.isLoading || devices.isLoading;
+  const isError = meta.isError || devices.isError;
 
   return (
     <div className="page">
@@ -264,17 +371,17 @@ export function DevicesPage(): JSX.Element {
           </div>
         ) : null}
       </header>
-      <form
+
+      <section
         className="card"
-        onSubmit={handleFiltersSubmit}
         style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}
       >
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
           <span className="data-table__muted">Site</span>
           <input
             type="text"
-            value={siteInput}
-            onChange={(event) => setSiteInput(event.target.value)}
+            value={site}
+            onChange={(event) => handleSiteChange(event.target.value)}
             placeholder="SITE-1234"
             style={{
               padding: '8px 12px',
@@ -284,20 +391,25 @@ export function DevicesPage(): JSX.Element {
             }}
           />
         </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 180 }}>
           <span className="data-table__muted">Region</span>
-          <input
-            type="text"
-            value={regionInput}
-            onChange={(event) => setRegionInput(event.target.value)}
-            placeholder="Northwest"
+          <select
+            value={region}
+            onChange={(event) => handleRegionChange(event.target.value)}
             style={{
               padding: '8px 12px',
               borderRadius: 8,
               border: '1px solid #d1d5db',
               fontSize: 14,
             }}
-          />
+          >
+            <option value="">Any</option>
+            {regionOpts.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
         </label>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160 }}>
           <span className="data-table__muted">Health</span>
@@ -325,33 +437,34 @@ export function DevicesPage(): JSX.Element {
           />
           <span className="data-table__muted">Unhealthy only</span>
         </label>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button type="submit" className="app-button">
-            Apply filters
-          </button>
-          <button
-            type="button"
-            className="app-button"
-            onClick={clearFilters}
-          >
-            Clear
-          </button>
-        </div>
-      </form>
+        <button type="button" className="app-button" onClick={clearFilters}>
+          Clear filters
+        </button>
+      </section>
+
       {isLoading ? (
         <div className="card">Loading devices…</div>
       ) : isError ? (
         <div className="card card--error">Unable to load devices. Check your API connection.</div>
-      ) : filteredDevices.length > 0 ? (
+      ) : rows.length === 0 ? (
+        <div className="card">No devices match the current filters.</div>
+      ) : (
         <section className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <strong>Total devices: {totalDevices}</strong>
-            {shouldUseSearch && searchData && (
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 12,
+            }}
+          >
+            <strong>Total devices: {total}</strong>
+            {serverMode ? (
               <span className="data-table__muted">
-                Page {page + 1} • Showing {searchDevices.length} per page
-                {isSearchFetching ? ' (updating…)' : ''}
+                Page {page + 1} • {PAGE_SIZE} per page
+                {devices.isFetching ? ' (updating…)' : ''}
               </span>
-            )}
+            ) : null}
           </div>
           <table className="data-table">
             <thead>
@@ -361,28 +474,32 @@ export function DevicesPage(): JSX.Element {
                 <th>Site</th>
                 <th>Region</th>
                 <th>Last heartbeat</th>
+                <th>Open alerts</th>
               </tr>
             </thead>
             <tbody>
-              {filteredDevices.map((device) => (
+              {rows.map((device) => (
                 <tr key={device.id}>
                   <td>
                     <Link to={`/devices/${device.id}`} className="inline-link">
-                      {device.name}
+                      {device.id}
                     </Link>
-                    {device.serialNumber ? <div className="data-table__muted">SN {device.serialNumber}</div> : null}
+                    {device.siteId ? (
+                      <div className="data-table__muted">Site {device.siteId}</div>
+                    ) : null}
                   </td>
                   <td>
-                    <StatusPill status={device.status} />
+                    <StatusPill status={statusFor(device)} />
                   </td>
-                  <td>{device.site?.name ?? '—'}</td>
-                  <td>{device.site?.region ?? device.region ?? '—'}</td>
-                  <td>{device.lastHeartbeat ? new Date(device.lastHeartbeat).toLocaleString() : '—'}</td>
+                  <td>{device.siteName ?? '—'}</td>
+                  <td>{device.region ?? '—'}</td>
+                  <td>{device.lastSeen ? new Date(device.lastSeen).toLocaleString() : '—'}</td>
+                  <td>{device.openAlerts ?? 0}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {renderPagination ? (
+          {serverMode ? (
             <div
               style={{
                 display: 'flex',
@@ -393,7 +510,7 @@ export function DevicesPage(): JSX.Element {
               }}
             >
               <span className="data-table__muted">
-                Showing {rangeStart}-{rangeEnd} of {totalDevices}
+                Showing {rangeStart}-{rangeEnd} of {total}
               </span>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
@@ -416,79 +533,14 @@ export function DevicesPage(): JSX.Element {
             </div>
           ) : null}
         </section>
-      ) : (
-        <div className="card">No devices match the current filters.</div>
       )}
     </div>
   );
 }
 
-function StatusPill({ status }: { status: Device['status'] }): JSX.Element {
+function StatusPill({ status }: { status: 'online' | 'offline' | 'unknown' }) {
   const tone = status === 'online' ? 'positive' : status === 'offline' ? 'negative' : 'neutral';
   return <span className={`status-pill status-pill--${tone}`}>{status}</span>;
 }
 
-function mapSearchRow(row: DeviceSearchRow): Device {
-  const isOnline = row.online;
-  const siteId = row.site_id ?? undefined;
-  return {
-    id: row.device_id,
-    name: row.device_id,
-    siteId,
-    region: row.region ?? undefined,
-    site: siteId
-      ? {
-          id: siteId,
-          name: siteId,
-          region: row.region ?? undefined,
-        }
-      : undefined,
-    status: isOnline ? 'online' : 'offline',
-    lastHeartbeat: row.last_seen_at ?? undefined,
-  };
-}
-
-function matchesFilters(device: Device, site: string, region: string, health: string): boolean {
-  const matchesSite = site ? device.siteId === site || device.site?.id === site : true;
-  const matchesRegion = region
-    ? device.region === region || device.site?.region === region
-    : true;
-
-  if (!health) {
-    return matchesSite && matchesRegion;
-  }
-
-  const derivedOnline = resolveOnline(device);
-  const openAlerts = Number((device as unknown as { open_alerts?: number; openAlerts?: number }).open_alerts ?? 0);
-  const openAlertsAlt = Number((device as unknown as { open_alerts?: number; openAlerts?: number }).openAlerts ?? 0);
-  const totalAlerts = Number.isFinite(openAlerts)
-    ? openAlerts
-    : Number.isFinite(openAlertsAlt)
-      ? openAlertsAlt
-      : 0;
-  const healthFlag = (device as unknown as { health?: string }).health;
-
-  let matchesHealth = true;
-  if (health === 'online') {
-    matchesHealth = derivedOnline === true;
-  } else if (health === 'offline') {
-    matchesHealth = derivedOnline === false;
-  } else if (health === 'unhealthy') {
-    matchesHealth = derivedOnline === false || totalAlerts > 0 || healthFlag === 'unhealthy';
-  }
-
-  return matchesSite && matchesRegion && matchesHealth;
-}
-
-function resolveOnline(device: Device): boolean | null {
-  if (typeof (device as unknown as { online?: boolean }).online === 'boolean') {
-    return (device as unknown as { online?: boolean }).online ?? null;
-  }
-  if (device.status === 'online') {
-    return true;
-  }
-  if (device.status === 'offline') {
-    return false;
-  }
-  return null;
-}
+export { DevicesPage };

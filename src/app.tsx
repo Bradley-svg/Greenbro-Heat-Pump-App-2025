@@ -1381,6 +1381,22 @@ app.get('/api/devices', async (c) => {
   return c.json(out);
 });
 
+app.get('/api/regions', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+
+  const rows = await c.env.DB.prepare(
+    `
+    SELECT COALESCE(region, '—') AS region, COUNT(*) AS sites
+      FROM sites
+     GROUP BY region
+     ORDER BY region
+  `,
+  ).all<{ region: string; sites: number }>();
+
+  return c.json({ regions: rows.results ?? [] });
+});
+
 app.get('/api/sites/search', async (c) => {
   const auth = c.get('auth');
   if (!auth) {
@@ -1540,7 +1556,7 @@ app.get('/api/devices/search', async (c) => {
   const where = `WHERE ( ? IS NULL OR d.site_id = ? )
                  AND ( ? IS NULL OR s.region = ? )`;
   const rows = await c.env.DB.prepare(
-    `SELECT d.device_id, d.site_id, d.firmware, d.model, d.online, d.last_seen_at, s.region,
+    `SELECT d.device_id, d.site_id, s.region AS region, d.firmware, d.model, d.online, d.last_seen_at,
             COALESCE(SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END),0) AS open_alerts
        FROM devices d
        LEFT JOIN sites s ON s.site_id=d.site_id
@@ -1580,7 +1596,7 @@ app.get('/api/devices/search', async (c) => {
 
   const totalRow = await c.env.DB.prepare(
     `WITH base AS (
-        SELECT d.device_id, d.online, d.site_id, s.region,
+        SELECT d.device_id, d.online, d.site_id, s.region AS region,
                COALESCE(SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END),0) AS open_alerts
           FROM devices d
           LEFT JOIN sites s ON s.site_id=d.site_id
