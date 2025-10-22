@@ -75,6 +75,31 @@ export async function evaluateTelemetryAlerts(env: Env, t: TelemetryPayload, d: 
   await trackShortCycling(env, deviceId, ts, compRunning);
 }
 
+export async function openAlertIfNeeded(
+  DB: D1Database,
+  deviceId: string,
+  type: string,
+  severity: Severity,
+  tsISO: string,
+  meta: Record<string, unknown>,
+) {
+  const open = await DB.prepare(
+    "SELECT alert_id FROM alerts WHERE device_id=? AND type=? AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
+  )
+    .bind(deviceId, type)
+    .first<{ alert_id: string }>();
+
+  if (open) return;
+
+  const alertId = crypto.randomUUID();
+  await DB.prepare(
+    `INSERT INTO alerts (alert_id, device_id, type, severity, state, opened_at, meta_json)
+     VALUES (?, ?, ?, ?, 'open', ?, ?)`,
+  )
+    .bind(alertId, deviceId, type, severity, tsISO, JSON.stringify(meta))
+    .run();
+}
+
 async function trackShortCycling(env: Env, deviceId: string, tsISO: string, compRunning: boolean) {
   const rule: RuleName = 'short_cycling';
   const now = Date.parse(tsISO);

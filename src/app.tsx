@@ -6,7 +6,7 @@ import { cors } from 'hono/cors';
 import type { Env, IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO } from './do';
-import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
+import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, openAlertIfNeeded, type Derived } from './alerts';
 import { generateCommissioningPDF, type CommissioningPayload } from './pdf';
 import { renderer, OverviewPage, AlertsPage, DevicesPage, AdminSitesPage, OpsPage, type OverviewData } from './ssr';
 import { handleQueueBatch as baseQueueHandler } from './queue';
@@ -243,6 +243,40 @@ app.post('/api/ingest/:profileId', async (c) => {
     latest ?? { deltaT: null, thermalKW: null, cop: null, copQuality: null },
   );
 
+  const baseline = await c.env.DB.prepare(
+    'SELECT dt_mean, dt_std, cop_mean, cop_std FROM baselines_hourly WHERE device_id=? AND how=?',
+  )
+    .bind(body.deviceId, hourOfWeek(body.ts))
+    .first<{
+      dt_mean: number | null;
+      dt_std: number | null;
+      cop_mean: number | null;
+      cop_std: number | null;
+    }>();
+
+  if (baseline) {
+    if (derived.deltaT != null && z(derived.deltaT, baseline.dt_mean, baseline.dt_std) < -2.5) {
+      await openAlertIfNeeded(c.env.DB, body.deviceId, 'delta_t_anomaly', 'minor', body.ts, {
+        deltaT: derived.deltaT,
+      });
+    }
+    if (derived.cop != null && z(derived.cop, baseline.cop_mean, baseline.cop_std) < -2.5) {
+      await openAlertIfNeeded(c.env.DB, body.deviceId, 'low_cop_anomaly', 'major', body.ts, {
+        cop: derived.cop,
+      });
+    }
+  }
+
+  return c.json({ ok: true });
+});
+
+app.post('/api/ops/recompute-baselines', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  await recomputeBaselines(c.env.DB);
   return c.json({ ok: true });
 });
 
@@ -951,6 +985,94 @@ async function isDuplicate(DB: D1Database, key: string) {
   if (hit) return true;
   await DB.prepare("INSERT OR IGNORE INTO idem (k, ts) VALUES (?, datetime('now'))").bind(key).run();
   return false;
+}
+
+async function recomputeBaselines(DB: D1Database) {
+  await DB.exec(`CREATE TABLE IF NOT EXISTS baselines_hourly (
+    device_id TEXT,
+    how INTEGER,
+    dt_mean REAL,
+    dt_std REAL,
+    dt_n INTEGER,
+    cop_mean REAL,
+    cop_std REAL,
+    cop_n INTEGER,
+    PRIMARY KEY(device_id, how)
+  )`);
+
+  const rows = await DB.prepare(`
+    SELECT
+      device_id,
+      ((CAST(strftime('%w', ts) AS INT) + 6) % 7) * 24 + CAST(strftime('%H', ts) AS INT) AS how,
+      AVG(deltaT) AS dt_mean,
+      AVG(deltaT * deltaT) AS dt_sq_mean,
+      COUNT(deltaT) AS dt_n,
+      AVG(cop) AS cop_mean,
+      AVG(cop * cop) AS cop_sq_mean,
+      COUNT(cop) AS cop_n
+    FROM telemetry
+    WHERE ts >= datetime('now','-7 days')
+    GROUP BY device_id, how
+  `).all<{
+    device_id: string;
+    how: number;
+    dt_mean: number | null;
+    dt_sq_mean: number | null;
+    dt_n: number;
+    cop_mean: number | null;
+    cop_sq_mean: number | null;
+    cop_n: number;
+  }>();
+
+  const results = rows.results ?? [];
+  if (results.length === 0) {
+    return;
+  }
+
+  await DB.batch(
+    results.map((row) => {
+      const dtStd =
+        row.dt_n > 1 && row.dt_mean != null && row.dt_sq_mean != null
+          ? Math.sqrt(Math.max(0, row.dt_sq_mean - row.dt_mean * row.dt_mean))
+          : null;
+      const copStd =
+        row.cop_n > 1 && row.cop_mean != null && row.cop_sq_mean != null
+          ? Math.sqrt(Math.max(0, row.cop_sq_mean - row.cop_mean * row.cop_mean))
+          : null;
+
+      return DB.prepare(`
+        INSERT INTO baselines_hourly (device_id, how, dt_mean, dt_std, dt_n, cop_mean, cop_std, cop_n)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(device_id, how) DO UPDATE SET
+          dt_mean=excluded.dt_mean,
+          dt_std=excluded.dt_std,
+          dt_n=excluded.dt_n,
+          cop_mean=excluded.cop_mean,
+          cop_std=excluded.cop_std,
+          cop_n=excluded.cop_n
+      `).bind(
+        row.device_id,
+        row.how,
+        row.dt_mean,
+        dtStd,
+        row.dt_n,
+        row.cop_mean,
+        copStd,
+        row.cop_n,
+      );
+    }),
+  );
+}
+
+function hourOfWeek(tsIso: string) {
+  const d = new Date(tsIso);
+  const day = (d.getUTCDay() + 6) % 7;
+  return day * 24 + d.getUTCHours();
+}
+
+function z(value: number, mean?: number | null, std?: number | null) {
+  if (std == null || std === 0) return 0;
+  return (value - (mean ?? 0)) / std;
 }
 
 function computeDerived(metrics: TelemetryPayload['metrics']): Derived {
