@@ -52,3 +52,10 @@ Cron Triggers → housekeeping, JWT rotation, alert escalations
 - D1 hot data retention policies should align with alert response requirements; schedule rollups to R2 accordingly.
 - Review cron schedules regularly to confirm JWT rotation and escalations happen within compliance windows.
 
+## Success Criteria
+
+- **COP reliability:** Median coefficient of performance during weekday evening peaks (17:00–21:00 local) improves by at least 10% within two weeks of deploying anomaly-driven fixes.
+- **Noise reduction:** False-positive rate on anomaly alerts remains below 5%, measured by alerts acknowledged and resolved with “no action.”
+- **Operations cost:** Maintain MTTA under 10 minutes and MTTR under 90 minutes for critical “no heartbeat” alerts over a rolling 30-day window.
+- **Stakeholder trust:** Generate and deliver an incident report PDF within 15 minutes of any P1 outage.
+

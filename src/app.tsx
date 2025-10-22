@@ -1,6 +1,6 @@
 /** @jsxImportSource hono/jsx */
 /** @jsxRuntime automatic */
-import type { ExecutionContext, MessageBatch } from '@cloudflare/workers-types';
+import type { ExecutionContext, MessageBatch, ScheduledEvent } from '@cloudflare/workers-types';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
@@ -1284,12 +1284,15 @@ export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: E
   }
 }
 
-export async function scheduled(_ctrl: ScheduledController, env: Env, _ctx: ExecutionContext) {
-  await evaluateHeartbeatAlerts(env, new Date().toISOString());
-}
-
 export default {
   fetch: app.fetch,
   queue,
-  scheduled,
+  scheduled: async (_evt: ScheduledEvent, env: Env) => {
+    await evaluateHeartbeatAlerts(env, new Date().toISOString()).catch((error) => {
+      console.error('heartbeat sweep error', error);
+    });
+    // Nightly baselines
+    await recomputeBaselines(env.DB).catch(() => {});
+    // TODO: escalation sweep for stale heartbeat, idem table cleanup
+  },
 };

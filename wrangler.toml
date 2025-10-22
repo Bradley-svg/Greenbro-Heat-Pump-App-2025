@@ -48,10 +48,7 @@ new_classes = ["DeviceStateDO"]
 
 # ---- Cron jobs ----
 [triggers]
-crons = [
-  "*/5 * * * *",      # heartbeat escalation sweep
-  "0 1 * * *"         # retention / rollups / key rotation reminders
-]
+crons = ["0 2 * * *"]  # 02:00 UTC nightly
 
 # ---- Environment secrets you set via `wrangler secret put ...` ----
 # ACCESS_JWKS_URL : Cloudflare Access JWKS endpoint
