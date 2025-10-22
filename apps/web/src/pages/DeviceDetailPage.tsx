@@ -1,11 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Navigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@api/client';
 import { useAuthFetch } from '@hooks/useAuthFetch';
 import type { DeviceLatestState, TelemetryPoint } from '@api/types';
 import { Legend } from '@components/charts/Legend';
-import { SeriesChart, type AlertWindow, type SeriesPoint } from '@components/charts/SeriesChart';
+import {
+  SeriesChart,
+  type AlertWindow,
+  type SeriesChartHandle,
+  type SeriesPoint,
+} from '@components/charts/SeriesChart';
 
 const TELEMETRY_RANGES: Array<'24h' | '7d'> = ['24h', '7d'];
 
@@ -38,27 +43,23 @@ export function DeviceDetailPage(): JSX.Element {
     refetchInterval: range === '24h' ? 10_000 : 30_000,
   });
 
-  const deltaSeries = useMemo<SeriesPoint[]>(() => {
-    const points = telemetryQuery.data ?? [];
-    return points
-      .map((point) => {
-        const rawValue =
-          point.metrics?.delta_t ??
-          point.metrics?.deltaT ??
-          point.metrics?.['delta-t'] ??
-          point.metrics?.['deltaT'];
-        if (rawValue == null) {
-          return null;
-        }
-        const value = Number(rawValue);
-        const ts = Date.parse(point.timestamp);
-        if (!Number.isFinite(value) || Number.isNaN(ts)) {
-          return null;
-        }
-        return { ts, v: value } satisfies SeriesPoint;
-      })
-      .filter((entry): entry is SeriesPoint => Boolean(entry));
-  }, [telemetryQuery.data]);
+  const telemetryPoints = useMemo(() => telemetryQuery.data ?? [], [telemetryQuery.data]);
+
+  const deltaSeries = useMemo(() => buildSeries(telemetryPoints, ['delta_t', 'deltaT', 'delta-t', 'DeltaT']), [
+    telemetryPoints,
+  ]);
+  const copSeries = useMemo(() => buildSeries(telemetryPoints, ['cop', 'COP', 'cop_value']), [telemetryPoints]);
+  const currentSeries = useMemo(
+    () =>
+      buildSeries(telemetryPoints, [
+        'compressor_current',
+        'compressorCurrent',
+        'current',
+        'amps',
+        'compressor-amps',
+      ]),
+    [telemetryPoints],
+  );
 
   const alertWindows = useMemo<AlertWindow[]>(() => {
     const now = Date.now();
@@ -89,6 +90,20 @@ export function DeviceDetailPage(): JSX.Element {
   }, [alertWindowsQuery.data]);
 
   const latest = latestQuery.data;
+  const onlineValue = latestQuery.isLoading
+    ? 'Loading…'
+    : latestQuery.isError
+      ? 'Unknown'
+      : latest?.status.online === false
+        ? 'Offline'
+        : latest
+          ? 'Online'
+          : '—';
+  const modeValue = latestQuery.isLoading
+    ? 'Loading…'
+    : latestQuery.isError
+      ? '—'
+      : latest?.status.mode ?? '—';
 
   return (
     <div className="page">
@@ -101,7 +116,7 @@ export function DeviceDetailPage(): JSX.Element {
           {TELEMETRY_RANGES.map((option) => (
             <button
               key={option}
-              className={`chip${range === option ? ' chip--active' : ''}`}
+              className={`pill${range === option ? ' is-active' : ''}`}
               onClick={() => setRange(option)}
               type="button"
             >
@@ -110,8 +125,20 @@ export function DeviceDetailPage(): JSX.Element {
           ))}
         </div>
       </header>
-      <section className="grid grid--two">
-        <div className="card">
+      <section className="dashboard" style={{ marginBottom: '1.5rem' }}>
+        <div className="card kpi accent" style={{ gridColumn: 'span 4' }}>
+          <div className="kpi">
+            <div className="label">Online</div>
+            <div className="value">{onlineValue}</div>
+          </div>
+        </div>
+        <div className="card kpi" style={{ gridColumn: 'span 4' }}>
+          <div className="kpi">
+            <div className="label">Mode</div>
+            <div className="value">{modeValue}</div>
+          </div>
+        </div>
+        <div className="card" style={{ gridColumn: 'span 6' }}>
           <h3>Current status</h3>
           {latestQuery.isLoading ? (
             <p>Loading latest state…</p>
@@ -144,7 +171,7 @@ export function DeviceDetailPage(): JSX.Element {
             <p>No telemetry yet.</p>
           )}
         </div>
-        <div className="card">
+        <div className="card" style={{ gridColumn: 'span 6' }}>
           <h3>Active faults</h3>
           {latest?.faults && latest.faults.length > 0 ? (
             <ul className="fault-list">
@@ -166,28 +193,15 @@ export function DeviceDetailPage(): JSX.Element {
           <p>Loading telemetry…</p>
         ) : telemetryQuery.isError ? (
           <p className="card__error">Unable to load telemetry.</p>
-        ) : telemetryQuery.data && telemetryQuery.data.length > 0 ? (
+        ) : telemetryPoints.length > 0 ? (
           <>
-            {deltaSeries.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                <Legend
-                  items={[
-                    { kind: 'ok', label: 'ΔT trend' },
-                    { kind: 'warn', label: 'Warning window' },
-                    { kind: 'crit', label: 'Critical window' },
-                  ]}
-                  ariaLabel="ΔT alert legend"
-                />
-                <SeriesChart
-                  data={deltaSeries}
-                  overlays={alertWindows}
-                  width={720}
-                  height={240}
-                  areaKind="ok"
-                  ariaLabel="Delta temperature trend with alert overlays"
-                />
-              </div>
-            ) : null}
+            <DeviceDetailCharts
+              delta={deltaSeries}
+              cop={copSeries}
+              current={currentSeries}
+              overlays={alertWindows}
+              range={range}
+            />
             <table className="data-table data-table--compact">
               <thead>
                 <tr>
@@ -196,7 +210,7 @@ export function DeviceDetailPage(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {telemetryQuery.data.slice(0, 20).map((point) => (
+                {telemetryPoints.slice(0, 20).map((point) => (
                   <tr key={point.timestamp}>
                     <td>{new Date(point.timestamp).toLocaleString()}</td>
                     <td>
@@ -229,4 +243,163 @@ function extractTimestamp(entry: Record<string, unknown>, keys: string[]): strin
     }
   }
   return undefined;
+}
+
+function buildSeries(points: TelemetryPoint[], metricKeys: string[]): SeriesPoint[] {
+  return points
+    .map((point) => {
+      const ts = Date.parse(point.timestamp);
+      if (Number.isNaN(ts)) {
+        return null;
+      }
+      const raw = metricKeys
+        .map((key) => point.metrics?.[key])
+        .find((value) => value != null && Number.isFinite(Number(value)));
+      if (raw == null) {
+        return null;
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+      return { ts, v: value } satisfies SeriesPoint;
+    })
+    .filter((entry): entry is SeriesPoint => Boolean(entry))
+    .sort((a, b) => a.ts - b.ts);
+}
+
+function MinMaxBadges({ pts }: { pts: SeriesPoint[] }) {
+  const stats = useMemo(() => {
+    if (!pts.length) {
+      return null as { min: number; max: number } | null;
+    }
+    const values = pts.map((point) => point.v);
+    return { min: Math.min(...values), max: Math.max(...values) };
+  }, [pts]);
+
+  if (!stats) {
+    return null;
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 8 }}>
+      <span className="chip">min {stats.min.toFixed(2)}</span>
+      <span className="chip ok">max {stats.max.toFixed(2)}</span>
+    </div>
+  );
+}
+
+interface DeviceDetailChartsProps {
+  delta: SeriesPoint[];
+  cop: SeriesPoint[];
+  current: SeriesPoint[];
+  overlays: AlertWindow[];
+  range: '24h' | '7d';
+}
+
+function DeviceDetailCharts({ delta, cop, current, overlays, range }: DeviceDetailChartsProps) {
+  const deltaChartRef = useRef<SeriesChartHandle>(null);
+  const copChartRef = useRef<SeriesChartHandle>(null);
+  const currentChartRef = useRef<SeriesChartHandle>(null);
+
+  const hasSeries = delta.length > 0 || cop.length > 0 || current.length > 0;
+  if (!hasSeries) {
+    return <p>No trend data available for the selected window.</p>;
+  }
+
+  const jumpLatest = () => {
+    if (overlays.length === 0) {
+      return;
+    }
+    deltaChartRef.current?.focusLatestOverlay(overlays);
+    copChartRef.current?.focusLatestOverlay(overlays);
+    currentChartRef.current?.focusLatestOverlay(overlays);
+  };
+
+  const chartWidth = typeof window === 'undefined'
+    ? 720
+    : Math.max(320, Math.min(720, window.innerWidth - 120));
+  const chartHeight = 160;
+  const hasOverlays = overlays.length > 0;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
+      <div
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}
+      >
+        <h3 style={{ margin: 0 }}>Trends ({range})</h3>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Legend
+            ariaLabel="Trend severity legend"
+            items={[
+              { kind: 'ok', label: 'Normal trend' },
+              { kind: 'warn', label: 'Warning window' },
+              { kind: 'crit', label: 'Critical window' },
+            ]}
+          />
+          <button
+            type="button"
+            className={`pill${hasOverlays ? ' is-active' : ''}`}
+            onClick={jumpLatest}
+            disabled={!hasOverlays}
+          >
+            Jump to active alert
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <strong>ΔT</strong>
+          <MinMaxBadges pts={delta} />
+        </div>
+        <SeriesChart
+          ref={deltaChartRef}
+          data={delta}
+          width={chartWidth}
+          height={chartHeight}
+          overlays={overlays}
+          stroke="var(--gb-chart-ok)"
+          areaKind="ok"
+          ariaLabel="Delta T trend with alert overlays"
+        />
+      </div>
+
+      <div style={{ marginTop: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <strong>COP</strong>
+          <MinMaxBadges pts={cop} />
+        </div>
+        <SeriesChart
+          ref={copChartRef}
+          data={cop}
+          width={chartWidth}
+          height={chartHeight}
+          overlays={overlays}
+          stroke="var(--gb-chart-warn)"
+          areaKind="warn"
+          ariaLabel="COP trend with alert overlays"
+        />
+      </div>
+
+      <div style={{ marginTop: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <strong>Compressor current</strong>
+          <MinMaxBadges pts={current} />
+        </div>
+        <SeriesChart
+          ref={currentChartRef}
+          data={current}
+          width={chartWidth}
+          height={chartHeight}
+          overlays={overlays}
+          stroke="var(--gb-chart-warn)"
+          areaKind="warn"
+          ariaLabel="Compressor current trend with alert overlays"
+        />
+      </div>
+
+      <small className="muted">Shaded bands represent periods where alerts were active.</small>
+    </div>
+  );
 }

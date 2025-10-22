@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react';
+import React, { forwardRef, useCallback, useId, useImperativeHandle, useMemo, useState } from 'react';
 import { ChartDefs, critPatternId, warnPatternId } from './ChartDefs';
 import { chartPalette, type ChartKind } from './palette';
 
@@ -15,6 +15,28 @@ export interface AlertWindow {
   kind: OverlayKind;
 }
 
+export interface SeriesChartHandle {
+  focusTs: (ts: number) => void;
+  focusLatestOverlay: (windows: AlertWindow[]) => void;
+}
+
+export function nearestIndex(xs: number[], x: number): number {
+  if (xs.length === 0) {
+    return 0;
+  }
+  let lo = 0;
+  let hi = xs.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid] < x) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return Math.abs(x - xs[lo]) <= Math.abs(xs[hi] - x) ? lo : hi;
+}
+
 interface SeriesChartProps {
   data: SeriesPoint[];
   overlays?: AlertWindow[];
@@ -28,76 +50,98 @@ interface SeriesChartProps {
   ariaLabel?: string;
 }
 
-export function SeriesChart({
-  data,
-  overlays = [],
-  width = 640,
-  height = 220,
-  pad = 16,
-  stroke,
-  areaKind = 'ok',
-  grid = true,
-  yDomain,
-  ariaLabel,
-}: SeriesChartProps) {
+export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(function SeriesChart(
+  {
+    data,
+    overlays = [],
+    width = 640,
+    height = 220,
+    pad = 16,
+    stroke,
+    areaKind = 'ok',
+    grid = true,
+    yDomain,
+    ariaLabel,
+  }: SeriesChartProps,
+  ref,
+) {
   const rawId = useId();
   const baseId = useMemo(() => rawId.replace(/[^a-zA-Z0-9_-]/g, ''), [rawId]);
   const palette = chartPalette();
-  const hasData = data.length > 0;
 
-  const [pathData, areaPath, bounds] = useMemo(() => {
-    if (!hasData) {
-      return ['', '', undefined as undefined | { minTs: number; maxTs: number; minV: number; maxV: number }];
-    }
+  const sorted = useMemo(() => [...data].sort((a, b) => a.ts - b.ts), [data]);
+  const hasData = sorted.length > 0;
+  const minTs = hasData ? sorted[0]!.ts : 0;
+  const maxTs = hasData ? sorted.at(-1)!.ts : minTs + 1;
+  const minV = yDomain?.[0] ?? (hasData ? Math.min(...sorted.map((d) => d.v)) : 0);
+  const maxV = yDomain?.[1] ?? (hasData ? Math.max(...sorted.map((d) => d.v)) : 1);
+  const widthInner = Math.max(width - pad * 2, 1);
+  const heightInner = Math.max(height - pad * 2, 1);
+  const spanTs = Math.max(maxTs - minTs, 1);
+  const spanV = Math.max(maxV - minV, 1);
 
-    const sorted = [...data].sort((a, b) => a.ts - b.ts);
-    const minTs = sorted[0]?.ts ?? 0;
-    const maxTs = sorted.at(-1)?.ts ?? minTs;
-    const minV = yDomain ? yDomain[0] : Math.min(...sorted.map((d) => d.v));
-    const maxV = yDomain ? yDomain[1] : Math.max(...sorted.map((d) => d.v));
-    const widthInner = Math.max(width - pad * 2, 1);
-    const heightInner = Math.max(height - pad * 2, 1);
-    const tsSpan = maxTs - minTs || 1;
-    const valueSpan = maxV - minV || 1;
+  const ts = useMemo(() => sorted.map((point) => point.ts), [sorted]);
 
-    const x = (ts: number) => pad + ((ts - minTs) / tsSpan) * widthInner;
-    const y = (value: number) => pad + (heightInner - ((value - minV) / valueSpan) * heightInner);
+  const x = (t: number) => pad + ((t - minTs) / spanTs) * widthInner;
+  const y = (value: number) => pad + (heightInner - ((value - minV) / spanV) * heightInner);
 
-    const line = sorted
-      .map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.ts).toFixed(2)},${y(point.v).toFixed(2)}`)
-      .join(' ');
+  const pathData = hasData
+    ? sorted.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.ts).toFixed(2)},${y(point.v).toFixed(2)}`).join(' ')
+    : '';
 
-    const area =
-      `M${x(minTs).toFixed(2)},${(pad + heightInner).toFixed(2)} ` +
+  const areaPath = hasData
+    ? `M${x(minTs).toFixed(2)},${(pad + heightInner).toFixed(2)} ` +
       sorted.map((point) => `L${x(point.ts).toFixed(2)},${y(point.v).toFixed(2)}`).join(' ') +
-      ` L${x(maxTs).toFixed(2)},${(pad + heightInner).toFixed(2)} Z`;
-
-    return [line, area, { minTs, maxTs, minV, maxV }];
-  }, [data, hasData, height, pad, width, yDomain]);
+      ` L${x(maxTs).toFixed(2)},${(pad + heightInner).toFixed(2)} Z`
+    : '';
 
   const ticks = useMemo(() => {
-    if (!bounds) {
+    if (!hasData) {
       return [] as number[];
     }
-    const span = bounds.maxTs - bounds.minTs;
-    if (span === 0) {
-      return [bounds.minTs];
-    }
-    return Array.from({ length: 6 }, (_, index) => bounds.minTs + (index / 5) * span);
-  }, [bounds]);
+    return Array.from({ length: 6 }, (_, index) => minTs + (index / 5) * (maxTs - minTs));
+  }, [hasData, minTs, maxTs]);
 
   const overlaysToRender = useMemo(() => {
-    if (!bounds) {
+    if (!hasData) {
       return [] as AlertWindow[];
     }
     return overlays
       .map((window) => {
-        const clampedStart = Math.max(window.start, bounds.minTs);
-        const clampedEnd = Math.min(window.end, bounds.maxTs);
-        return clampedEnd > clampedStart ? { ...window, start: clampedStart, end: clampedEnd } : null;
+        const start = Math.max(window.start, minTs);
+        const end = Math.min(window.end, maxTs);
+        return end > start ? { ...window, start, end } : null;
       })
       .filter((window): window is AlertWindow => Boolean(window));
-  }, [bounds, overlays]);
+  }, [hasData, overlays, minTs, maxTs]);
+
+  const [cursor, setCursor] = useState<number | undefined>(undefined);
+  const clampTs = useCallback((value: number) => Math.min(Math.max(value, minTs), maxTs), [minTs, maxTs]);
+  const activeIndex = cursor == null || ts.length === 0 ? undefined : nearestIndex(ts, clampTs(cursor));
+  const activePoint = activeIndex == null ? undefined : sorted[activeIndex];
+  const activeOverlay = activePoint
+    ? overlaysToRender.find((overlay) => activePoint.ts >= overlay.start && activePoint.ts <= overlay.end)
+    : undefined;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusTs: (targetTs) => {
+        if (!hasData) {
+          return;
+        }
+        setCursor(clampTs(targetTs));
+      },
+      focusLatestOverlay: (windows) => {
+        if (!hasData || !windows?.length) {
+          return;
+        }
+        const latest = Math.max(...windows.map((window) => window.end));
+        setCursor(clampTs(latest));
+      },
+    }),
+    [hasData, clampTs],
+  );
 
   const areaFill = useMemo(() => {
     if (!hasData) {
@@ -114,54 +158,120 @@ export function SeriesChart({
 
   const strokeColor = stroke ?? palette.pick(areaKind);
 
+  const handleMove = (event: React.MouseEvent<SVGRectElement>) => {
+    if (!hasData) {
+      return;
+    }
+    const svg = event.currentTarget.ownerSVGElement;
+    if (!svg) {
+      return;
+    }
+    const rect = svg.getBoundingClientRect();
+    const relativeX = event.clientX - rect.left - pad;
+    const ratio = Math.max(0, Math.min(1, relativeX / widthInner));
+    const target = minTs + ratio * (maxTs - minTs);
+    setCursor(clampTs(target));
+  };
+
+  const handleLeave = () => setCursor(undefined);
+
+  const handleKeyDown = (event: React.KeyboardEvent<SVGSVGElement>) => {
+    if (!hasData) {
+      return;
+    }
+    const delta = (maxTs - minTs) / 60;
+    if (event.key === 'ArrowRight') {
+      setCursor((current) => clampTs((current ?? minTs) + delta));
+      event.preventDefault();
+    } else if (event.key === 'ArrowLeft') {
+      setCursor((current) => clampTs((current ?? minTs) - delta));
+      event.preventDefault();
+    } else if (event.key === 'Home') {
+      setCursor(minTs);
+      event.preventDefault();
+    } else if (event.key === 'End') {
+      setCursor(maxTs);
+      event.preventDefault();
+    }
+  };
+
   return (
     <svg
       width={width}
       height={height}
-      role={ariaLabel ? 'img' : undefined}
+      role={ariaLabel ? 'img' : 'presentation'}
       aria-label={ariaLabel}
-      aria-hidden={ariaLabel ? undefined : true}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
     >
       <ChartDefs id={baseId} />
-      {grid && bounds ? (
+      {grid && hasData ? (
         <g className="chart-grid">
           {ticks.map((tick, index) => {
-            if (bounds.maxTs === bounds.minTs) {
+            if (maxTs === minTs) {
               return null;
             }
-            const x = pad + ((tick - bounds.minTs) / (bounds.maxTs - bounds.minTs)) * Math.max(width - pad * 2, 1);
-            return <line key={index} x1={x} y1={pad} x2={x} y2={height - pad} stroke={palette.grid} />;
+            const xPos = pad + ((tick - minTs) / (maxTs - minTs)) * widthInner;
+            return <line key={index} x1={xPos} y1={pad} x2={xPos} y2={pad + heightInner} stroke={palette.grid} />;
           })}
         </g>
       ) : null}
+
       <g>
         {overlaysToRender.map((overlay, index) => {
-          const tsSpan = bounds!.maxTs - bounds!.minTs || 1;
-          const widthInner = Math.max(width - pad * 2, 1);
-          const xStart = pad + ((overlay.start - bounds!.minTs) / tsSpan) * widthInner;
-          const xEnd = pad + ((overlay.end - bounds!.minTs) / tsSpan) * widthInner;
-          const overlayFill = overlay.kind === 'crit' ? `url(#${critPatternId(baseId)})` : `url(#${warnPatternId(baseId)})`;
-          const overlayStroke = palette.pick(overlay.kind);
+          const startX = x(overlay.start);
+          const endX = x(overlay.end);
+          const fill = overlay.kind === 'crit' ? `url(#${critPatternId(baseId)})` : `url(#${warnPatternId(baseId)})`;
+          const strokeColorOverlay = palette.pick(overlay.kind);
           return (
             <rect
-              key={`${overlay.kind}-${index}`}
-              x={xStart}
+              key={`${overlay.kind}-${index}-${overlay.start}`}
+              x={startX}
               y={pad}
-              width={Math.max(xEnd - xStart, 0)}
-              height={Math.max(height - pad * 2, 0)}
-              fill={overlayFill}
-              stroke={overlayStroke}
+              width={Math.max(endX - startX, 0)}
+              height={heightInner}
+              fill={fill}
+              stroke={strokeColorOverlay}
               opacity={0.95}
             />
           );
         })}
       </g>
+
       {hasData ? (
         <g>
           <path d={areaPath} fill={areaFill} stroke="none" />
           <path d={pathData} fill="none" stroke={strokeColor} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         </g>
       ) : null}
+
+      {activePoint ? (
+        <g>
+          <line x1={x(activePoint.ts)} y1={pad} x2={x(activePoint.ts)} y2={pad + heightInner} stroke="#9fb2c6" strokeDasharray="3 3" />
+          <circle cx={x(activePoint.ts)} cy={y(activePoint.v)} r={3} fill="#ffffff" stroke="#0b0e12" strokeWidth={1} />
+          <g transform={`translate(${Math.min(x(activePoint.ts) + 8, width - 140)}, ${pad + 8})`}>
+            <rect className="chart-tip" width={132} height={activeOverlay ? 44 : 28} rx={6} />
+            <text className="chart-tip-text" x={8} y={18}>
+              Value: {activePoint.v.toFixed(2)}
+            </text>
+            {activeOverlay ? (
+              <text className="chart-tip-text" x={8} y={34}>
+                {activeOverlay.kind === 'crit' ? 'Critical window' : 'Warning window'}
+              </text>
+            ) : null}
+          </g>
+        </g>
+      ) : null}
+
+      <rect
+        x={pad}
+        y={pad}
+        width={widthInner}
+        height={heightInner}
+        fill="transparent"
+        onMouseMove={handleMove}
+        onMouseLeave={handleLeave}
+      />
     </svg>
   );
-}
+});

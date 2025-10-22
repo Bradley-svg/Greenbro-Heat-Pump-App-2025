@@ -4,6 +4,11 @@
   --gb-border: #1e2632;
   --gb-panel-border: var(--gb-border);
 
+  /* Neon accents derived from GreenBro palette */
+  --gb-neon-1: color-mix(in srgb, var(--gb-primary-500) 80%, transparent);
+  --gb-neon-2: color-mix(in srgb, var(--gb-primary-300) 60%, transparent);
+  --gb-glow: 0 0 0 1px var(--gb-border), 0 0 10px var(--gb-neon-1), 0 0 26px var(--gb-neon-2);
+
   /* Official brand colours */
   --gb-primary-500: #39b54a; /* GreenBro green */
   --gb-primary-700: #2e9e3f; /* darker on hover */
@@ -58,6 +63,84 @@ body {
   background: radial-gradient(140% 140% at 50% -20%, rgba(111, 219, 127, 0.18) 0%, transparent 60%),
     linear-gradient(180deg, rgba(8, 12, 9, 0.9) 0%, rgba(4, 9, 13, 0.95) 100%);
   color: var(--gb-ink);
+}
+
+/* Modular dashboard cards */
+.dashboard {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+@media (max-width: 1200px) {
+  .dashboard {
+    grid-template-columns: repeat(8, 1fr);
+  }
+}
+
+@media (max-width: 800px) {
+  .dashboard {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.card.kpi {
+  border-radius: 16px;
+  padding: 16px 18px;
+  background: #0f1622;
+  border: 1px solid var(--gb-border);
+}
+
+.card.kpi.accent {
+  background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--gb-primary-500) 16%, transparent),
+      transparent 60%
+    );
+  box-shadow: var(--gb-glow);
+}
+
+.kpi .label {
+  color: #b9c3cf;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.kpi .value {
+  font-size: clamp(24px, 3.2vw, 40px);
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Neon pills (used for status toggles / tabs) */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #0f1722;
+  border: 1px solid var(--gb-border);
+  color: #d8e2ee;
+  font-weight: 600;
+}
+
+.pill.is-active {
+  border-color: var(--gb-primary-500);
+  box-shadow: var(--gb-glow);
+  color: #ffffff;
+}
+
+/* Chart tooltip */
+.chart-tip {
+  fill: #0b0e12;
+  stroke: var(--gb-border);
+}
+
+.chart-tip-text {
+  fill: #e7eef6;
+  font-size: 12px;
 }
 
 .app-sidebar {
