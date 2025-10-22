@@ -7,7 +7,7 @@ import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO } from './do';
 import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
 import { generateCommissioningPDF, type CommissioningPayload } from './pdf';
-import { renderer, OverviewPage, AlertsPage, DevicesPage, AdminSitesPage, OpsPage } from './ssr';
+import { renderer, OverviewPage, AlertsPage, DevicesPage, AdminSitesPage, OpsPage, type OverviewData } from './ssr';
 import { handleQueueBatch as baseQueueHandler } from './queue';
 
 void DeviceStateDO;
@@ -466,6 +466,15 @@ app.delete('/api/admin/sites', async (c) => {
   return c.json({ ok: true });
 });
 
+app.get('/api/overview', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const data = await buildOverviewData(c.env.DB, auth);
+  return c.json(data);
+});
+
 app.get('/api/devices', async (c) => {
   const { DB } = c.env;
   const auth = c.get('auth');
@@ -549,16 +558,8 @@ app.get('/api/reports/*', async (c) => {
 });
 
 app.get('/', async (c) => {
-  const { DB } = c.env;
-  const openAlerts = await DB.prepare("SELECT COUNT(*) as n FROM alerts WHERE state IN ('open','ack')").first<{ n: number }>();
-  const online = await DB.prepare('SELECT COUNT(*) as onl FROM devices WHERE online=1').first<{ onl: number }>();
-  const total = await DB.prepare('SELECT COUNT(*) as tot FROM devices').first<{ tot: number }>();
-  const kpis = {
-    onlinePct: total?.tot ? (100 * (online?.onl ?? 0) / total.tot) : 0,
-    openAlerts: openAlerts?.n ?? 0,
-    avgCop: null,
-  };
-  return c.render(<OverviewPage kpis={kpis} />);
+  const data = await buildOverviewData(c.env.DB);
+  return c.render(<OverviewPage data={data} />);
 });
 
 app.get('/ops', async (c) => {
@@ -711,6 +712,222 @@ app.get('/admin/sites', async (c) => {
   requireRole(auth, ['admin', 'ops']);
   return c.render(<AdminSitesPage />);
 });
+
+function createEmptyOverview(): OverviewData {
+  return {
+    kpis: { onlinePct: 0, openAlerts: 0, avgCop: null },
+    sites: [],
+    series: { deltaT: [], cop: [] },
+  };
+}
+
+const toNumber = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string' && value !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<OverviewData> {
+  const restricted = !!auth && (auth.roles.includes('client') || auth.roles.includes('contractor'));
+  let siteFilter: string[] | null = null;
+
+  if (restricted) {
+    const clientIds = auth?.clientIds ?? [];
+    if (clientIds.length === 0) {
+      return createEmptyOverview();
+    }
+    const placeholders = clientIds.map(() => '?').join(',');
+    const siteRows = await DB.prepare(
+      `SELECT DISTINCT site_id FROM site_clients WHERE client_id IN (${placeholders}) AND site_id IS NOT NULL`,
+    )
+      .bind(...clientIds)
+      .all();
+    const sites = (siteRows.results ?? [])
+      .map((row: any) => row.site_id as string | null)
+      .filter((siteId): siteId is string => !!siteId);
+    if (sites.length === 0) {
+      return createEmptyOverview();
+    }
+    siteFilter = [...new Set(sites)];
+  }
+
+  const bindSites = siteFilter ?? [];
+  const sitePlaceholder = siteFilter ? siteFilter.map(() => '?').join(',') : '';
+
+  const deviceRow = await DB.prepare(
+    `SELECT SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) as onlineCount, COUNT(*) as totalCount FROM devices${
+      siteFilter ? ` WHERE site_id IN (${sitePlaceholder})` : ''
+    }`,
+  )
+    .bind(...bindSites)
+    .first<{ onlineCount: number | null; totalCount: number | null }>()
+    .catch(() => null);
+
+  const openAlertsRow = await DB.prepare(
+    siteFilter
+      ? `SELECT COUNT(*) as n FROM alerts a JOIN devices d ON d.device_id = a.device_id WHERE a.state IN ('open','ack') AND d.site_id IN (${sitePlaceholder})`
+      : `SELECT COUNT(*) as n FROM alerts WHERE state IN ('open','ack')`,
+  )
+    .bind(...bindSites)
+    .first<{ n: number | null }>()
+    .catch(() => null);
+
+  const avgCopRow = await DB.prepare(
+    siteFilter
+      ? `SELECT AVG(ls.cop) as avgCop FROM latest_state ls JOIN devices d ON d.device_id = ls.device_id WHERE ls.cop IS NOT NULL AND d.site_id IN (${sitePlaceholder})`
+      : `SELECT AVG(cop) as avgCop FROM latest_state WHERE cop IS NOT NULL`,
+  )
+    .bind(...bindSites)
+    .first<{ avgCop: number | null }>()
+    .catch(() => null);
+
+  const telemetryRows = await DB.prepare(
+    siteFilter
+      ? `SELECT t.ts, t.deltaT, t.cop FROM telemetry t JOIN devices d ON d.device_id = t.device_id WHERE t.ts >= datetime('now', '-24 hours') AND d.site_id IN (${sitePlaceholder}) ORDER BY t.ts DESC LIMIT 240`
+      : `SELECT ts, deltaT, cop FROM telemetry WHERE ts >= datetime('now', '-24 hours') ORDER BY ts DESC LIMIT 240`,
+  )
+    .bind(...bindSites)
+    .all()
+    .catch(() => null);
+
+  const telemetry = (telemetryRows?.results ?? []).reverse();
+  const deltaSeries = telemetry.map((row: any) => ({ ts: row.ts as string, value: toNumber(row.deltaT) }));
+  const copSeries = telemetry.map((row: any) => ({ ts: row.ts as string, value: toNumber(row.cop) }));
+
+  const severityRows = await DB.prepare(
+    siteFilter
+      ? `SELECT d.site_id AS site_id,
+               MAX(CASE a.severity WHEN 'critical' THEN 3 WHEN 'major' THEN 2 WHEN 'minor' THEN 1 ELSE 0 END) AS severity_rank,
+               COUNT(*) AS open_alerts
+         FROM alerts a
+         JOIN devices d ON d.device_id = a.device_id
+         WHERE a.state IN ('open','ack') AND d.site_id IN (${sitePlaceholder})
+         GROUP BY d.site_id`
+      : `SELECT d.site_id AS site_id,
+               MAX(CASE a.severity WHEN 'critical' THEN 3 WHEN 'major' THEN 2 WHEN 'minor' THEN 1 ELSE 0 END) AS severity_rank,
+               COUNT(*) AS open_alerts
+         FROM alerts a
+         JOIN devices d ON d.device_id = a.device_id
+         WHERE a.state IN ('open','ack')
+         GROUP BY d.site_id`,
+  )
+    .bind(...bindSites)
+    .all()
+    .catch(() => null);
+
+  const severityMap = new Map<string, { rank: number; openAlerts: number }>();
+  for (const row of severityRows?.results ?? []) {
+    const siteId = (row as any).site_id as string | null;
+    if (!siteId) continue;
+    const rank = toNumber((row as any).severity_rank) ?? 0;
+    const openAlerts = toNumber((row as any).open_alerts) ?? 0;
+    severityMap.set(siteId, { rank, openAlerts });
+  }
+
+  const siteRows = await DB.prepare(
+    `WITH all_sites AS (
+      SELECT site_id FROM sites WHERE site_id IS NOT NULL
+      UNION
+      SELECT DISTINCT site_id FROM devices WHERE site_id IS NOT NULL
+      UNION
+      SELECT DISTINCT site_id FROM site_clients WHERE site_id IS NOT NULL
+    )
+    SELECT a.site_id, s.name, s.region, s.lat, s.lon,
+           COALESCE(cnt.total_devices, 0) AS device_count,
+           COALESCE(cnt.online_devices, 0) AS online_count
+    FROM all_sites a
+    LEFT JOIN sites s ON s.site_id = a.site_id
+    LEFT JOIN (
+      SELECT site_id,
+             COUNT(*) AS total_devices,
+             SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online_devices
+      FROM devices
+      GROUP BY site_id
+    ) cnt ON cnt.site_id = a.site_id
+    ${siteFilter ? `WHERE a.site_id IN (${sitePlaceholder})` : ''}
+    ORDER BY a.site_id`,
+  )
+    .bind(...bindSites)
+    .all()
+    .catch(() => null);
+
+  const sites: OverviewData['sites'] = [];
+  const seenSites = new Set<string>();
+
+  for (const row of siteRows?.results ?? []) {
+    const siteId = (row as any).site_id as string | null;
+    if (!siteId) continue;
+    seenSites.add(siteId);
+    const stats = severityMap.get(siteId);
+    const rank = stats?.rank ?? 0;
+    const severity: 'critical' | 'major' | 'minor' | null =
+      rank >= 3 ? 'critical' : rank >= 2 ? 'major' : rank >= 1 ? 'minor' : null;
+    const deviceCount = toNumber((row as any).device_count) ?? 0;
+    const status: 'critical' | 'major' | 'ok' | 'empty' =
+      deviceCount === 0 ? 'empty' : severity === 'critical' ? 'critical' : severity === 'major' ? 'major' : 'ok';
+    sites.push({
+      siteId,
+      name: ((row as any).name as string) ?? null,
+      region: ((row as any).region as string) ?? null,
+      lat: toNumber((row as any).lat),
+      lon: toNumber((row as any).lon),
+      deviceCount,
+      onlineCount: toNumber((row as any).online_count) ?? 0,
+      openAlerts: stats?.openAlerts ?? 0,
+      maxSeverity: severity,
+      status,
+    });
+  }
+
+  if (siteFilter) {
+    for (const siteId of siteFilter) {
+      if (seenSites.has(siteId)) continue;
+      const stats = severityMap.get(siteId);
+      const rank = stats?.rank ?? 0;
+      const severity: 'critical' | 'major' | 'minor' | null =
+        rank >= 3 ? 'critical' : rank >= 2 ? 'major' : rank >= 1 ? 'minor' : null;
+      const status: 'critical' | 'major' | 'ok' | 'empty' =
+        severity === 'critical' ? 'critical' : severity === 'major' ? 'major' : 'empty';
+      sites.push({
+        siteId,
+        name: null,
+        region: null,
+        lat: null,
+        lon: null,
+        deviceCount: 0,
+        onlineCount: 0,
+        openAlerts: stats?.openAlerts ?? 0,
+        maxSeverity: severity,
+        status,
+      });
+    }
+  }
+
+  sites.sort((a, b) => a.siteId.localeCompare(b.siteId));
+
+  const totalDevices = toNumber(deviceRow?.totalCount) ?? 0;
+  const onlineCount = toNumber(deviceRow?.onlineCount) ?? 0;
+  const openAlerts = toNumber(openAlertsRow?.n) ?? 0;
+  const avgCop = toNumber(avgCopRow?.avgCop);
+
+  return {
+    kpis: {
+      onlinePct: totalDevices > 0 ? (100 * onlineCount) / totalDevices : 0,
+      openAlerts,
+      avgCop: avgCop ?? null,
+    },
+    sites,
+    series: {
+      deltaT: deltaSeries,
+      cop: copSeries,
+    },
+  };
+}
 
 async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | null | undefined) {
   if (!key) return false;
