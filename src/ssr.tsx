@@ -31,6 +31,7 @@ export type OpsSnapshot = {
     burnRate: number;
   };
   heartbeat: { total: number; online: number; onlinePct: number };
+  canary?: { lastAt: string | null; minutesSince: number | null; status: 'ok' | 'warn' | 'crit' };
 };
 
 export type ReportHistoryRow = {
@@ -52,6 +53,14 @@ export type ReportHistoryFilters = {
   type: string;
   status: string;
   limit: string;
+};
+
+export type AdminArchiveRow = {
+  table: string;
+  rows: number;
+  key: string;
+  size: number;
+  exportedAt: string | null;
 };
 
 export type ClientSloSummary = {
@@ -493,7 +502,8 @@ const opsScript = `
     recentCount: root.querySelector('[data-field="ingest-recent-count"]'),
     heartbeatPct: root.querySelector('[data-field="heartbeat-pct"]'),
     heartbeatCount: root.querySelector('[data-field="heartbeat-count"]'),
-    generatedAt: root.querySelector('[data-field="generated-at"]')
+    generatedAt: root.querySelector('[data-field="generated-at"]'),
+    canary: root.querySelector('[data-field="canary"]')
   };
   const incidentBody = document.getElementById('ops-incidents');
 
@@ -514,6 +524,26 @@ const opsScript = `
       .replace(/>/g,'&gt;')
       .replace(/"/g,'&quot;')
       .replace(/'/g,'&#39;');
+  }
+
+  function renderCanary(data){
+    const el = fields.canary;
+    if(!el) return;
+    if(!data){
+      el.textContent = 'Canary Crit · —';
+      el.dataset.state = 'crit';
+      return;
+    }
+    let status = data.status === 'ok' || data.status === 'warn' ? data.status : data.status === 'crit' ? 'crit' : 'crit';
+    const minutesRaw = Number(data.minutesSince);
+    const hasMinutes = Number.isFinite(minutesRaw);
+    const minutes = hasMinutes ? Math.max(0, Math.round(minutesRaw)) : null;
+    if(status !== 'ok' && status !== 'warn' && status !== 'crit'){
+      status = 'crit';
+    }
+    const label = status === 'ok' ? 'Canary OK' : status === 'warn' ? 'Canary Warn' : 'Canary Crit';
+    el.textContent = label + ' · ' + (minutes != null ? minutes + 'm' : '—');
+    el.dataset.state = status;
   }
 
   function render(data){
@@ -553,6 +583,8 @@ const opsScript = `
         fields.generatedAt.textContent = data.generatedAt || '';
       }
     }
+    }
+    renderCanary(data.canary);
   }
 
   function renderIncidents(rows){
@@ -607,6 +639,21 @@ const opsScript = `
   setInterval(refresh, 30000);
   refresh();
 
+  async function refreshCanary(){
+    if(!fields.canary) return;
+    try {
+      const res = await fetch('/api/ops/health');
+      if(!res.ok) throw new Error('Request failed');
+      const payload = await res.json();
+      renderCanary(payload);
+    } catch (err) {
+      renderCanary(null);
+    }
+  }
+
+  setInterval(refreshCanary, 30000);
+  refreshCanary();
+
   async function refreshIncidents(){
     if(!incidentBody) return;
     try {
@@ -621,6 +668,24 @@ const opsScript = `
 
   setInterval(refreshIncidents, 60000);
   refreshIncidents();
+})();
+${readOnlySnippet}
+`;
+
+const adminArchiveScript = `
+(function(){
+  const form = document.getElementById('archive-form');
+  if(!form) return;
+  const dateInput = form.querySelector('input[name="date"]');
+  if(dateInput){
+    dateInput.addEventListener('change', function(){
+      if(typeof form.requestSubmit === 'function'){
+        form.requestSubmit();
+      } else {
+        form.submit();
+      }
+    });
+  }
 })();
 ${readOnlySnippet}
 `;
@@ -1731,6 +1796,7 @@ export const renderer = jsxRenderer(({ children }) => {
           .card-header{display:flex;justify-content:space-between;align-items:center;gap:10px}
           .card-subtle{color:var(--gb-muted);font-size:13px}
           .ops-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+          .ops-header-right{display:flex;align-items:center;gap:12px}
           .ops-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
           .ops-tile{background:rgba(244,249,246,0.92);border:1px solid rgba(46,158,63,0.15);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:8px;box-shadow:0 20px 40px -34px rgba(8,12,9,0.6)}
           .ops-label{color:var(--gb-muted);font-size:12px;letter-spacing:0.04em;text-transform:uppercase}
@@ -1738,6 +1804,10 @@ export const renderer = jsxRenderer(({ children }) => {
           .ops-status{font-size:13px;color:var(--gb-primary-700)}
           .ops-status[data-state="bad"]{color:#b4231a}
           .ops-subtext{font-size:13px;color:var(--gb-muted)}
+          .ops-canary{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase}
+          .ops-canary[data-state="ok"]{background:rgba(57,181,74,0.18);color:var(--gb-primary-700)}
+          .ops-canary[data-state="warn"]{background:rgba(240,136,62,0.18);color:#b45309}
+          .ops-canary[data-state="crit"]{background:rgba(244,63,94,0.16);color:#b4231a}
           .maintenance-form{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 18px}
           .maintenance-form input,.maintenance-form select{min-width:160px}
           #reports-outbox-filters,#report-history-filters{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 18px}
@@ -1776,6 +1846,11 @@ export const renderer = jsxRenderer(({ children }) => {
           .badge[data-state="scheduled"]{background:rgba(240,136,62,0.18);color:#b45309}
           .badge[data-state="expired"]{background:rgba(143,154,166,0.16);color:var(--gb-muted)}
           .table-empty{text-align:center;font-style:italic;color:var(--gb-muted)}
+          .archive-form{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 18px}
+          .archive-form input[type=date]{min-width:180px}
+          .archive-summary{color:var(--gb-muted);font-size:13px;margin:8px 0 4px}
+          .archive-table{width:100%;border-collapse:collapse;margin-top:12px}
+          .archive-table th,.archive-table td{padding:10px 12px;border-bottom:1px solid rgba(11,14,18,0.08);text-align:left}
         `}</style>
       </head>
       <body>
@@ -1811,6 +1886,9 @@ export const renderer = jsxRenderer(({ children }) => {
             </a>
             <a href="/admin/maintenance" class={isActive('/admin/maintenance') ? 'active' : undefined}>
               Maintenance
+            </a>
+            <a href="/admin/archive" class={isActive('/admin/archive') ? 'active' : undefined}>
+              Archive
             </a>
             <a href="/admin/settings" class={isActive('/admin/settings') ? 'active' : undefined}>
               Admin Settings
@@ -1934,15 +2012,27 @@ export function OpsPage(props: { snapshot: OpsSnapshot }) {
       return snap.generatedAt ?? '—';
     }
   })();
+  const canaryInfo = snap.canary ?? { lastAt: null, minutesSince: null, status: 'crit' };
+  const canaryState = canaryInfo.status ?? 'crit';
+  const canaryMinutes = typeof canaryInfo.minutesSince === 'number' && Number.isFinite(canaryInfo.minutesSince)
+    ? Math.max(0, Math.round(canaryInfo.minutesSince))
+    : null;
+  const canaryLabelBase = canaryState === 'ok' ? 'Canary OK' : canaryState === 'warn' ? 'Canary Warn' : 'Canary Crit';
+  const canaryLabel = canaryLabelBase + ' · ' + (canaryMinutes != null ? canaryMinutes + 'm' : '—');
   const initialJson = encodeJson(snap);
 
   return (
     <div class="card" id="ops-slo">
       <div class="ops-header">
         <h2>Ops SLO snapshot</h2>
-        <span class="ops-subtext">
-          Updated <span data-field="generated-at">{generatedLabel}</span>
-        </span>
+        <div class="ops-header-right">
+          <span class="ops-canary" data-field="canary" data-state={canaryState}>
+            {canaryLabel}
+          </span>
+          <span class="ops-subtext">
+            Updated <span data-field="generated-at">{generatedLabel}</span>
+          </span>
+        </div>
       </div>
       <div class="ops-grid">
         <div class="ops-tile">
@@ -2115,6 +2205,103 @@ export function DevicesPage(props: { rows: any[] }) {
         </tbody>
       </table>
       <script dangerouslySetInnerHTML={{ __html: devicesScript }} />
+    </div>
+  );
+}
+
+export function AdminArchivePage(props: { date: string; rows: AdminArchiveRow[] }) {
+  const { date, rows } = props;
+  const maxDate = new Date().toISOString().slice(0, 10);
+  const selectedDate = date || maxDate;
+  const totalSize = rows.reduce((sum, row) => sum + (Number.isFinite(row.size) ? row.size : 0), 0);
+  const formatSize = (value: number | null | undefined) => {
+    if (value == null || Number.isNaN(Number(value))) {
+      return '—';
+    }
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes)) {
+      return '—';
+    }
+    if (bytes < 1024) {
+      return `${bytes} B`;
+    }
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let size = bytes;
+    let unit = 'B';
+    for (const next of units) {
+      size /= 1024;
+      unit = next;
+      if (size < 1024) {
+        break;
+      }
+    }
+    const digits = size >= 10 ? 0 : 1;
+    return `${size.toFixed(digits)} ${unit}`;
+  };
+  const formatTimestamp = (value: string | null) => {
+    if (!value) {
+      return '—';
+    }
+    try {
+      const iso = new Date(value).toISOString();
+      return iso.replace('T', ' ').replace('.000Z', 'Z');
+    } catch {
+      return value;
+    }
+  };
+  return (
+    <div class="card">
+      <h2>Admin — Archive exports</h2>
+      <form id="archive-form" class="archive-form" method="get" action="/admin/archive">
+        <label>
+          Date
+          <input type="date" name="date" value={selectedDate} max={maxDate} />
+        </label>
+        <button class="btn" type="submit">Load</button>
+      </form>
+      {rows.length ? (
+        <>
+          <p class="archive-summary">
+            {rows.length} exports · Total {formatSize(totalSize)}
+          </p>
+          <table class="archive-table">
+            <thead>
+              <tr>
+                <th>Table</th>
+                <th>Rows</th>
+                <th>Size</th>
+                <th>Key</th>
+                <th>Exported</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.key}>
+                  <td>{row.table}</td>
+                  <td>{Number.isFinite(row.rows) ? row.rows.toLocaleString() : row.rows}</td>
+                  <td title={Number.isFinite(row.size) ? `${row.size} bytes` : undefined}>{formatSize(row.size)}</td>
+                  <td><code>{row.key}</code></td>
+                  <td>{formatTimestamp(row.exportedAt)}</td>
+                  <td>
+                    <a
+                      class="btn"
+                      href={`/api/admin/archive/download?key=${encodeURIComponent(row.key)}`}
+                      target="_blank"
+                      rel="noopener"
+                    >
+                      Download
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : (
+        <p class="archive-summary">No exports recorded for {selectedDate}.</p>
+      )}
+      <script dangerouslySetInnerHTML={{ __html: adminArchiveScript }} />
     </div>
   );
 }

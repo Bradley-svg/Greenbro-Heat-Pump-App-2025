@@ -26,6 +26,7 @@ import {
   AdminSitesPage,
   AdminEmailPage,
   AdminMaintenancePage,
+  AdminArchivePage,
   AdminSettingsPage,
   AdminReportsPage,
   AdminReportsOutboxPage,
@@ -36,6 +37,7 @@ import {
   type OpsSnapshot,
   type ClientSloSummary,
   type ReportHistoryRow,
+  type AdminArchiveRow,
 } from './ssr';
 import { handleQueueBatch as baseQueueHandler } from './queue';
 import { sweepIncidents } from './incidents';
@@ -345,6 +347,70 @@ function normalizeReportPath(path: string): string | null {
     return null;
   }
   return `/api/reports/${value}`;
+}
+
+function parseDateParam(value?: string | null): Date | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  if (Number.isNaN(date.valueOf())) {
+    return null;
+  }
+  return date;
+}
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0));
+}
+
+function addUtcDays(date: Date, days: number): Date {
+  const copy = new Date(date.valueOf());
+  copy.setUTCDate(copy.getUTCDate() + days);
+  return copy;
+}
+
+function formatDateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+async function listArchiveRows(DB: D1Database, day: Date): Promise<AdminArchiveRow[]> {
+  const start = startOfUtcDay(day);
+  const end = addUtcDays(start, 1);
+  try {
+    const res = await DB.prepare(
+      `SELECT table_name, row_count, object_key, size_bytes, exported_at
+         FROM export_log
+        WHERE exported_at >= ? AND exported_at < ?
+        ORDER BY exported_at DESC`,
+    )
+      .bind(start.toISOString(), end.toISOString())
+      .all<{
+        table_name: string | null;
+        row_count: number | null;
+        object_key: string | null;
+        size_bytes: number | null;
+        exported_at: string | null;
+      }>();
+    return (res.results ?? []).map((row) => ({
+      table: row.table_name ?? '—',
+      rows: Math.max(0, Number(row.row_count ?? 0)),
+      key: row.object_key ?? '',
+      size: Math.max(0, Number(row.size_bytes ?? 0)),
+      exportedAt: row.exported_at ?? null,
+    }));
+  } catch (error) {
+    console.warn('listArchiveRows failed', error);
+    return [];
+  }
 }
 
 type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number };
@@ -726,6 +792,53 @@ app.post('/api/admin/settings', async (c) => {
   }
   await setSetting(c.env.DB, key, value ?? '');
   return c.json({ ok: true });
+});
+
+app.get('/api/admin/archive', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const dateParam = url.searchParams.get('date');
+  const parsed = parseDateParam(dateParam);
+  const fallback = addUtcDays(startOfUtcDay(new Date()), -1);
+  const target = parsed ?? fallback;
+  const rows = await listArchiveRows(c.env.DB, target);
+  return c.json({ date: formatDateKey(target), results: rows });
+});
+
+app.get('/api/admin/archive/download', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const key = url.searchParams.get('key');
+  if (!key) {
+    return c.text('Bad Request', 400);
+  }
+  const object = await c.env.REPORTS.get(key);
+  if (!object) {
+    return c.text('Not Found', 404);
+  }
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/x-ndjson');
+  }
+  headers.set('Cache-Control', 'private, max-age=0, must-revalidate');
+  const safeName = (() => {
+    const base = key.split('/')
+      .filter((part) => part.length > 0)
+      .at(-1) || 'export.ndjson';
+    const sanitized = base.replace(/[^a-zA-Z0-9_.-]+/g, '_');
+    return sanitized.endsWith('.ndjson') ? sanitized : `${sanitized}.ndjson`;
+  })();
+  headers.set('Content-Disposition', `attachment; filename="${safeName}"`);
+  return new Response(object.body, { headers });
 });
 
 // --- Ingest: Telemetry & Heartbeat ---
@@ -2780,6 +2893,16 @@ app.get('/api/ops/burn-series', async (c) => {
   return c.json({ series });
 });
 
+app.get('/api/ops/health', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const status = await fetchLatestCanary(c.env.DB);
+  return c.json(status);
+});
+
 app.get('/ops', async (c) => {
   const snapshot = await computeOpsSnapshot(c.env.DB);
   return c.render(<OpsPage snapshot={snapshot} />);
@@ -2916,6 +3039,24 @@ app.get('/devices', async (c) => {
     auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
   const out = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
   return c.render(<DevicesPage rows={out} />);
+});
+
+app.get('/admin/archive', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const url = new URL(c.req.url);
+  const parsed = parseDateParam(url.searchParams.get('date'));
+  const fallback = addUtcDays(startOfUtcDay(new Date()), -1);
+  const target = parsed ?? fallback;
+  const rows = await listArchiveRows(c.env.DB, target);
+  return c.render(<AdminArchivePage date={formatDateKey(target)} rows={rows} />);
 });
 
 app.get('/admin/sites', async (c) => {
@@ -3859,6 +4000,29 @@ async function buildClientSloSummary(env: Env, clientId: string, monthParam?: st
   };
 }
 
+async function fetchLatestCanary(DB: D1Database): Promise<{ lastAt: string | null; minutesSince: number | null; status: 'ok' | 'warn' | 'crit' }> {
+  try {
+    const row = await DB.prepare(
+      "SELECT ts FROM ops_metrics WHERE route IN ('/ops/canary','/api/ops/canary','ops_canary','canary') ORDER BY ts DESC LIMIT 1",
+    ).first<{ ts: string | null }>();
+    const raw = row?.ts ?? null;
+    if (!raw) {
+      return { lastAt: null, minutesSince: null, status: 'crit' };
+    }
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.valueOf())) {
+      return { lastAt: null, minutesSince: null, status: 'crit' };
+    }
+    const diffMs = Date.now() - parsed.valueOf();
+    const minutes = Number.isFinite(diffMs) ? Math.max(0, diffMs / 60000) : null;
+    const status = minutes == null ? 'crit' : minutes <= 10 ? 'ok' : minutes <= 15 ? 'warn' : 'crit';
+    return { lastAt: parsed.toISOString(), minutesSince: minutes, status };
+  } catch (error) {
+    console.warn('fetchLatestCanary failed', error);
+    return { lastAt: null, minutesSince: null, status: 'crit' };
+  }
+}
+
 async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
   const totalRow = await DB.prepare(
     "SELECT COUNT(*) AS total, SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success FROM ops_metrics WHERE route='/api/ingest'",
@@ -3898,6 +4062,8 @@ async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
   const heartbeatOnline = toNumber(heartbeatRow?.online) ?? 0;
   const heartbeatPct = heartbeatTotal > 0 ? (heartbeatOnline / heartbeatTotal) * 100 : 0;
 
+  const canary = await fetchLatestCanary(DB);
+
   return {
     generatedAt: new Date().toISOString(),
     ingest: {
@@ -3920,6 +4086,7 @@ async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
       online: heartbeatOnline,
       onlinePct: Number.isFinite(heartbeatPct) ? heartbeatPct : 0,
     },
+    canary,
   };
 }
 
