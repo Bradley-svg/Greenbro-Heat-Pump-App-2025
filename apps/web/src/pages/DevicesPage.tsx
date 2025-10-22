@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -172,6 +172,9 @@ export default function DevicesPage() {
     ? (limitParam as (typeof PAGE_SIZE_OPTIONS)[number])
     : DEFAULT_PAGE_SIZE;
   const unhealthyOnly = health === 'unhealthy';
+  const [siteFilter, setSiteFilter] = useState('');
+  const siteFilterTrimmed = siteFilter.trim();
+  const deferredSiteFilter = useDeferredValue(siteFilterTrimmed);
 
   const regions = useQuery({
     queryKey: ['regions'],
@@ -274,11 +277,12 @@ export default function DevicesPage() {
   };
 
   const sites = useQuery({
-    queryKey: ['site-list', { region }],
+    queryKey: ['site-list', { region, q: deferredSiteFilter }],
     queryFn: async () => {
       const url = buildSearchURL('/api/site-list', {
         region: region || undefined,
         limit: '2000',
+        q: deferredSiteFilter || undefined,
       });
       const response = await fetch(url);
       if (!response.ok) {
@@ -350,6 +354,7 @@ export default function DevicesPage() {
     next.delete('health');
     next.delete('page');
     setParams(next, { replace: true });
+    setSiteFilter('');
   };
 
   const handlePageSizeChange = (value: string) => {
@@ -375,7 +380,14 @@ export default function DevicesPage() {
   };
 
   useEffect(() => {
-    if (!site || !sites.data || sites.isLoading || sites.isFetching || sites.isError) {
+    if (
+      !site ||
+      !sites.data ||
+      sites.isLoading ||
+      sites.isFetching ||
+      sites.isError ||
+      deferredSiteFilter
+    ) {
       return;
     }
     const exists = sites.data.some((item) => item.site_id === site);
@@ -384,7 +396,16 @@ export default function DevicesPage() {
       next.delete('site');
       setParams(next, { replace: true });
     }
-  }, [params, setParams, site, sites.data, sites.isError, sites.isFetching, sites.isLoading]);
+  }, [
+    deferredSiteFilter,
+    params,
+    setParams,
+    site,
+    sites.data,
+    sites.isError,
+    sites.isFetching,
+    sites.isLoading,
+  ]);
 
   const total = devices.data?.total ?? 0;
   const rows = devices.data?.results ?? [];
@@ -448,8 +469,20 @@ export default function DevicesPage() {
         className="card"
         style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}
       >
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 220 }}>
           <span className="data-table__muted">Site</span>
+          <input
+            type="text"
+            value={siteFilter}
+            onChange={(event) => setSiteFilter(event.target.value)}
+            placeholder="Filter sites…"
+            style={{
+              padding: '8px 12px',
+              borderRadius: 8,
+              border: '1px solid #d1d5db',
+              fontSize: 14,
+            }}
+          />
           <select
             value={site}
             onChange={(event) => handleSiteChange(event.target.value)}
@@ -525,7 +558,27 @@ export default function DevicesPage() {
       ) : isError ? (
         <div className="card card--error">Unable to load devices. Check your API connection.</div>
       ) : rows.length === 0 ? (
-        <div className="card">No devices match the current filters.</div>
+        <section
+          className="card"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 12,
+            padding: 32,
+            textAlign: 'center',
+          }}
+        >
+          <div>
+            <strong>No matches</strong>
+            <p className="data-table__muted" style={{ marginTop: 4 }}>
+              Adjust or clear your filters to see devices again.
+            </p>
+          </div>
+          <button type="button" className="app-button" onClick={clearFilters}>
+            Clear filters
+          </button>
+        </section>
       ) : (
         <section className="card">
           <div

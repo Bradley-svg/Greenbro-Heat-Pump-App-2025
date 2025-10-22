@@ -47,6 +47,10 @@ function maskId(id: string) {
   return id.length <= 5 ? `•••${id.slice(-2)}` : `${id.slice(0, 3)}…${id.slice(-2)}`;
 }
 
+function escapeForLike(value: string) {
+  return value.replace(/[%_]/g, (match) => `\\${match}`);
+}
+
 async function getSetting(DB: D1Database, key: string) {
   const r = await DB.prepare("SELECT value FROM settings WHERE key=?").bind(key).first<{ value: string }>();
   return r?.value ?? null;
@@ -1395,6 +1399,40 @@ app.get('/api/regions', async (c) => {
   ).all<{ region: string; sites: number }>();
 
   return c.json({ regions: rows.results ?? [] });
+});
+
+app.get('/api/site-list', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+
+  const region = c.req.query('region');
+  const qParam = c.req.query('q');
+  const limitParam = Number(c.req.query('limit') ?? 2000);
+  const limit = Number.isFinite(limitParam)
+    ? Math.min(Math.max(Math.floor(limitParam), 1), 5000)
+    : 2000;
+  const searchTerm = typeof qParam === 'string' ? qParam.trim() : '';
+
+  let sql = 'SELECT site_id, name, region FROM sites WHERE site_id IS NOT NULL';
+  const bind: Array<string | number> = [];
+  if (region) {
+    sql += ' AND region = ?';
+    bind.push(region);
+  }
+  if (searchTerm) {
+    const pattern = `%${escapeForLike(searchTerm)}%`;
+    sql += " AND (site_id LIKE ? ESCAPE '\\\\' OR name LIKE ? ESCAPE '\\\\')";
+    bind.push(pattern, pattern);
+  }
+
+  sql += ' ORDER BY (name IS NULL), name, site_id LIMIT ?';
+  bind.push(limit);
+
+  const rows = await c.env.DB.prepare(sql)
+    .bind(...bind)
+    .all<{ site_id: string; name: string | null; region: string | null }>();
+
+  return c.json({ sites: rows.results ?? [] });
 });
 
 app.get('/api/sites/search', async (c) => {
