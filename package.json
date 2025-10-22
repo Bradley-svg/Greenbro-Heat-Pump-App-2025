@@ -7,7 +7,9 @@
     "deploy": "wrangler deploy",
     "migrate": "wrangler d1 migrations apply GREENBRO_DB",
     "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
-    "copy-guard": "node scripts/guard-words.cjs"
+    "copy-guard": "node scripts/guard-words.cjs",
+    "lint": "eslint --ext .js,.ts,.tsx src apps/web/src apps/web/vite.config.ts",
+    "typecheck": "npm run typecheck --prefix apps/web"
   },
   "dependencies": {
     "hono": "^4.6.5",
@@ -16,7 +18,14 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241018.0",
+    "@eslint/js": "^9.14.0",
+    "@types/node": "^22.9.0",
+    "@typescript-eslint/eslint-plugin": "^8.13.0",
+    "@typescript-eslint/parser": "^8.13.0",
     "esbuild": "^0.24.0",
+    "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "globals": "^15.10.0",
     "typescript": "^5.6.3"
   },
   "imports": {

@@ -499,7 +499,8 @@ app.use('*', cors());
 app.get('/brand.css', (c) =>
   c.text(brandCss, 200, {
     'Content-Type': 'text/css; charset=utf-8',
-    'Cache-Control': 'public, max-age=300',
+    'Cache-Control': 'public, max-age=300, s-maxage=3600',
+    'CDN-Cache-Control': 'public, max-age=300, s-maxage=3600',
   }),
 );
 

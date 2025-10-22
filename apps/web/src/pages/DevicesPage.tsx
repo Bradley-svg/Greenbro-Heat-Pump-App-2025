@@ -62,6 +62,12 @@ type DeviceQueryResult = {
   hasMore: boolean;
 };
 
+type VirtualRow = {
+  index: number;
+  start: number;
+  size: number;
+};
+
 function buildSearchURL(base: string, params: Record<string, string | undefined>) {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -264,7 +270,7 @@ export default function DevicesPage() {
         hasMore: false,
       };
     },
-    keepPreviousData: true,
+    placeholderData: (previous) => previous ?? { results: [], total: 0, hasMore: false },
     refetchInterval: 10_000,
     enabled: !meta.isLoading,
   });
@@ -408,7 +414,7 @@ export default function DevicesPage() {
   ]);
 
   const total = devices.data?.total ?? 0;
-  const rows = devices.data?.results ?? [];
+  const rows: DeviceRow[] = devices.data?.results ?? [];
   const hasNextPage =
     serverMode && (devices.data?.hasMore ?? (page + 1) * pageSize < total);
   const hasPrevPage = serverMode && page > 0;
@@ -443,9 +449,10 @@ export default function DevicesPage() {
     getScrollElement: () => tableScrollRef.current,
     estimateSize: () => 36,
     overscan: 12,
-    measureElement: (element) => element.getBoundingClientRect().height,
+    measureElement: (element?: Element | null) => element?.getBoundingClientRect().height ?? 0,
   });
-  const virtualRows = virtualizationEnabled ? rowVirtualizer.getVirtualItems() : [];
+  const virtualItems = rowVirtualizer.getVirtualItems() as VirtualRow[];
+  const virtualRows: VirtualRow[] = virtualizationEnabled ? virtualItems : [];
 
   return (
     <div className="page">
