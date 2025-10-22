@@ -4,6 +4,7 @@ export interface Env {
   DB: D1Database;
   CONFIG: KVNamespace;
   REPORTS: R2Bucket;
+  BRAND: R2Bucket;
   INGEST_Q: Queue<IngestMessage>;
 
   DeviceState: DurableObjectNamespace;

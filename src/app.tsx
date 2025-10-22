@@ -503,14 +503,29 @@ app.get('/brand.css', (c) =>
   }),
 );
 
-app.get('/brand/logo.svg', () =>
-  new Response(brandLogoSvg, {
-    headers: {
-      'Content-Type': 'image/svg+xml; charset=utf-8',
-      'Cache-Control': 'public, max-age=86400',
-    },
-  }),
-);
+app.get('/brand/logo.svg', async (c) => {
+  const baseHeaders = new Headers({
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Cache-Control': 'public, max-age=86400, s-maxage=604800',
+    'CDN-Cache-Control': 'public, max-age=86400, s-maxage=604800',
+  });
+
+  try {
+    const logo = await c.env.BRAND.get('logo.svg');
+    if (logo) {
+      const headers = new Headers(baseHeaders);
+      logo.writeHttpMetadata(headers);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'image/svg+xml; charset=utf-8');
+      }
+      return new Response(logo.body, { headers });
+    }
+  } catch (error) {
+    console.warn('Failed to load brand logo from R2', error);
+  }
+
+  return new Response(brandLogoSvg, { headers: baseHeaders });
+});
 
 app.use('/api/*', async (c, next) => {
   const jwt = c.req.header('Cf-Access-Jwt-Assertion');

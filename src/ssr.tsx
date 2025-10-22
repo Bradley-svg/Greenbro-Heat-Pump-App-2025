@@ -1697,7 +1697,7 @@ export const renderer = jsxRenderer(({ children }) => {
           nav a:hover{background:rgba(111,219,127,0.18);color:#ffffff}
           nav a.active{background:rgba(57,181,74,0.3);color:#041205;box-shadow:0 14px 28px -20px rgba(57,181,74,0.75)}
           .brand-mark{display:inline-flex;align-items:center;gap:12px;font-size:18px;font-weight:600;color:#ecf7ed;letter-spacing:0.08em;text-transform:uppercase}
-          .brand-mark::before{content:'';width:36px;height:36px;border-radius:12px;background:linear-gradient(135deg,var(--gb-primary-700),var(--gb-primary-300));box-shadow:0 16px 32px -20px rgba(57,181,74,0.8)}
+          .brand-mark img{width:24px;height:24px;border-radius:8px;display:block;box-shadow:0 12px 24px -16px rgba(57,181,74,0.8)}
           .wrap{max-width:1120px;margin:0 auto;padding:28px 24px 48px}
           .card{background:var(--gb-card);border:1px solid var(--gb-card-border);border-radius:18px;padding:20px;box-shadow:var(--gb-card-shadow)}
           .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
@@ -1780,7 +1780,7 @@ export const renderer = jsxRenderer(({ children }) => {
       </head>
       <body>
         <header>
-          <span class="brand-mark">GreenBro Control Center</span>
+          <span class="brand-mark"><img src="/brand/logo.svg" alt="GreenBro" height="24" width="24" /><span>GreenBro Control Center</span></span>
           <nav>
             <a href="/" class={isActive('/') ? 'active' : undefined}>
               Overview

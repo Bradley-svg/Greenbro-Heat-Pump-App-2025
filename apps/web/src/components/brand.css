@@ -34,9 +34,13 @@ body {
 }
 
 .app-brand .logo {
-  background: linear-gradient(135deg, var(--gb-primary-700), var(--gb-primary-300));
-  color: var(--gb-ink);
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: block;
   box-shadow: 0 10px 24px -12px rgba(57, 181, 74, 0.6);
+  background: linear-gradient(135deg, var(--gb-primary-700), var(--gb-primary-300));
+  object-fit: cover;
 }
 
 .app-brand .brand {
@@ -196,6 +200,84 @@ body {
 
 .auth-screen {
   background: radial-gradient(120% 120% at 50% 10%, rgba(57, 181, 74, 0.25) 0%, var(--gb-bg) 60%);
+}
+
+:focus-visible {
+  outline: 3px solid var(--gb-primary-500);
+  outline-offset: 3px;
+}
+
+@media (prefers-contrast: more) {
+  .app-nav__link,
+  .card,
+  .chip,
+  .status-pill,
+  .ro-pill {
+    border-color: rgba(57, 181, 74, 0.6) !important;
+  }
+
+  .app-button,
+  .btn {
+    box-shadow: none !important;
+    background: rgba(57, 181, 74, 0.18);
+    border-color: rgba(57, 181, 74, 0.7);
+  }
+
+  .app-button--primary,
+  .btn-primary,
+  .primary-cta {
+    box-shadow: none !important;
+    border-color: rgba(57, 181, 74, 0.8);
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --gb-primary-700: Highlight;
+    --gb-primary-500: Highlight;
+    --gb-primary-300: Highlight;
+    --gb-ink: CanvasText;
+    --gb-muted: GrayText;
+    --gb-card: Canvas;
+    --gb-card-border: ButtonText;
+    --gb-panel-border: ButtonText;
+  }
+
+  .app-brand .logo {
+    box-shadow: none;
+  }
+
+  .app-brand .brand {
+    color: ButtonText;
+  }
+
+  .app-nav__link--active {
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .app-button,
+  .btn {
+    background: ButtonFace;
+    color: ButtonText;
+    border: 1px solid ButtonText;
+    box-shadow: none;
+  }
+
+  .app-button--primary,
+  .btn-primary,
+  .primary-cta {
+    background: Highlight;
+    color: HighlightText;
+    border-color: Highlight;
+    box-shadow: none;
+  }
+
+  .ro-pill,
+  .chip,
+  .status-pill {
+    border: 1px solid ButtonText;
+  }
 }
 
 .auth-card {

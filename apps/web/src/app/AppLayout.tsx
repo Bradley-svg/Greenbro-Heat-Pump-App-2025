@@ -30,7 +30,7 @@ export function AppLayout(): JSX.Element {
     <div className="app-shell">
       <aside className="app-sidebar">
         <div className="app-brand">
-          <span className="logo">GB</span>
+          <img className="logo" src="/brand/logo.svg" alt="GreenBro" width={40} height={40} />
           <span className="brand">GreenBro</span>
         </div>
         <nav className="app-nav">

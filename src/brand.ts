@@ -41,9 +41,13 @@ body {
 }
 
 .app-brand .logo {
-  background: linear-gradient(135deg, var(--gb-primary-700), var(--gb-primary-300));
-  color: var(--gb-ink);
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: block;
   box-shadow: 0 10px 24px -12px rgba(57, 181, 74, 0.6);
+  background: linear-gradient(135deg, var(--gb-primary-700), var(--gb-primary-300));
+  object-fit: cover;
 }
 
 .app-brand .brand {
@@ -204,6 +208,84 @@ body {
 .auth-screen {
   background: radial-gradient(120% 120% at 50% 10%, rgba(57, 181, 74, 0.25) 0%, var(--gb-bg) 60%);
 }
+
+:focus-visible {
+  outline: 3px solid var(--gb-primary-500);
+  outline-offset: 3px;
+}
+
+@media (prefers-contrast: more) {
+  .app-nav__link,
+  .card,
+  .chip,
+  .status-pill,
+  .ro-pill {
+    border-color: rgba(57, 181, 74, 0.6) !important;
+  }
+
+  .app-button,
+  .btn {
+    box-shadow: none !important;
+    background: rgba(57, 181, 74, 0.18);
+    border-color: rgba(57, 181, 74, 0.7);
+  }
+
+  .app-button--primary,
+  .btn-primary,
+  .primary-cta {
+    box-shadow: none !important;
+    border-color: rgba(57, 181, 74, 0.8);
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --gb-primary-700: Highlight;
+    --gb-primary-500: Highlight;
+    --gb-primary-300: Highlight;
+    --gb-ink: CanvasText;
+    --gb-muted: GrayText;
+    --gb-card: Canvas;
+    --gb-card-border: ButtonText;
+    --gb-panel-border: ButtonText;
+  }
+
+  .app-brand .logo {
+    box-shadow: none;
+  }
+
+  .app-brand .brand {
+    color: ButtonText;
+  }
+
+  .app-nav__link--active {
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .app-button,
+  .btn {
+    background: ButtonFace;
+    color: ButtonText;
+    border: 1px solid ButtonText;
+    box-shadow: none;
+  }
+
+  .app-button--primary,
+  .btn-primary,
+  .primary-cta {
+    background: Highlight;
+    color: HighlightText;
+    border-color: Highlight;
+    box-shadow: none;
+  }
+
+  .ro-pill,
+  .chip,
+  .status-pill {
+    border: 1px solid ButtonText;
+  }
+}
 `;
 
 export const brandLogoSvg = `<?xml version="1.0" encoding="UTF-8"?>
@@ -238,6 +320,7 @@ function escapeHtml(value: string): string {
 
 export function brandEmail(options: BrandEmailOptions): string {
   const { title, introLines = [], detailLines = [], footerLines = [], cta, previewText } = options;
+  const inlineLogo = `data:image/svg+xml,${encodeURIComponent(brandLogoSvg)}`;
   const introMarkup = introLines
     .map((line) => `<p style="margin:0 0 12px;font-size:15px;line-height:1.5;color:#e9f9ec;">${escapeHtml(line)}</p>`)
     .join('');
@@ -280,7 +363,7 @@ export function brandEmail(options: BrandEmailOptions): string {
           <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:560px;background:rgba(12,20,14,0.92);border:1px solid rgba(111,219,127,0.25);border-radius:18px;box-shadow:0 32px 60px -40px rgba(8,12,9,0.85);padding:32px;">
             <tr>
               <td style="text-align:center;padding-bottom:12px;">
-                <span style="display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:16px;background:linear-gradient(135deg,#2e9e3f,#6fdb7f);color:#041205;font-weight:700;font-size:20px;">GB</span>
+                <img src="${inlineLogo}" alt="GreenBro" width="48" height="48" style="display:block;margin:0 auto;border-radius:16px;" />
               </td>
             </tr>
             <tr>
