@@ -1,24 +1,51 @@
 :root {
-  --gb-primary-700: #2e9e3f;
-  --gb-primary-500: #39b54a;
-  --gb-primary-300: #6fdb7f;
-  --gb-ink: #0b0e12;
+  --gb-bg: #0b0e12;
+  --gb-panel: #111822;
+  --gb-border: #1e2632;
+  --gb-panel-border: var(--gb-border);
+
+  /* Official brand colours */
+  --gb-primary-500: #39b54a; /* GreenBro green */
+  --gb-primary-700: #2e9e3f; /* darker on hover */
+  --gb-primary-300: #6fdb7f; /* lighter gradient */
+  --gb-ink: #414042; /* graphite text */
+
   --gb-muted: #4b5563;
   --gb-muted-soft: #8f9aa6;
-  --gb-bg: #04090d;
-  --gb-panel: rgba(12, 20, 14, 0.75);
-  --gb-panel-border: rgba(111, 219, 127, 0.18);
   --gb-card: #ffffff;
   --gb-card-border: rgba(46, 158, 63, 0.15);
   --gb-card-shadow: 0 28px 60px -40px rgba(11, 14, 18, 0.55);
   --gb-chip-bg: rgba(57, 181, 74, 0.12);
   --gb-chip-text: var(--gb-primary-700);
+  --gb-warn: #e9b949;
+  --gb-crit: #f25f5c;
+
+  --gb-heading: "Myanmar Text", "Segoe UI", system-ui, sans-serif;
+  --gb-slogan: "Century Gothic", "URW Gothic", "Avant Garde", system-ui, sans-serif;
+  --gb-body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
 }
 
 html,
 body {
   background: radial-gradient(120% 120% at 50% 0%, rgba(57, 181, 74, 0.12) 0%, var(--gb-bg) 70%);
   color: var(--gb-ink);
+}
+
+body {
+  font-family: var(--gb-body);
+}
+
+.brand-wordmark {
+  font-family: var(--gb-heading);
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.brand-slogan {
+  font-family: var(--gb-slogan);
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 .app-shell {
@@ -61,6 +88,10 @@ body {
   background: rgba(57, 181, 74, 0.25);
   color: #eaffeb;
   box-shadow: inset 0 0 0 1px rgba(57, 181, 74, 0.25);
+}
+
+svg.spark path.line {
+  stroke: var(--gb-primary-500);
 }
 
 .app-main {

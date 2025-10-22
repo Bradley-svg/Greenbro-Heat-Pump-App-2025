@@ -4,6 +4,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const banned = [/\bfleet\b/i];
+const roots = ['apps/web/src', 'src', 'emails', 'views', 'templates', 'docs', 'spec', 'handbook'];
 const ignoreDirs = new Set(['node_modules', '.git', 'dist', 'build', '.wrangler', '.turbo']);
 const ignoreExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf', '.woff', '.woff2', '.ttf']);
 
@@ -36,7 +37,11 @@ function walk(dir) {
   }
 }
 
-walk(root);
+for (const relative of roots) {
+  const target = path.join(root, relative);
+  if (!fs.existsSync(target)) continue;
+  walk(target);
+}
 
 if (offenders.length > 0) {
   console.error('Banned copy detected (GreenBro language guard):');

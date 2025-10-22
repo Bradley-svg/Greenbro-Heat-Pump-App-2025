@@ -1,9 +1,12 @@
 /// <reference lib="webworker" />
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
+const PRECACHE = ['/_app/brand.css', '/brand/logo.svg', '/brand/logo-mono.svg'];
 
-sw.addEventListener('install', () => {
-  // noop - we only care about fetch events
+sw.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open('brand').then((cache) => cache.addAll(PRECACHE)).catch(() => undefined),
+  );
 });
 
 sw.addEventListener('activate', () => {
@@ -13,7 +16,7 @@ sw.addEventListener('activate', () => {
 sw.addEventListener('fetch', (event) => {
   const fetchEvent = event as FetchEvent;
   const url = new URL(fetchEvent.request.url);
-  if (url.pathname.startsWith('/brand/')) {
+  if (PRECACHE.includes(url.pathname) || url.pathname.startsWith('/brand/')) {
     fetchEvent.respondWith(
       (async () => {
         const cached = await caches.match(fetchEvent.request);

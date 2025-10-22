@@ -2,20 +2,30 @@ import { rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 
 export const brandCss = String.raw`
 :root {
-  --gb-primary-700: #2e9e3f;
-  --gb-primary-500: #39b54a;
-  --gb-primary-300: #6fdb7f;
-  --gb-ink: #0b0e12;
+  --gb-bg: #0b0e12;
+  --gb-panel: #111822;
+  --gb-border: #1e2632;
+  --gb-panel-border: var(--gb-border);
+
+  /* Official brand colours */
+  --gb-primary-500: #39b54a; /* GreenBro green */
+  --gb-primary-700: #2e9e3f; /* darker on hover */
+  --gb-primary-300: #6fdb7f; /* lighter gradient */
+  --gb-ink: #414042; /* graphite text */
+
   --gb-muted: #4b5563;
   --gb-muted-soft: #8f9aa6;
-  --gb-bg: #04090d;
-  --gb-panel: rgba(12, 20, 14, 0.75);
-  --gb-panel-border: rgba(111, 219, 127, 0.18);
   --gb-card: #ffffff;
   --gb-card-border: rgba(46, 158, 63, 0.15);
   --gb-card-shadow: 0 28px 60px -40px rgba(11, 14, 18, 0.55);
   --gb-chip-bg: rgba(57, 181, 74, 0.12);
   --gb-chip-text: var(--gb-primary-700);
+  --gb-warn: #e9b949;
+  --gb-crit: #f25f5c;
+
+  --gb-heading: "Myanmar Text", "Segoe UI", system-ui, sans-serif;
+  --gb-slogan: "Century Gothic", "URW Gothic", "Avant Garde", system-ui, sans-serif;
+  --gb-body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
 }
 
 html,
@@ -25,7 +35,20 @@ body {
 }
 
 body {
-  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--gb-body);
+}
+
+.brand-wordmark {
+  font-family: var(--gb-heading);
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.brand-slogan {
+  font-family: var(--gb-slogan);
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
 }
 
 .app-shell {
@@ -68,6 +91,10 @@ body {
   background: rgba(57, 181, 74, 0.25);
   color: #eaffeb;
   box-shadow: inset 0 0 0 1px rgba(57, 181, 74, 0.25);
+}
+
+svg.spark path.line {
+  stroke: var(--gb-primary-500);
 }
 
 .app-main {
@@ -332,6 +359,8 @@ export function brandEmail(options: BrandEmailOptions): string {
     '<img src="/brand/logo.svg" alt="GreenBro" width="48" height="48" style="display:block;margin:0 auto;border-radius:16px;" />',
     '</picture>',
   ].join('');
+  const sloganMarkup =
+    '<div style="font-family:Century Gothic,URW Gothic,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.18em;color:#B9C3CF;font-size:12px;margin-top:8px;">ENDORSED BY NATURE®</div>';
   const introMarkup = introLines
     .map((line) => `<p style="margin:0 0 12px;font-size:15px;line-height:1.5;color:#e9f9ec;">${escapeHtml(line)}</p>`)
     .join('');
@@ -366,7 +395,7 @@ export function brandEmail(options: BrandEmailOptions): string {
     <meta charSet="utf-8" />
     <title>${escapeHtml(title)}</title>
   </head>
-  <body style="margin:0;padding:24px;background:#04090d;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <body style="margin:0;padding:24px;background:#04090d;font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans',sans-serif;">
     <span style="display:none!important;color:transparent;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeHtml(preview)}</span>
     <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
       <tr>
@@ -375,6 +404,7 @@ export function brandEmail(options: BrandEmailOptions): string {
             <tr>
               <td style="text-align:center;padding-bottom:12px;">
                 ${logoPictureMarkup}
+                ${sloganMarkup}
               </td>
             </tr>
             <tr>
@@ -398,30 +428,56 @@ export function brandEmail(options: BrandEmailOptions): string {
 </html>`;
 }
 
-export function drawBrandPdfHeader(page: PDFPage, font: PDFFont, title: string): number {
+export function drawBrandPdfHeader(
+  page: PDFPage,
+  font: PDFFont,
+  title: string,
+  options: { includeSlogan?: boolean } = {},
+): number {
   const { width, height } = page.getSize();
   const barHeight = 72;
-  page.drawRectangle({ x: 0, y: height - barHeight, width, height: barHeight, color: rgb(0.18, 0.62, 0.3) });
+  page.drawRectangle({
+    x: 0,
+    y: height - barHeight,
+    width,
+    height: barHeight,
+    color: rgb(46 / 255, 158 / 255, 63 / 255),
+  });
   page.drawRectangle({
     x: 0,
     y: height - barHeight + 40,
     width,
     height: 12,
-    color: rgb(0.43, 0.86, 0.49),
+    color: rgb(111 / 255, 219 / 255, 127 / 255),
   });
+  const ink = rgb(65 / 255, 64 / 255, 66 / 255);
+  const accent = rgb(185 / 255, 195 / 255, 207 / 255);
+  const { includeSlogan = false } = options;
+  const headingY = height - 34;
   page.drawText('GreenBro Control Center', {
     x: 40,
-    y: height - 34,
+    y: headingY,
     size: 14,
     font,
-    color: rgb(0.05, 0.12, 0.07),
+    color: ink,
   });
+  let nextY = headingY - 18;
+  if (includeSlogan) {
+    page.drawText('ENDORSED BY NATURE®', {
+      x: 40,
+      y: nextY,
+      size: 10,
+      font,
+      color: accent,
+    });
+    nextY -= 16;
+  }
   page.drawText(`${title} — Devices`, {
     x: 40,
-    y: height - 52,
+    y: nextY,
     size: 18,
     font,
-    color: rgb(0.05, 0.12, 0.07),
+    color: ink,
   });
   return height - barHeight - 32;
 }

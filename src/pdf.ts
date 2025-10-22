@@ -71,7 +71,7 @@ export async function generateCommissioningPDF(
   const pageSize: [number, number] = [595, 842];
   let page = pdfDoc.addPage(pageSize);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const textColor = rgb(0.05, 0.12, 0.07);
+  const textColor = rgb(65 / 255, 64 / 255, 66 / 255);
 
   const drawText = (text: string, x: number, y: number, size = 12) => {
     page.drawText(text, { x, y, size, font, color: textColor });
@@ -82,7 +82,7 @@ export async function generateCommissioningPDF(
     return drawBrandPdfHeader(page, font, 'Commissioning Report');
   };
 
-  let y = drawBrandPdfHeader(page, font, 'Commissioning Report');
+  let y = drawBrandPdfHeader(page, font, 'Commissioning Report', { includeSlogan: true });
   drawText('GreenBro Commissioning Report', 40, y, 18);
   y -= 24;
   drawText(`Device: ${payload.deviceId}`, 40, y);
@@ -143,7 +143,7 @@ export async function generateClientMonthlyReport(
   const pageSize: [number, number] = [595, 842];
   let page = pdfDoc.addPage(pageSize);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const textColor = rgb(0.05, 0.12, 0.07);
+  const textColor = rgb(65 / 255, 64 / 255, 66 / 255);
 
   const drawText = (text: string, x: number, y: number, size = 12) => {
     page.drawText(text, { x, y, size, font, color: textColor });
@@ -154,7 +154,7 @@ export async function generateClientMonthlyReport(
     return drawBrandPdfHeader(page, font, 'Monthly Report');
   };
 
-  let y = drawBrandPdfHeader(page, font, 'Monthly Report');
+  let y = drawBrandPdfHeader(page, font, 'Monthly Report', { includeSlogan: true });
   drawText('GreenBro Monthly Report', 40, y, 18);
   y -= 24;
   drawText(`Client: ${payload.clientName} (${payload.clientId})`, 40, y);
@@ -315,7 +315,7 @@ export async function generateIncidentReportV2(
   const pageSize: [number, number] = [595, 842];
   let page = pdfDoc.addPage(pageSize);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const textColor = rgb(0.05, 0.12, 0.07);
+  const textColor = rgb(65 / 255, 64 / 255, 66 / 255);
 
   const resetPage = () => {
     page = pdfDoc.addPage(pageSize);
@@ -354,7 +354,7 @@ export async function generateIncidentReportV2(
       .join(', ')}`;
   };
 
-  let y = drawBrandPdfHeader(page, font, 'Incident Report');
+  let y = drawBrandPdfHeader(page, font, 'Incident Report', { includeSlogan: true });
   const siteLabel = payload.siteName ? `${payload.siteName} (${payload.siteId})` : payload.siteId;
   drawText('GreenBro Incident Report', 40, 18);
   drawText(`Site: ${siteLabel}`);

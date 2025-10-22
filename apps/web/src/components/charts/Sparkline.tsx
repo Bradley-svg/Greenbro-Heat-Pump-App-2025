@@ -31,8 +31,8 @@ export function Sparkline({
     .join(' ');
 
   return (
-    <svg width={width} height={height}>
-      <path d={d} fill="none" stroke="currentColor" strokeWidth={strokeWidth} />
+    <svg className="spark" width={width} height={height}>
+      <path className="line" d={d} fill="none" stroke="currentColor" strokeWidth={strokeWidth} />
     </svg>
   );
 }
