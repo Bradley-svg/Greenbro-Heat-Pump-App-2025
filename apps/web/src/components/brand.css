@@ -36,6 +36,12 @@
   --gb-body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
 }
 
+@media (max-width: 640px) {
+  :root {
+    --gb-bg: #0e1117;
+  }
+}
+
 html,
 body {
   background: radial-gradient(120% 120% at 50% 0%, rgba(57, 181, 74, 0.12) 0%, var(--gb-bg) 70%);
@@ -65,7 +71,7 @@ body {
   color: var(--gb-ink);
 }
 
-/* Modular dashboard cards */
+/* Dashboard grid (12 → 8 → 4) */
 .dashboard {
   display: grid;
   gap: 14px;
@@ -84,11 +90,13 @@ body {
   }
 }
 
+/* KPI card with reactive glow */
+.kpi,
 .card.kpi {
-  border-radius: 16px;
-  padding: 16px 18px;
   background: #0f1622;
   border: 1px solid var(--gb-border);
+  border-radius: 16px;
+  padding: 14px 16px;
 }
 
 .card.kpi.accent {
@@ -100,17 +108,109 @@ body {
   box-shadow: var(--gb-glow);
 }
 
-.kpi .label {
+.kpi .label,
+.card.kpi .label {
   color: #b9c3cf;
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.kpi .value {
+.kpi .value,
+.card.kpi .value {
+  color: #e7eef6;
   font-size: clamp(24px, 3.2vw, 40px);
   font-weight: 800;
   line-height: 1;
+}
+
+.kpi.ok {
+  border-color: color-mix(in srgb, var(--gb-chart-ok) 30%, transparent);
+}
+
+.kpi.warn {
+  border-color: color-mix(in srgb, var(--gb-chart-warn) 40%, transparent);
+  box-shadow: 0 0 0 1px var(--gb-border),
+    0 0 10px color-mix(in srgb, var(--gb-chart-warn) 70%, transparent);
+}
+
+.kpi.crit {
+  border-color: color-mix(in srgb, var(--gb-chart-crit) 50%, transparent);
+  box-shadow: 0 0 0 1px var(--gb-border),
+    0 0 14px color-mix(in srgb, var(--gb-chart-crit) 80%, transparent);
+}
+
+/* “danger zone” pulse when critical */
+@keyframes gb-pulse {
+  0% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.7;
+  }
+}
+
+.kpi.crit .value {
+  animation: gb-pulse 1.8s infinite ease-in-out;
+}
+
+/* Area spans (desktop first) */
+.area-kpi-1 {
+  grid-column: span 3;
+}
+
+.area-kpi-2 {
+  grid-column: span 3;
+}
+
+.area-kpi-3 {
+  grid-column: span 3;
+}
+
+.area-kpi-4 {
+  grid-column: span 3;
+}
+
+.area-activity {
+  grid-column: span 8;
+}
+
+.area-alerts {
+  grid-column: span 4;
+}
+
+@media (max-width: 1200px) {
+  .area-kpi-1,
+  .area-kpi-2,
+  .area-kpi-3,
+  .area-kpi-4 {
+    grid-column: span 4;
+  }
+
+  .area-activity {
+    grid-column: span 8;
+  }
+
+  .area-alerts {
+    grid-column: span 8;
+  }
+}
+
+@media (max-width: 800px) {
+  .area-kpi-1,
+  .area-kpi-2,
+  .area-kpi-3,
+  .area-kpi-4 {
+    grid-column: span 4;
+  }
+
+  .area-activity,
+  .area-alerts {
+    grid-column: span 4;
+  }
 }
 
 /* Neon pills (used for status toggles / tabs) */
