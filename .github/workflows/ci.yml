@@ -35,3 +35,14 @@ jobs:
         env:
           BASE_URL: http://127.0.0.1:5173
         run: npx playwright test --config=tests/playwright.config.ts tests/a11y.spec.ts
+
+      - name: Start Worker (dev)
+        env:
+          DEV_AUTH_BYPASS: '1'
+        run: npx wrangler dev --local --port=8788 &
+
+      - name: Wait for Worker
+        run: npx wait-on http://127.0.0.1:8788
+
+      - name: Axe gate for PDFs
+        run: npm run axe:pdf

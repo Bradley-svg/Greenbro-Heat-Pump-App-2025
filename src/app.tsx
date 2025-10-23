@@ -40,6 +40,12 @@ import {
   type ReportHistoryRow,
   type AdminArchiveRow,
 } from './ssr';
+import {
+  renderIncidentHtmlV2,
+  renderClientMonthlyHtmlV2,
+  sampleIncidentReportV2Payload,
+  sampleClientMonthlyReportPayload,
+} from './report-html';
 import { handleQueueBatch as baseQueueHandler } from './queue';
 import { sweepIncidents } from './incidents';
 
@@ -2353,147 +2359,7 @@ app.post('/api/reports/incident/v2', async (c) => {
   const hoursRaw = Number(hoursParam ?? '24');
   const windowHours = Number.isFinite(hoursRaw) && hoursRaw > 0 ? hoursRaw : 24;
   const windowEnd = new Date();
-  const windowStart = new Date(windowEnd.getTime() - windowHours * 60 * 60 * 1000);
-  const windowStartIso = windowStart.toISOString();
-  const windowEndIso = windowEnd.toISOString();
-
-  const site = await c.env.DB.prepare('SELECT site_id, name, region FROM sites WHERE site_id=?')
-    .bind(siteId)
-    .first<{ site_id: string; name: string | null; region: string | null }>();
-
-  const severityRows = await c.env.DB.prepare(
-    `SELECT severity, COUNT(*) as n
-       FROM alerts
-      WHERE device_id IN (SELECT device_id FROM devices WHERE site_id=?)
-        AND state IN ('open','ack')
-      GROUP BY severity`,
-  )
-    .bind(siteId)
-    .all<{ severity: string; n: number }>();
-
-  const top = await c.env.DB.prepare(
-    `SELECT d.device_id, SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END) as open_count
-       FROM devices d LEFT JOIN alerts a ON a.device_id = d.device_id
-      WHERE d.site_id=?
-      GROUP BY d.device_id
-      ORDER BY open_count DESC
-      LIMIT 5`,
-  )
-    .bind(siteId)
-    .all<{ device_id: string; open_count: number | null }>();
-
-  const incidentsRows = await c.env.DB.prepare(
-    `SELECT incident_id, site_id, started_at, last_alert_at, resolved_at
-       FROM incidents
-      WHERE site_id=?
-        AND started_at <= ?
-        AND (resolved_at IS NULL OR resolved_at >= ?)
-      ORDER BY started_at DESC
-      LIMIT 50`,
-  )
-    .bind(siteId, windowEndIso, windowStartIso)
-    .all<{
-      incident_id: string;
-      site_id: string;
-      started_at: string;
-      last_alert_at: string | null;
-      resolved_at: string | null;
-    }>();
-
-  const incidents = incidentsRows.results ?? [];
-  let incidentMeta = new Map<
-    string,
-    {
-      states: Record<string, number>;
-      alerts: Map<string, { type: string; severity: string; count: number }>;
-    }
-  >();
-
-  if (incidents.length > 0) {
-    const ids = incidents.map((row) => row.incident_id);
-    const placeholders = ids.map(() => '?').join(',');
-    const metaRows = await c.env.DB.prepare(
-      `SELECT ia.incident_id, a.type, a.severity, a.state, COUNT(*) as count
-         FROM incident_alerts ia
-         JOIN alerts a ON a.alert_id = ia.alert_id
-        WHERE ia.incident_id IN (${placeholders})
-        GROUP BY ia.incident_id, a.type, a.severity, a.state`,
-    )
-      .bind(...ids)
-      .all<{ incident_id: string; type: string; severity: string; state: string | null; count: number }>();
-
-    incidentMeta = new Map();
-    for (const row of metaRows.results ?? []) {
-      if (!incidentMeta.has(row.incident_id)) {
-        incidentMeta.set(row.incident_id, { states: {}, alerts: new Map() });
-      }
-      const bucket = incidentMeta.get(row.incident_id)!;
-      if (row.state) {
-        bucket.states[row.state] = (bucket.states[row.state] ?? 0) + row.count;
-      }
-      const key = `${row.type}:${row.severity}`;
-      if (!bucket.alerts.has(key)) {
-        bucket.alerts.set(key, { type: row.type, severity: row.severity, count: row.count });
-      } else {
-        const existing = bucket.alerts.get(key)!;
-        existing.count += row.count;
-      }
-    }
-  }
-
-  const maintenanceRows = await c.env.DB.prepare(
-    `SELECT site_id, device_id, start_ts, end_ts, reason
-       FROM maintenance_windows
-      WHERE (site_id = ? OR site_id IS NULL)
-        AND (device_id IS NULL OR device_id IN (SELECT device_id FROM devices WHERE site_id=?))
-        AND end_ts >= ?
-        AND start_ts <= ?
-      ORDER BY start_ts DESC
-      LIMIT 20`,
-  )
-    .bind(siteId, siteId, windowStartIso, windowEndIso)
-    .all<{
-      site_id: string | null;
-      device_id: string | null;
-      start_ts: string;
-      end_ts: string | null;
-      reason: string | null;
-    }>();
-
-  const payload: IncidentReportV2Payload = {
-    siteId,
-    siteName: site?.name ?? null,
-    region: site?.region ?? null,
-    windowLabel: formatWindowLabel(windowHours),
-    windowStart: windowStartIso,
-    windowEnd: windowEndIso,
-    generatedAt: new Date().toISOString(),
-    summary: {
-      severities: (severityRows.results ?? []).map((row) => ({ severity: row.severity, count: row.n })),
-      topDevices: (top.results ?? []).map((row) => ({ deviceId: row.device_id, openCount: row.open_count ?? 0 })),
-    },
-    incidents: incidents.map((row) => {
-      const bucket = incidentMeta.get(row.incident_id);
-      const alertBreakdown = bucket
-        ? Array.from(bucket.alerts.values()).sort((a, b) => b.count - a.count)
-        : [];
-      return {
-        incidentId: row.incident_id,
-        startedAt: row.started_at,
-        lastAlertAt: row.last_alert_at ?? null,
-        resolvedAt: row.resolved_at ?? null,
-        stateCounts: bucket?.states ?? {},
-        alertBreakdown,
-      };
-    }),
-    maintenance: (maintenanceRows.results ?? []).map((row) => ({
-      siteId: row.site_id,
-      deviceId: row.device_id,
-      startTs: row.start_ts,
-      endTs: row.end_ts,
-      reason: row.reason ?? null,
-    })),
-  };
+  const payload = await buildIncidentReportV2Payload(c.env, siteId, windowHours, { windowEnd });
 
   const pdf = await generateIncidentReportV2(c.env, payload);
   const path = keyToPath(pdf.key);
@@ -2550,6 +2416,88 @@ app.post('/api/reports/incident/v2', async (c) => {
     recipients,
     clients,
   });
+});
+
+app.get('/api/reports/preview-html', async (c) => {
+  const bypass = c.env.DEV_AUTH_BYPASS === '1';
+  if (!bypass) {
+    const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+    if (!jwt) {
+      return c.text('Unauthorized', 401);
+    }
+    const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+    if (!auth) {
+      return c.text('Unauthorized', 401);
+    }
+    try {
+      requireRole(auth, ['admin', 'ops']);
+    } catch {
+      return c.text('Forbidden', 403);
+    }
+  }
+
+  const type = (c.req.query('type') || '').toLowerCase();
+  const sample = c.req.query('sample') === '1';
+  const hoursParam = c.req.query('hours');
+  const parsedHours = Number(hoursParam);
+  const windowHours = Number.isFinite(parsedHours) && parsedHours > 0 ? parsedHours : 24;
+
+  let innerHtml = '';
+
+  if (type === 'incident') {
+    let payload: IncidentReportV2Payload;
+    if (sample) {
+      payload = sampleIncidentReportV2Payload();
+    } else {
+      const incidentId = c.req.query('incident_id');
+      const siteId = c.req.query('site_id');
+      if (incidentId) {
+        try {
+          payload = await buildIncidentReportV2PayloadForIncident(c.env, incidentId, windowHours);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to load incident';
+          return c.text(message, message === 'Incident not found' ? 404 : 400);
+        }
+      } else if (siteId) {
+        payload = await buildIncidentReportV2Payload(c.env, siteId, windowHours);
+      } else {
+        return c.text('incident_id or site_id required', 400);
+      }
+    }
+    innerHtml = renderIncidentHtmlV2(c.env, payload);
+  } else if (type === 'client-monthly') {
+    let payload: ClientMonthlyReportPayload;
+    if (sample) {
+      payload = sampleClientMonthlyReportPayload();
+    } else {
+      const clientId = c.req.query('client_id');
+      const monthKey = c.req.query('month');
+      if (!clientId || !monthKey) {
+        return c.text('client_id and month required', 400);
+      }
+      try {
+        const prepared = await buildClientMonthlyReportPayload(c.env, clientId, monthKey, { version: 'v2' });
+        payload = prepared.payload;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to load report';
+        if (message === 'Client not found') {
+          return c.text(message, 404);
+        }
+        return c.text(message, 400);
+      }
+    }
+    innerHtml = renderClientMonthlyHtmlV2(c.env, payload);
+  } else {
+    return c.text('Bad Request', 400);
+  }
+
+  const html = (
+    <Page title="Report Preview — GreenBro Control Centre">
+      <div class="report-preview" dangerouslySetInnerHTML={{ __html: innerHtml }} />
+    </Page>
+  );
+
+  return c.html(html);
 });
 
 app.post('/api/reports/client-monthly', async (c) => {
@@ -4108,6 +4056,188 @@ async function computeClientMonthlyMetricsV2(
   const base = await computeClientMonthlyMetricsV1(DB, clientId, deviceIds, startIso, endIso);
   const weighted = await computeTimeWeightedUptime(DB, deviceIds, startIso, endIso, 5);
   return { ...base, uptimePct: weighted ?? base.uptimePct };
+}
+
+async function buildIncidentReportV2Payload(
+  env: Env,
+  siteId: string,
+  windowHours: number,
+  options?: { windowEnd?: Date; windowStart?: Date },
+): Promise<IncidentReportV2Payload> {
+  const baseEnd = options?.windowEnd ?? new Date();
+  const validEnd = Number.isNaN(baseEnd.getTime()) ? new Date() : baseEnd;
+  const fallbackHours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 24;
+  const defaultStart = new Date(validEnd.getTime() - fallbackHours * 60 * 60 * 1000);
+  const providedStart = options?.windowStart;
+  const startCandidate = providedStart && !Number.isNaN(providedStart.getTime()) ? providedStart : defaultStart;
+  const windowStart = startCandidate > validEnd ? new Date(validEnd.getTime() - 60 * 60 * 1000) : startCandidate;
+  const windowEnd = windowStart > validEnd ? windowStart : validEnd;
+  const startIso = windowStart.toISOString();
+  const endIso = windowEnd.toISOString();
+  const durationHours = Math.max((windowEnd.getTime() - windowStart.getTime()) / (60 * 60 * 1000), 0.25);
+
+  const site = await env.DB.prepare('SELECT site_id, name, region FROM sites WHERE site_id=?')
+    .bind(siteId)
+    .first<{ site_id: string; name: string | null; region: string | null }>();
+
+  const severityRows = await env.DB.prepare(
+    `SELECT severity, COUNT(*) as n
+       FROM alerts
+      WHERE device_id IN (SELECT device_id FROM devices WHERE site_id=?)
+        AND state IN ('open','ack')
+      GROUP BY severity`,
+  )
+    .bind(siteId)
+    .all<{ severity: string; n: number }>();
+
+  const top = await env.DB.prepare(
+    `SELECT d.device_id, SUM(CASE WHEN a.state IN ('open','ack') THEN 1 ELSE 0 END) as open_count
+       FROM devices d LEFT JOIN alerts a ON a.device_id = d.device_id
+      WHERE d.site_id=?
+      GROUP BY d.device_id
+      ORDER BY open_count DESC
+      LIMIT 5`,
+  )
+    .bind(siteId)
+    .all<{ device_id: string; open_count: number | null }>();
+
+  const incidentsRows = await env.DB.prepare(
+    `SELECT incident_id, site_id, started_at, last_alert_at, resolved_at
+       FROM incidents
+      WHERE site_id=?
+        AND started_at <= ?
+        AND (resolved_at IS NULL OR resolved_at >= ?)
+      ORDER BY started_at DESC
+      LIMIT 50`,
+  )
+    .bind(siteId, endIso, startIso)
+    .all<{
+      incident_id: string;
+      site_id: string;
+      started_at: string;
+      last_alert_at: string | null;
+      resolved_at: string | null;
+    }>();
+
+  const incidents = incidentsRows.results ?? [];
+  let incidentMeta = new Map<
+    string,
+    {
+      states: Record<string, number>;
+      alerts: Map<string, { type: string; severity: string; count: number }>;
+    }
+  >();
+
+  if (incidents.length > 0) {
+    const ids = incidents.map((row) => row.incident_id);
+    const placeholders = ids.map(() => '?').join(',');
+    const metaRows = await env.DB.prepare(
+      `SELECT ia.incident_id, a.type, a.severity, a.state, COUNT(*) as count
+         FROM incident_alerts ia
+         JOIN alerts a ON a.alert_id = ia.alert_id
+        WHERE ia.incident_id IN (${placeholders})
+        GROUP BY ia.incident_id, a.type, a.severity, a.state`,
+    )
+      .bind(...ids)
+      .all<{ incident_id: string; type: string; severity: string; state: string | null; count: number }>();
+
+    incidentMeta = new Map();
+    for (const row of metaRows.results ?? []) {
+      if (!incidentMeta.has(row.incident_id)) {
+        incidentMeta.set(row.incident_id, { states: {}, alerts: new Map() });
+      }
+      const bucket = incidentMeta.get(row.incident_id)!;
+      if (row.state) {
+        bucket.states[row.state] = (bucket.states[row.state] ?? 0) + row.count;
+      }
+      const key = `${row.type}:${row.severity}`;
+      if (!bucket.alerts.has(key)) {
+        bucket.alerts.set(key, { type: row.type, severity: row.severity, count: row.count });
+      } else {
+        const existing = bucket.alerts.get(key)!;
+        existing.count += row.count;
+      }
+    }
+  }
+
+  const maintenanceRows = await env.DB.prepare(
+    `SELECT site_id, device_id, start_ts, end_ts, reason
+       FROM maintenance_windows
+      WHERE (site_id = ? OR site_id IS NULL)
+        AND (device_id IS NULL OR device_id IN (SELECT device_id FROM devices WHERE site_id=?))
+        AND end_ts >= ?
+        AND start_ts <= ?
+      ORDER BY start_ts DESC
+      LIMIT 20`,
+  )
+    .bind(siteId, siteId, startIso, endIso)
+    .all<{
+      site_id: string | null;
+      device_id: string | null;
+      start_ts: string;
+      end_ts: string | null;
+      reason: string | null;
+    }>();
+
+  return {
+    siteId,
+    siteName: site?.name ?? null,
+    region: site?.region ?? null,
+    windowLabel: formatWindowLabel(durationHours),
+    windowStart: startIso,
+    windowEnd: endIso,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      severities: (severityRows.results ?? []).map((row) => ({ severity: row.severity, count: row.n })),
+      topDevices: (top.results ?? []).map((row) => ({ deviceId: row.device_id, openCount: row.open_count ?? 0 })),
+    },
+    incidents: incidents.map((row) => {
+      const bucket = incidentMeta.get(row.incident_id);
+      const alertBreakdown = bucket
+        ? Array.from(bucket.alerts.values()).sort((a, b) => b.count - a.count)
+        : [];
+      return {
+        incidentId: row.incident_id,
+        startedAt: row.started_at,
+        lastAlertAt: row.last_alert_at ?? null,
+        resolvedAt: row.resolved_at ?? null,
+        stateCounts: bucket?.states ?? {},
+        alertBreakdown,
+      };
+    }),
+    maintenance: (maintenanceRows.results ?? []).map((row) => ({
+      siteId: row.site_id,
+      deviceId: row.device_id,
+      startTs: row.start_ts,
+      endTs: row.end_ts,
+      reason: row.reason ?? null,
+    })),
+  };
+}
+
+async function buildIncidentReportV2PayloadForIncident(
+  env: Env,
+  incidentId: string,
+  windowHours: number,
+): Promise<IncidentReportV2Payload> {
+  const incident = await env.DB.prepare(
+    'SELECT incident_id, site_id, started_at, last_alert_at, resolved_at FROM incidents WHERE incident_id=?',
+  )
+    .bind(incidentId)
+    .first<{ incident_id: string; site_id: string | null; started_at: string; last_alert_at: string | null; resolved_at: string | null }>();
+
+  if (!incident || !incident.site_id) {
+    throw new Error('Incident not found');
+  }
+
+  const endRaw = incident.resolved_at ?? incident.last_alert_at ?? incident.started_at;
+  const windowEnd = endRaw ? new Date(endRaw) : new Date();
+  const validEnd = Number.isNaN(windowEnd.getTime()) ? new Date() : windowEnd;
+  const incidentStart = incident.started_at ? new Date(incident.started_at) : null;
+  const baseStart = new Date(validEnd.getTime() - (Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 24) * 60 * 60 * 1000);
+  const windowStart = incidentStart && !Number.isNaN(incidentStart.getTime()) && incidentStart < baseStart ? incidentStart : baseStart;
+
+  return buildIncidentReportV2Payload(env, incident.site_id, windowHours, { windowEnd: validEnd, windowStart });
 }
 
 async function buildClientMonthlyReportPayload(
