@@ -45,32 +45,57 @@ export function LoginPage(): JSX.Element {
   }
 
   return (
-    <div className="auth-screen login-wrap">
-      <div className="auth-card login-card">
-        <img src="/brand/logo.svg" alt="GreenBro" className="login-logo" />
-        <h1 className="login-title">GreenBro Control Centre</h1>
-        <p className="auth-card__subtitle login-sub">Sign in to manage devices and alerts</p>
-        <form onSubmit={onSubmit} className="auth-form">
-          <label className="auth-form__field">
-            <span>Email</span>
-            <input type="email" placeholder="you@example.com" {...register('email')} />
-            {errors.email ? <span className="auth-form__error">{errors.email.message}</span> : null}
-          </label>
-          <label className="auth-form__field">
-            <span>Password</span>
-            <input type="password" placeholder="••••••" {...register('password')} />
-            {errors.password ? <span className="auth-form__error">{errors.password.message}</span> : null}
-          </label>
-          {formError ? <div className="auth-form__error auth-form__error--global">{formError}</div> : null}
-          <button
-            className="app-button app-button--primary primary-cta"
-            type="submit"
-            disabled={isSubmitting || status === 'loading'}
-          >
-            {isSubmitting || status === 'loading' ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
-      </div>
+    <div style={{ maxWidth: 380, margin: '80px auto', textAlign: 'center' }}>
+      <img
+        src="/brand/logo.svg"
+        alt="GreenBro"
+        width={160}
+        height={42}
+        style={{ marginBottom: 12 }}
+      />
+      <h2 style={{ margin: '6px 0 16px' }}>Control Centre</h2>
+      <p className="muted" style={{ margin: '0 0 16px' }}>
+        Sign in to monitor devices and diagnostics.
+      </p>
+      <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column' }}>
+        <input
+          aria-label="Email"
+          placeholder="email"
+          type="email"
+          {...register('email')}
+          style={{ width: '100%', margin: '6px 0' }}
+        />
+        {errors.email ? (
+          <span className="auth-form__error" style={{ marginTop: -2 }}>
+            {errors.email.message}
+          </span>
+        ) : null}
+        <input
+          aria-label="Password"
+          placeholder="password"
+          type="password"
+          {...register('password')}
+          style={{ width: '100%', margin: '6px 0' }}
+        />
+        {errors.password ? (
+          <span className="auth-form__error" style={{ marginTop: -2 }}>
+            {errors.password.message}
+          </span>
+        ) : null}
+        {formError ? (
+          <div className="auth-form__error auth-form__error--global" style={{ marginTop: 6 }}>
+            {formError}
+          </div>
+        ) : null}
+        <button
+          className="btn btn-primary"
+          type="submit"
+          disabled={isSubmitting || status === 'loading'}
+          style={{ width: '100%', marginTop: 8 }}
+        >
+          {isSubmitting || status === 'loading' ? 'Continuing…' : 'Continue'}
+        </button>
+      </form>
     </div>
   );
 }
