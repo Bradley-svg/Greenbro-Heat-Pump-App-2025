@@ -3,6 +3,8 @@
 /** @jsxRuntime automatic */
 import { jsxRenderer, useRequestContext } from 'hono/jsx-renderer';
 
+export type DeployRibbon = { color: 'blue' | 'green'; text?: string };
+
 function useCspNonce(): string | undefined {
   const c = useRequestContext();
   return c.get('cspNonce') as string | undefined;
@@ -1785,15 +1787,17 @@ export function Page({
   title = 'GreenBro Control Centre',
   metaRefreshSec,
   head,
+  ribbon,
   children,
-}:{
+}: {
   title?: string;
   metaRefreshSec?: number;
   head?: JSX.Element | JSX.Element[];
+  ribbon?: DeployRibbon;
   children: JSX.Element;
 }) {
   return (
-    <html lang="en">
+    <html lang="en-GB">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -1807,9 +1811,32 @@ export function Page({
         ) : null}
         {/* Shared brand CSS already served from Worker */}
         <link rel="stylesheet" href="/brand.css" />
+        <style>{`
+          .gb-ribbon{
+            position:sticky; top:0; z-index:1000;
+            display:flex; align-items:center; gap:10px;
+            font-weight:700; letter-spacing:.2px;
+            padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.08);
+          }
+          .gb-ribbon .dot{ width:10px; height:10px; border-radius:999px; box-shadow:0 0 12px currentColor; }
+          .gb-ribbon.blue{ color:#7FB7FF; background:rgba(127,183,255,.08); }
+          .gb-ribbon.blue .dot{ background:#7FB7FF; }
+          .gb-ribbon.green{ color:#2AE580; background:rgba(42,229,128,.08); }
+          .gb-ribbon.green .dot{ background:#2AE580; }
+          .gb-ribbon small{ font-weight:500; opacity:.85 }
+        `}</style>
         {head}
       </head>
-      <body>{children}</body>
+      <body>
+        {ribbon ? (
+          <div class={`gb-ribbon ${ribbon.color}`}>
+            <span class="dot" aria-hidden="true" />
+            <span>Deployment: {ribbon.color === 'blue' ? 'Blue' : 'Green'}</span>
+            {ribbon.text ? <small>— {ribbon.text}</small> : null}
+          </div>
+        ) : null}
+        {children}
+      </body>
     </html>
   );
 }
@@ -1818,6 +1845,7 @@ export const renderer = jsxRenderer(({ children }) => {
   const c = useRequestContext();
   const path = c.req.path;
   const metaRefreshSec = c.get('metaRefreshSec') as number | undefined;
+  const ribbon = c.get('ribbon') as DeployRibbon | undefined;
   const isActive = (href: string) => {
     if (href === '/') {
       return path === '/';
@@ -1851,6 +1879,7 @@ export const renderer = jsxRenderer(({ children }) => {
     <Page
       title={pageTitle}
       metaRefreshSec={metaRefreshSec}
+      ribbon={ribbon}
       head={
         <style>{`
           body{margin:0;background:var(--gb-bg);color:var(--gb-ink);font-family:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
@@ -2600,19 +2629,50 @@ export function AdminSettingsPage(){
         <label>Ops webhook URL <input type="text" name="ops_webhook_url" placeholder="https://hooks.slack.com/..."/></label>
         <button class="btn" type="submit">Save</button>
       </form>
+      <form id="deploy-form" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 16px">
+        <label><input type="checkbox" name="deploy_readiness_enabled"/> Show readiness ribbon (admins/ops only)</label>
+        <fieldset style="display:flex;gap:12px;border:0;padding:0;margin:0">
+          <legend style="position:absolute;left:-9999px;">Deployment colour</legend>
+          <label><input type="radio" name="deploy_color" value="blue"/> Blue</label>
+          <label><input type="radio" name="deploy_color" value="green"/> Green</label>
+        </fieldset>
+        <label style="flex:1 1 100%;">Message
+          <input type="text" name="deploy_readiness_msg" placeholder="e.g., Blue pre-cutover smoke 14:00–15:00 SAST"/>
+        </label>
+        <button class="btn" type="submit">Save</button>
+      </form>
       <SecureScript dangerouslySetInnerHTML={{ __html: `
         (async function(){
-          const form = document.getElementById('ro-form');
+          const roForm = document.getElementById('ro-form');
+          const depForm = document.getElementById('deploy-form');
+          if(!roForm || !depForm) return;
           async function load(){
-            const r = await fetch('/api/admin/settings'); const rows = await r.json();
+            const r = await fetch('/api/admin/settings');
+            const rows = await r.json();
             const map = Object.fromEntries(rows.map(function(row){ return [row.key, row.value]; }));
-            form.read_only.checked = map.read_only === '1';
-            form.ops_webhook_url.value = map.ops_webhook_url || '';
+            roForm.read_only.checked = map.read_only === '1';
+            roForm.ops_webhook_url.value = map.ops_webhook_url || '';
+            depForm.deploy_readiness_enabled.checked = map.deploy_readiness_enabled === '1';
+            const selected = map.deploy_color || 'green';
+            (depForm.querySelector('input[name="deploy_color"][value="' + selected + '"]') || depForm.querySelector('input[name="deploy_color"][value="green"]')).checked = true;
+            depForm.deploy_readiness_msg.value = map.deploy_readiness_msg || '';
           }
-          form.addEventListener('submit', async function(e){
+          roForm.addEventListener('submit', async function(e){
             e.preventDefault();
-            await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'read_only',value: form.read_only.checked?'1':'0'})});
-            await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ops_webhook_url',value: form.ops_webhook_url.value})});
+            await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'read_only',value: roForm.read_only.checked?'1':'0'})});
+            await fetch('/api/admin/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'ops_webhook_url',value: roForm.ops_webhook_url.value})});
+            load();
+          });
+          depForm.addEventListener('submit', async function(e){
+            e.preventDefault();
+            const colorInput = depForm.querySelector('input[name="deploy_color"]:checked');
+            const color = colorInput ? colorInput.value : 'green';
+            const enabled = depForm.deploy_readiness_enabled.checked ? '1' : '0';
+            const msg = depForm.deploy_readiness_msg.value || '';
+            const headers = {'Content-Type':'application/json'};
+            await fetch('/api/admin/settings', {method:'POST',headers,body:JSON.stringify({key:'deploy_color',value: color})});
+            await fetch('/api/admin/settings', {method:'POST',headers,body:JSON.stringify({key:'deploy_readiness_enabled',value: enabled})});
+            await fetch('/api/admin/settings', {method:'POST',headers,body:JSON.stringify({key:'deploy_readiness_msg',value: msg})});
             load();
           });
           load();

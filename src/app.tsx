@@ -39,6 +39,7 @@ import {
   type ClientSloSummary,
   type ReportHistoryRow,
   type AdminArchiveRow,
+  type DeployRibbon,
 } from './ssr';
 import {
   renderIncidentHtmlV2,
@@ -72,6 +73,14 @@ async function setSetting(DB: D1Database, key: string, value: string) {
     "INSERT INTO settings (key,value,updated_at) VALUES (?,?,datetime('now')) " +
       "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
   ).bind(key, value).run();
+}
+
+export async function getDeploySettings(DB: D1Database) {
+  const colorRaw = (await getSetting(DB, 'deploy_color')) || 'green';
+  const enabled = (await getSetting(DB, 'deploy_readiness_enabled')) === '1';
+  const msg = (await getSetting(DB, 'deploy_readiness_msg')) || '';
+  const color: 'blue' | 'green' = colorRaw === 'blue' ? 'blue' : 'green';
+  return { color, enabled, msg };
 }
 
 const isStr = (x: unknown): x is string => typeof x === 'string' && x.trim().length > 0;
@@ -655,6 +664,28 @@ async function isReadOnly(DB: D1Database) {
   return (await getSetting(DB, 'read_only')) === '1';
 }
 
+function canSeeDeployRibbon(auth: AccessContext | null | undefined) {
+  if (!auth) {
+    return false;
+  }
+  return auth.roles.includes('admin') || auth.roles.includes('ops');
+}
+
+async function attachDeployRibbon(c: Context<Ctx>, auth: AccessContext | null | undefined) {
+  if (!canSeeDeployRibbon(auth)) {
+    return;
+  }
+  const deploy = await getDeploySettings(c.env.DB);
+  if (!deploy.enabled) {
+    return;
+  }
+  const ribbon: DeployRibbon = { color: deploy.color };
+  if (deploy.msg) {
+    ribbon.text = deploy.msg;
+  }
+  c.set('ribbon', ribbon);
+}
+
 async function guardWrite(c: any) {
   if (await isReadOnly(c.env.DB)) {
     return c.text('Read-only mode active', 503);
@@ -709,7 +740,15 @@ async function dispatchDeviceCommand(
   return new Response(res.body, { status: res.status, headers: res.headers });
 }
 
-type Ctx = { Bindings: Env; Variables: { auth?: AccessContext; metaRefreshSec?: number; cspNonce?: string } };
+type Ctx = {
+  Bindings: Env;
+  Variables: {
+    auth?: AccessContext;
+    metaRefreshSec?: number;
+    cspNonce?: string;
+    ribbon?: DeployRibbon;
+  };
+};
 
 const app = new Hono<Ctx>();
 
@@ -2865,6 +2904,7 @@ app.get('/api/clients/:clientId/slo-summary', async (c) => {
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
+  await attachDeployRibbon(c, auth);
   const clientId = c.req.param('clientId');
   if (!canAccessClient(auth, clientId)) {
     return c.text('Forbidden', 403);
@@ -3059,7 +3099,10 @@ app.get('/api/reports/*', async (c) => {
 });
 
 app.get('/', async (c) => {
-  const data = await buildOverviewData(c.env.DB);
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  const auth = jwt ? await verifyAccessJWT(c.env, jwt).catch(() => null) : null;
+  await attachDeployRibbon(c, auth);
+  const data = await buildOverviewData(c.env.DB, auth ?? undefined);
   return c.render(<OverviewPage data={data} />);
 });
 
@@ -3176,18 +3219,20 @@ app.get('/api/ops/readiness', async (c) => {
     requireRole(auth, ['admin', 'ops']);
   }
 
-  const [db, brand, reports, schema, readOnly] = await Promise.all([
+  const [db, brand, reports, schema, readOnly, deploy] = await Promise.all([
     tryDB(c.env.DB),
     tryR2(c.env.BRAND, 'logo.svg'),
     tryR2(c.env.REPORTS, ''),
     schemaSnapshot(c.env.DB),
     getSetting(c.env.DB, 'read_only').then((value) => value === '1'),
+    getDeploySettings(c.env.DB),
   ]);
 
   const ok = db.ok && brand.ok && schema.ok;
   const body = {
     ok,
     read_only: readOnly,
+    deploy: deploy.enabled ? { color: deploy.color, msg: deploy.msg } : null,
     checks: {
       db,
       schema,
@@ -3220,6 +3265,7 @@ app.get('/ops', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
 
   const readOnly = await isReadOnly(c.env.DB);
   if (readOnly) {
@@ -3241,6 +3287,7 @@ app.get('/alerts', async (c) => {
       return null;
     }
   })();
+  await attachDeployRibbon(c, auth);
 
   const url = new URL(c.req.url);
   const state = url.searchParams.get('state') ?? undefined;
@@ -3334,6 +3381,7 @@ app.get('/devices', async (c) => {
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
+  await attachDeployRibbon(c, auth);
 
   let sql = `SELECT d.device_id, d.site_id, s.name AS site_name, s.region,
                     d.online, d.last_seen_at,
@@ -3373,6 +3421,7 @@ app.get('/admin/archive', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   const url = new URL(c.req.url);
   const parsed = parseDateParam(url.searchParams.get('date'));
   const fallback = addUtcDays(startOfUtcDay(new Date()), -1);
@@ -3391,6 +3440,7 @@ app.get('/admin/presets', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   return c.render(<AdminPresetsPage />);
 });
 
@@ -3404,6 +3454,7 @@ app.get('/admin/sites', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   return c.render(<AdminSitesPage />);
 });
 
@@ -3417,6 +3468,7 @@ app.get('/admin/email', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   return c.render(<AdminEmailPage />);
 });
 
@@ -3430,6 +3482,7 @@ app.get('/admin/maintenance', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   return c.render(<AdminMaintenancePage />);
 });
 
@@ -3443,6 +3496,7 @@ app.get('/admin/settings', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   return c.render(<AdminSettingsPage />);
 });
 
@@ -3456,6 +3510,7 @@ app.get('/admin/reports/outbox', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   const url = new URL(c.req.url);
   const getRaw = (key: string) => url.searchParams.get(key) ?? '';
   const statusValue = url.searchParams.has('status') ? getRaw('status') : 'generated';
@@ -3491,6 +3546,7 @@ app.get('/admin/reports', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   return c.render(<AdminReportsPage />);
 });
 
@@ -3504,6 +3560,7 @@ app.get('/admin/reports/history', async (c) => {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
   const url = new URL(c.req.url);
   const get = (key: string) => {
     const value = url.searchParams.get(key);
