@@ -33,15 +33,28 @@ type ToastApi = {
   error: (message: string, options?: Omit<ToastOptions, 'kind'>) => number;
   dismiss: (id: number) => void;
   clear: () => void;
+  muted: boolean;
+  setMuted: (muted: boolean) => void;
 };
 
 const ToastContext = createContext<ToastApi | null>(null);
 
 const TOAST_DURATION = 6000;
 const EXIT_DURATION = 180;
+const MUTE_KEY = 'toast_muted';
 
 export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
+  const [muted, setMutedState] = useState<boolean>(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+    try {
+      return window.localStorage.getItem(MUTE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const nextId = useRef(1);
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
   const exitTimers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
@@ -99,6 +112,9 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
 
   const push = useCallback(
     (message: string, options?: ToastOptions) => {
+      if (muted) {
+        return -1;
+      }
       const id = nextId.current++;
       const kind = options?.kind ?? 'default';
       const dismissible = options?.dismissible ?? true;
@@ -119,7 +135,7 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
       }
       return id;
     },
-    [scheduleAutoDismiss],
+    [muted, scheduleAutoDismiss],
   );
 
   const clear = useCallback(() => {
@@ -133,6 +149,27 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
   }, []);
 
   useEffect(() => () => clear(), [clear]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(MUTE_KEY, muted ? '1' : '0');
+    } catch {
+      // ignore persistence errors
+    }
+  }, [muted]);
+
+  const setMuted = useCallback(
+    (value: boolean) => {
+      setMutedState(value);
+      if (value) {
+        clear();
+      }
+    },
+    [clear],
+  );
 
   const pauseToast = useCallback(
     (id: number) => {
@@ -166,8 +203,10 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
       error: factory('error'),
       dismiss,
       clear,
+      muted,
+      setMuted,
     };
-  }, [clear, dismiss, push]);
+  }, [clear, dismiss, muted, push, setMuted]);
 
   return (
     <ToastContext.Provider value={contextValue}>

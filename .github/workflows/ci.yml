@@ -49,3 +49,6 @@ jobs:
 
       - name: Colour-contrast budget (reports)
         run: npm run contrast:budget
+
+      - name: Lighthouse budgets
+        run: npm run lh:ci

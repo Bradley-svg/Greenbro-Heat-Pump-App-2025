@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from './providers/AuthProvider';
+import { useToast } from './providers/ToastProvider';
 import { ROUTE_ROLES } from '@utils/rbac';
 import type { Role } from '@utils/types';
 import { useReadOnly } from '@hooks/useReadOnly';
@@ -23,6 +24,7 @@ const NAV_ITEMS: NavItem[] = [
 export function AppLayout(): JSX.Element {
   const { user, logout, status } = useAuth();
   const { ro, canToggle, toggle } = useReadOnly();
+  const toast = useToast();
 
   const permittedNav = NAV_ITEMS.filter((item) => hasAnyRole(user?.roles ?? [], ROUTE_ROLES[item.roleKey]));
   const allowToggle = Boolean(user?.roles.includes('admin')) && canToggle;
@@ -51,6 +53,15 @@ export function AppLayout(): JSX.Element {
           <div className="app-topbar__title">{status === 'authenticated' ? 'Control Centre' : 'Loading…'}</div>
           <div className="app-topbar__actions">
             <ReadOnlyPill readOnly={ro} onToggle={allowToggle ? toggle : undefined} />
+            <label className="app-topbar__mute">
+              <input
+                type="checkbox"
+                checked={toast.muted}
+                onChange={(event) => toast.setMuted(event.target.checked)}
+                aria-label="Mute notifications"
+              />
+              Mute notifications
+            </label>
             <div className="app-topbar__account">
               {user ? (
                 <>

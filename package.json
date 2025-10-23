@@ -12,6 +12,7 @@
     "typecheck": "npm run typecheck --prefix apps/web",
     "axe:pdf": "BASE_URL=http://127.0.0.1:8788 playwright test tests/pdf-a11y.spec.ts -g @pdf",
     "contrast:budget": "node tools/contrast-budget.mjs",
+    "lh:ci": "npx @lhci/cli autorun --config=./lighthouserc.json",
     "quality": "npm run axe:pdf && npm run contrast:budget"
   },
   "dependencies": {

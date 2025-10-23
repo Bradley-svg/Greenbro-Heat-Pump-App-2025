@@ -48,6 +48,7 @@ import {
 } from './report-html';
 import { handleQueueBatch as baseQueueHandler } from './queue';
 import { sweepIncidents } from './incidents';
+import { withSecurityHeaders } from './security';
 
 void DeviceStateDO;
 void DeviceDO;
@@ -707,11 +708,20 @@ async function dispatchDeviceCommand(
   return new Response(res.body, { status: res.status, headers: res.headers });
 }
 
-type Ctx = { Bindings: Env; Variables: { auth?: AccessContext; metaRefreshSec?: number } };
+type Ctx = { Bindings: Env; Variables: { auth?: AccessContext; metaRefreshSec?: number; cspNonce?: string } };
 
 const app = new Hono<Ctx>();
 
 app.use('*', cors());
+
+app.use('*', async (c, next) => {
+  const nonce = crypto.randomUUID().replace(/-/g, '');
+  c.set('cspNonce', nonce);
+  await next();
+  if (c.res) {
+    c.res = withSecurityHeaders(c.res, { cspNonce: nonce });
+  }
+});
 
 app.get('/brand.css', (c) =>
   c.text(brandCss, 200, {

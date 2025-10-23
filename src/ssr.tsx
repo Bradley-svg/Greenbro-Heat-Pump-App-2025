@@ -3,6 +3,18 @@
 /** @jsxRuntime automatic */
 import { jsxRenderer, useRequestContext } from 'hono/jsx-renderer';
 
+function useCspNonce(): string | undefined {
+  const c = useRequestContext();
+  return c.get('cspNonce') as string | undefined;
+}
+
+type SecureScriptProps = JSX.IntrinsicElements['script'];
+
+function SecureScript(props: SecureScriptProps): JSX.Element {
+  const nonce = useCspNonce();
+  return <script {...props} nonce={nonce} />;
+}
+
 export type OverviewData = {
   kpis: { onlinePct: number; openAlerts: number; avgCop: number | null };
   sites: Array<{
@@ -805,7 +817,7 @@ function SavedViewsControls(props: { formSelector: string }) {
         </select>
         <button class="btn" id="save-view">Save current</button>
       </div>
-      <script dangerouslySetInnerHTML={{ __html: script }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: script }} />
     </>
   );
 }
@@ -1986,7 +1998,7 @@ export const renderer = jsxRenderer(({ children }) => {
         </nav>
       </header>
       <div class="wrap">{children}</div>
-      <script dangerouslySetInnerHTML={{ __html: readOnlyScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: readOnlyScript }} />
     </Page>
   );
 });
@@ -2107,8 +2119,8 @@ export function OverviewPage(props: { data: OverviewData }) {
         </div>
       </div>
 
-      <script id="overview-data" type="application/json">{initialJson}</script>
-      <script dangerouslySetInnerHTML={{ __html: overviewScript }} />
+      <SecureScript id="overview-data" type="application/json">{initialJson}</SecureScript>
+      <SecureScript dangerouslySetInnerHTML={{ __html: overviewScript }} />
     </div>
   );
 }
@@ -2241,8 +2253,8 @@ export function OpsPage(props: { snapshot: OpsSnapshot }) {
           </tr>
         </tbody>
       </table>
-      <script id="ops-slo-data" type="application/json">{initialJson}</script>
-      <script dangerouslySetInnerHTML={{ __html: opsScript }} />
+      <SecureScript id="ops-slo-data" type="application/json">{initialJson}</SecureScript>
+      <SecureScript dangerouslySetInnerHTML={{ __html: opsScript }} />
     </div>
   );
 }
@@ -2309,7 +2321,7 @@ export function AlertsPage(props: { alerts: any[]; filters: { state?: string; se
           ))}
         </tbody>
       </table>
-      <script dangerouslySetInnerHTML={{ __html: alertsScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: alertsScript }} />
     </div>
   );
 }
@@ -2361,7 +2373,7 @@ export function DevicesPage(props: { rows: any[] }) {
           ))}
         </tbody>
       </table>
-      <script dangerouslySetInnerHTML={{ __html: devicesScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: devicesScript }} />
     </div>
   );
 }
@@ -2461,7 +2473,7 @@ export function AdminArchivePage(props: { date: string; rows: AdminArchiveRow[] 
       ) : (
         <p class="archive-summary">No exports recorded for {selectedDate}.</p>
       )}
-      <script dangerouslySetInnerHTML={{ __html: adminArchiveScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: adminArchiveScript }} />
     </div>
   );
 }
@@ -2514,7 +2526,7 @@ export function AdminPresetsPage() {
       </div>
       <pre id="presets-msg" class="muted" style="white-space:pre-wrap;margin-top:8px"></pre>
 
-      <script
+      <SecureScript
         dangerouslySetInnerHTML={{
           __html: `
         (function(){
@@ -2574,7 +2586,7 @@ export function AdminEmailPage() {
         </label>
         <button class="btn" type="submit">Save</button>
       </form>
-      <script dangerouslySetInnerHTML={{ __html: adminEmailScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: adminEmailScript }} />
     </div>
   );
 }
@@ -2588,7 +2600,7 @@ export function AdminSettingsPage(){
         <label>Ops webhook URL <input type="text" name="ops_webhook_url" placeholder="https://hooks.slack.com/..."/></label>
         <button class="btn" type="submit">Save</button>
       </form>
-      <script dangerouslySetInnerHTML={{ __html: `
+      <SecureScript dangerouslySetInnerHTML={{ __html: `
         (async function(){
           const form = document.getElementById('ro-form');
           async function load(){
@@ -2635,7 +2647,7 @@ export function AdminSitesPage() {
         <thead><tr><th>Client</th><th>Site</th><th>Action</th></tr></thead>
         <tbody id="maps-tbody"></tbody>
       </table>
-      <script dangerouslySetInnerHTML={{ __html: adminSitesScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: adminSitesScript }} />
     </div>
   );
 }
@@ -2690,7 +2702,7 @@ export function AdminReportsPage() {
           </tr>
         </tbody>
       </table>
-      <script dangerouslySetInnerHTML={{ __html: adminReportsScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: adminReportsScript }} />
     </div>
   );
 }
@@ -2801,10 +2813,10 @@ export function AdminReportsOutboxPage(props: AdminReportsOutboxProps) {
         </thead>
         <tbody id="reports-outbox-tbody">{body}</tbody>
       </table>
-      <script id="reports-outbox-data" type="application/json">
+      <SecureScript id="reports-outbox-data" type="application/json">
         {initialPayload}
-      </script>
-      <script dangerouslySetInnerHTML={{ __html: reportsOutboxScript }} />
+      </SecureScript>
+      <SecureScript dangerouslySetInnerHTML={{ __html: reportsOutboxScript }} />
     </div>
   );
 }
@@ -2894,10 +2906,10 @@ export function AdminReportsHistoryPage(props: AdminReportsHistoryProps) {
         </thead>
         <tbody id="report-history-tbody">{body}</tbody>
       </table>
-      <script id="report-history-data" type="application/json">
+      <SecureScript id="report-history-data" type="application/json">
         {initialPayload}
-      </script>
-      <script dangerouslySetInnerHTML={{ __html: reportHistoryScript }} />
+      </SecureScript>
+      <SecureScript dangerouslySetInnerHTML={{ __html: reportHistoryScript }} />
     </div>
   );
 }
@@ -3078,10 +3090,10 @@ export function ClientSloPage({ summary, filters }: ClientSloPageProps) {
       <div class="slo-meta" style="margin-top:16px">
         Recipients: <span id="client-slo-recipients">{recipients}</span>
       </div>
-      <script id="client-slo-data" type="application/json">
+      <SecureScript id="client-slo-data" type="application/json">
         {initialPayload}
-      </script>
-      <script dangerouslySetInnerHTML={{ __html: clientSloScript }} />
+      </SecureScript>
+      <SecureScript dangerouslySetInnerHTML={{ __html: clientSloScript }} />
     </div>
   );
 }
@@ -3125,7 +3137,7 @@ export function AdminMaintenancePage() {
           </tr>
         </tbody>
       </table>
-      <script dangerouslySetInnerHTML={{ __html: maintenanceScript }} />
+      <SecureScript dangerouslySetInnerHTML={{ __html: maintenanceScript }} />
     </div>
   );
 }
