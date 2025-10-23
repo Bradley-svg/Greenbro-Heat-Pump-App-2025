@@ -27,7 +27,7 @@ jobs:
         run: npx wait-on http://127.0.0.1:4173
 
       - name: Install Playwright browsers
-        uses: microsoft/playwright-github-action@v1
+        run: npx playwright install --with-deps
 
       - name: Run smoke (mute toggle)
         env:
@@ -58,7 +58,7 @@ jobs:
         run: npx wait-on http://127.0.0.1:4173
 
       - name: Install Playwright browsers
-        uses: microsoft/playwright-github-action@v1
+        run: npx playwright install --with-deps
 
       - name: Run Axe checks
         env:
