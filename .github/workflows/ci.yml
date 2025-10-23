@@ -5,6 +5,35 @@ on:
   pull_request:
 
 jobs:
+  smoke-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build SPA
+        run: npm --prefix apps/web run build
+
+      - name: Start Vite preview
+        run: npm --prefix apps/web run preview -- --host 127.0.0.1 --port 4173 &
+
+      - name: Wait for preview
+        run: npx wait-on http://127.0.0.1:4173
+
+      - name: Install Playwright browsers
+        uses: microsoft/playwright-github-action@v1
+
+      - name: Run smoke (mute toggle)
+        env:
+          BASE_URL: http://127.0.0.1:4173
+        run: npm run test:smoke:ci
+
   a11y:
     runs-on: ubuntu-latest
     steps:
@@ -23,22 +52,17 @@ jobs:
         run: npm --prefix apps/web run build
 
       - name: Start Vite preview
-        run: npm --prefix apps/web run preview &
+        run: npm --prefix apps/web run preview -- --host 127.0.0.1 --port 4173 &
 
       - name: Wait for preview
-        run: npx wait-on http://127.0.0.1:5173
+        run: npx wait-on http://127.0.0.1:4173
 
-      - name: Install Playwright
-        run: npx playwright install --with-deps
-
-      - name: Burn toast mute smoke
-        env:
-          BASE_URL: http://127.0.0.1:5173
-        run: npm run test:smoke
+      - name: Install Playwright browsers
+        uses: microsoft/playwright-github-action@v1
 
       - name: Run Axe checks
         env:
-          BASE_URL: http://127.0.0.1:5173
+          BASE_URL: http://127.0.0.1:4173
         run: npx playwright test --config=tests/playwright.config.ts tests/a11y.spec.ts
 
       - name: Start Worker (dev)

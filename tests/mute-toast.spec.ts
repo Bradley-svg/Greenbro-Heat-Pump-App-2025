@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
 const redSeries = [
-  { ts: new Date(Date.now() - 9 * 60_000).toISOString(), burn: 1.2, errRate: 0.01 },
-  { ts: new Date().toISOString(), burn: 2.6, errRate: 0.055 },
+  { ts: '2024-01-01T11:51:00.000Z', burn: 1.2, errRate: 0.01 },
+  { ts: '2024-01-01T12:00:00.000Z', burn: 2.6, errRate: 0.055 },
 ];
 
 test.describe('Burn toast + mute behaviour', () => {
