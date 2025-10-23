@@ -34,6 +34,11 @@ jobs:
         run: npx wrangler dev --local --port=8788 &
       - run: npx wait-on http://127.0.0.1:8788
 
+      - name: PWA audit
+        run: |
+          curl -sSf http://127.0.0.1:8788/brand/manifest.webmanifest >/dev/null
+          curl -sSf http://127.0.0.1:8788/brand/logo-white.svg >/dev/null
+
       - run: npm run axe:pdf
 
       - uses: microsoft/playwright-github-action@v1

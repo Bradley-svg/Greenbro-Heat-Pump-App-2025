@@ -8,14 +8,8 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react';
-
-type ToastKind = 'default' | 'success' | 'warning' | 'error';
-
-type ToastOptions = {
-  kind?: ToastKind;
-  duration?: number;
-  dismissible?: boolean;
-};
+import { toast } from './toast';
+import type { ToastAction, ToastKind, ToastOptions } from './toast.types';
 
 type ToastRecord = {
   id: number;
@@ -24,10 +18,12 @@ type ToastRecord = {
   dismissible: boolean;
   duration: number;
   state: 'open' | 'closing';
+  action?: ToastAction;
 };
 
 type ToastApi = {
   push: (message: string, options?: ToastOptions) => number;
+  info: (message: string, options?: Omit<ToastOptions, 'kind'>) => number;
   success: (message: string, options?: Omit<ToastOptions, 'kind'>) => number;
   warning: (message: string, options?: Omit<ToastOptions, 'kind'>) => number;
   error: (message: string, options?: Omit<ToastOptions, 'kind'>) => number;
@@ -128,6 +124,7 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
           dismissible,
           duration,
           state: 'open',
+          action: options?.action,
         },
       ]);
       if (duration > 0) {
@@ -193,11 +190,14 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
     [scheduleAutoDismiss],
   );
 
+  useEffect(() => toast.subscribe((message, options) => push(message, options)), [push]);
+
   const contextValue = useMemo<ToastApi>(() => {
     const factory = (kind: ToastKind) =>
       (message: string, options?: Omit<ToastOptions, 'kind'>) => push(message, { ...options, kind });
     return {
       push,
+      info: factory('default'),
       success: factory('success'),
       warning: factory('warning'),
       error: factory('error'),
@@ -218,35 +218,47 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
         aria-atomic="false"
         role="region"
       >
-        {toasts.map((toast) => (
+        {toasts.map((toastItem) => (
           <article
-            key={toast.id}
-            className={`toast toast--${toast.kind}`}
-            data-state={toast.state}
+            key={toastItem.id}
+            className={`toast toast--${toastItem.kind}`}
+            data-state={toastItem.state}
             role="status"
             onMouseEnter={() => {
-              hoveredToasts.current.add(toast.id);
-              pauseToast(toast.id);
+              hoveredToasts.current.add(toastItem.id);
+              pauseToast(toastItem.id);
             }}
             onMouseLeave={() => {
-              hoveredToasts.current.delete(toast.id);
-              resumeToast(toast);
+              hoveredToasts.current.delete(toastItem.id);
+              resumeToast(toastItem);
             }}
             onFocus={() => {
-              focusedToasts.current.add(toast.id);
-              pauseToast(toast.id);
+              focusedToasts.current.add(toastItem.id);
+              pauseToast(toastItem.id);
             }}
             onBlur={() => {
-              focusedToasts.current.delete(toast.id);
-              resumeToast(toast);
+              focusedToasts.current.delete(toastItem.id);
+              resumeToast(toastItem);
             }}
           >
-            <div className="toast__body">{toast.message}</div>
-            {toast.dismissible ? (
+            <div className="toast__body">{toastItem.message}</div>
+            {toastItem.action ? (
+              <button
+                type="button"
+                className="toast__action"
+                onClick={() => {
+                  toastItem.action?.onClick();
+                  dismiss(toastItem.id);
+                }}
+              >
+                {toastItem.action.label}
+              </button>
+            ) : null}
+            {toastItem.dismissible ? (
               <button
                 type="button"
                 className="toast__dismiss"
-                onClick={() => dismiss(toast.id)}
+                onClick={() => dismiss(toastItem.id)}
                 aria-label="Dismiss notification"
               >
                 ×

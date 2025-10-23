@@ -613,6 +613,17 @@ svg.spark.crit {
   box-shadow: none;
 }
 
+.btn-ghost {
+  background: rgba(207, 227, 214, 0.1);
+  border-color: rgba(207, 227, 214, 0.24);
+  color: #cfe3d6;
+}
+
+.btn-ghost:hover,
+.btn-ghost:focus-visible {
+  background: rgba(207, 227, 214, 0.18);
+}
+
 .app-button--primary,
 .btn-primary,
 .primary-cta {
@@ -875,6 +886,28 @@ svg.spark.crit {
 .toast__body {
   flex: 1 1 auto;
   padding-right: 8px;
+}
+
+.toast__action {
+  border: none;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--toast-accent, var(--gb-primary-500)) 24%, transparent);
+  color: inherit;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.toast__action:hover,
+.toast__action:focus-visible {
+  background: color-mix(in srgb, var(--toast-accent, var(--gb-primary-500)) 45%, transparent);
+  transform: translateY(-1px);
+}
+
+.toast__action:focus-visible {
+  outline: 2px solid var(--toast-accent, var(--gb-primary-500));
+  outline-offset: 2px;
 }
 
 .toast__dismiss {

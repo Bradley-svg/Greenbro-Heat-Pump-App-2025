@@ -1814,6 +1814,7 @@ export function Page({
           type="image/svg+xml"
         />
         <link rel="manifest" href="/brand/manifest.webmanifest" />
+        <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" />
         <meta name="theme-color" content="#0b0e12" />
         {metaRefreshSec != null ? (
           <meta httpEquiv="refresh" content={String(metaRefreshSec)} />

@@ -8,6 +8,7 @@ import type { Role } from '@utils/types';
 import { useReadOnly } from '@hooks/useReadOnly';
 import { useDeployRibbon } from '@hooks/useDeployRibbon';
 import { useVersion } from '@hooks/useVersion';
+import { useInstallPrompt } from '@hooks/useInstallPrompt';
 import { AboutModal } from '@/components/AboutModal';
 
 interface NavItem {
@@ -32,6 +33,7 @@ export function AppLayout(): JSX.Element {
   const toast = useToast();
   const { deploy, dismiss } = useDeployRibbon();
   const { data: version } = useVersion();
+  const { canInstall, install } = useInstallPrompt();
   const [aboutOpen, setAboutOpen] = useState(false);
 
   const permittedNav = NAV_ITEMS.filter((item) => hasAnyRole(user?.roles ?? [], ROUTE_ROLES[item.roleKey]));
@@ -60,6 +62,18 @@ export function AppLayout(): JSX.Element {
         <header className="app-topbar">
           <div className="app-topbar__title">{status === 'authenticated' ? brand.product : 'Loading…'}</div>
           <div className="app-topbar__actions">
+            {canInstall ? (
+              <button
+                className="btn btn-ghost"
+                type="button"
+                onClick={() => {
+                  void install();
+                }}
+                aria-label="Install Greenbro"
+              >
+                Install
+              </button>
+            ) : null}
             <ReadOnlyPill readOnly={ro} onToggle={allowToggle ? toggle : undefined} />
             <label className="app-topbar__mute">
               <input

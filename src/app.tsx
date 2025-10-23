@@ -800,12 +800,15 @@ app.get('/brand/manifest.webmanifest', () =>
     JSON.stringify({
       name: 'Greenbro Control Centre',
       short_name: 'Greenbro',
-      theme_color: '#0b0e12',
-      background_color: '#0b0e12',
+      start_url: '/overview',
+      scope: '/',
       display: 'standalone',
+      background_color: '#0b0e12',
+      theme_color: '#0b0e12',
       icons: [
-        { src: '/brand/logo.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-        { src: '/brand/logo-white.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable any' },
+        { src: '/brand/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+        { src: '/brand/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+        { src: '/brand/logo-white.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
       ],
     }),
     {
@@ -815,6 +818,73 @@ app.get('/brand/manifest.webmanifest', () =>
       },
     },
   ),
+);
+
+app.get('/brand/apple-touch-icon.png', async (c) => {
+  const cacheHeaders = {
+    'Content-Type': 'image/png',
+    'Cache-Control': 'public, max-age=604800',
+  } as const;
+
+  try {
+    const object = await c.env.BRAND.get('apple-touch-icon.png');
+    if (object) {
+      const headers = new Headers(cacheHeaders);
+      object.writeHttpMetadata(headers);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'image/png');
+      }
+      return new Response(object.body, { headers });
+    }
+  } catch (error) {
+    console.warn('Failed to load apple-touch icon from R2', error);
+  }
+
+  const fallbackUrl = new URL('/brand/logo-white.svg', c.req.url);
+  const fallback = await fetch(fallbackUrl);
+  return new Response(await fallback.arrayBuffer(), {
+    headers: {
+      'Content-Type': 'image/svg+xml',
+      'Cache-Control': 'public, max-age=86400',
+    },
+  });
+});
+
+for (const size of [192, 512] as const) {
+  app.get(`/brand/icon-${size}.png`, async (c) => {
+    try {
+      const object = await c.env.BRAND.get(`icon-${size}.png`);
+      if (object) {
+        const headers = new Headers({
+          'Content-Type': 'image/png',
+          'Cache-Control': 'public, max-age=604800',
+        });
+        object.writeHttpMetadata(headers);
+        if (!headers.has('Content-Type')) {
+          headers.set('Content-Type', 'image/png');
+        }
+        return new Response(object.body, { headers });
+      }
+    } catch (error) {
+      console.warn(`Failed to load icon-${size}.png from R2`, error);
+    }
+
+    return new Response('Not Found', { status: 404 });
+  });
+}
+
+app.get('/offline', (c) =>
+  c.html(`<!doctype html><html lang="en-GB"><head>
+    <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Offline — Greenbro Control Centre</title>
+    <link rel="stylesheet" href="/brand.css"/>
+  </head><body style="display:grid;place-items:center;min-height:100svh;background:#0b0e12;color:#cfe3d6">
+    <div class="card" style="max-width:460px;padding:18px 20px">
+      <img src="/brand/logo-white.svg" alt="Greenbro" height="24" style="margin-bottom:10px"/>
+      <h2>You’re offline</h2>
+      <p class="muted">We’ll reconnect automatically. Critical actions are disabled while offline.</p>
+    </div>
+  </body></html>`),
 );
 
 app.get('/brand/logo.svg', async (c) => {
