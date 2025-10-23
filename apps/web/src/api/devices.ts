@@ -1,15 +1,21 @@
-import { apiFetch } from './client';
+import { authFetch } from './client';
 import type { Device, DeviceLatestState, TelemetryPoint } from './types';
 
-export function getDevices() {
-  return apiFetch<Device[]>('/api/devices');
+export async function getDevices() {
+  const res = await authFetch('/api/devices');
+  if (!res.ok) throw res;
+  return (await res.json()) as Device[];
 }
 
-export function getDeviceLatest(deviceId: string) {
-  return apiFetch<DeviceLatestState>(`/api/devices/${deviceId}/latest`);
+export async function getDeviceLatest(deviceId: string) {
+  const res = await authFetch(`/api/devices/${deviceId}/latest`);
+  if (!res.ok) throw res;
+  return (await res.json()) as DeviceLatestState;
 }
 
-export function getDeviceTelemetry(deviceId: string, range: '24h' | '7d') {
+export async function getDeviceTelemetry(deviceId: string, range: '24h' | '7d') {
   const params = new URLSearchParams({ range });
-  return apiFetch<TelemetryPoint[]>(`/api/devices/${deviceId}/series?${params.toString()}`);
+  const res = await authFetch(`/api/devices/${deviceId}/series?${params.toString()}`);
+  if (!res.ok) throw res;
+  return (await res.json()) as TelemetryPoint[];
 }

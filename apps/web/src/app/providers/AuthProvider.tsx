@@ -9,6 +9,7 @@ import {
   type PropsWithChildren,
 } from 'react';
 import { fetchMe, loadStoredSession, login as apiLogin, logout as apiLogout, refresh as apiRefresh, storeSession } from '@api/auth';
+import { setAuthToken } from '@api/client';
 import type { AuthStatus, Role, User } from '@utils/types';
 import type { AuthTokens } from '@utils/types';
 import type { LoginInput } from '@api/auth';
@@ -44,6 +45,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
       const me = await fetchMe(nextTokens.accessToken);
       setUser(me);
       setTokens(nextTokens);
+      setAuthToken(nextTokens.accessToken);
       setStatus('authenticated');
     } catch (error) {
       if (nextTokens.refreshToken) {
@@ -56,17 +58,20 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
           const resolvedUser = refreshed.user ?? (await fetchMe(refreshed.accessToken));
           setUser(resolvedUser);
           setTokens(mergedTokens);
+          setAuthToken(mergedTokens.accessToken);
           setStatus('authenticated');
         } catch (refreshError) {
           console.error('Failed to refresh session', refreshError);
           setUser(null);
           setTokens(null);
+          setAuthToken(null);
           setStatus('unauthenticated');
         }
       } else {
         console.error('Failed to establish session', error);
         setUser(null);
         setTokens(null);
+        setAuthToken(null);
         setStatus('unauthenticated');
       }
     }
@@ -76,6 +81,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
     const stored = loadStoredSession();
     if (stored?.tokens?.accessToken) {
       setTokens(stored.tokens);
+      setAuthToken(stored.tokens.accessToken);
       setUser(stored.user);
       void establishSession(stored.tokens);
     } else {
@@ -96,6 +102,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
     const session = await apiLogin(input);
     setUser(session.user);
     setTokens(session.tokens);
+    setAuthToken(session.tokens.accessToken);
     setStatus('authenticated');
     storeSession(session);
   }, []);
@@ -108,6 +115,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
     } finally {
       setUser(null);
       setTokens(null);
+      setAuthToken(null);
       setStatus('unauthenticated');
       storeSession(null);
     }
@@ -131,6 +139,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
         const nextUser = res.user ?? (await fetchMe(res.accessToken));
         setTokens(mergedTokens);
         setUser(nextUser);
+        setAuthToken(mergedTokens.accessToken);
         setStatus('authenticated');
         storeSession({ user: nextUser, tokens: mergedTokens });
         return res.accessToken;
@@ -139,6 +148,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
         console.error('Failed to refresh auth token', error);
         setUser(null);
         setTokens(null);
+        setAuthToken(null);
         setStatus('unauthenticated');
         storeSession(null);
         return null;
