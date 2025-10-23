@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '@api/client';
 import type { AcknowledgeAlertResponse, Alert } from '@api/types';
 import { useAuthFetch } from '@hooks/useAuthFetch';
+import { useToast } from '@app/providers/ToastProvider';
+import { useReadOnly } from '@hooks/useReadOnly';
 
 function FocusIncidentsPill(): JSX.Element {
   const [params, setParams] = useSearchParams();
@@ -32,6 +34,8 @@ function FocusIncidentsPill(): JSX.Element {
 export function AlertsPage(): JSX.Element {
   const authFetch = useAuthFetch();
   const queryClient = useQueryClient();
+  const toast = useToast();
+  const { ro } = useReadOnly();
   const alertsQuery = useQuery({
     queryKey: ['alerts'],
     queryFn: () => apiFetch<Alert[]>('/api/alerts', undefined, authFetch),
@@ -42,6 +46,9 @@ export function AlertsPage(): JSX.Element {
     mutationFn: (id: string) =>
       apiFetch<AcknowledgeAlertResponse>(`/api/alerts/${id}/ack`, { method: 'POST', body: JSON.stringify({}) }, authFetch),
     onMutate: async (id) => {
+      if (ro) {
+        throw new Error('Read-only mode is active');
+      }
       await queryClient.cancelQueries({ queryKey: ['alerts'] });
       const previous = queryClient.getQueryData<Alert[]>(['alerts']);
       if (previous) {
@@ -51,12 +58,18 @@ export function AlertsPage(): JSX.Element {
           ),
         );
       }
-      return { previous };
+      return { prev: previous };
     },
-    onError: (_error, _id, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(['alerts'], context.previous);
+    onError: (error, _id, context) => {
+      if (context?.prev) {
+        queryClient.setQueryData(['alerts'], context.prev);
       }
+      const message = error instanceof Error ? error.message : String(error);
+      toast.push(
+        message.includes('Read-only')
+          ? 'Read-only mode: writes are temporarily disabled.'
+          : 'Failed to acknowledge alert.',
+      );
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['alerts'] });
@@ -98,9 +111,9 @@ export function AlertsPage(): JSX.Element {
                     className="app-button"
                     type="button"
                     onClick={() => acknowledgeMutation.mutate(alert.id)}
-                    disabled={acknowledgeMutation.isPending}
+                    disabled={ro || acknowledgeMutation.isPending}
                   >
-                    Ack
+                    {ro ? 'Ack (disabled)' : 'Ack'}
                   </button>
                 )}
               </footer>

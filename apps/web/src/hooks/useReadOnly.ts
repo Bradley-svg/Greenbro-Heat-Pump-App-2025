@@ -1,49 +1,44 @@
-import { useCallback } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from '@api/client';
-import type { PublicSettings } from '@api/types';
-import { useAuthFetch } from './useAuthFetch';
+import { useEffect, useState } from 'react';
+import { authFetch } from '@api/client';
 
 export function useReadOnly() {
-  const authFetch = useAuthFetch();
-  const queryClient = useQueryClient();
+  const [ro, setRo] = useState(false);
+  const [canToggle, setCanToggle] = useState(false);
 
-  const settingsQuery = useQuery({
-    queryKey: ['settings', 'public'],
-    queryFn: () => apiFetch<PublicSettings>('/api/settings/public', undefined, authFetch),
-    refetchInterval: 60_000,
-    staleTime: 55_000,
-  });
-
-  const mutation = useMutation({
-    mutationFn: async (next: boolean) =>
-      apiFetch<PublicSettings>(
-        '/api/admin/settings',
-        {
-          method: 'POST',
-          body: JSON.stringify({ readOnly: next }),
-        },
-        authFetch,
-      ),
-    onSuccess: (data) => {
-      queryClient.setQueryData(['settings', 'public'], data);
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ['settings', 'public'] });
-    },
-  });
-
-  const toggle = useCallback(() => {
-    if (settingsQuery.data && !mutation.isPending) {
-      mutation.mutate(!settingsQuery.data.readOnly);
+  const load = async () => {
+    try {
+      const pub = await fetch('/api/settings/public')
+        .then((r) => r.json())
+        .catch(() => ({ read_only: false }));
+      setRo(Boolean(pub.read_only));
+    } catch {
+      setRo(false);
     }
-  }, [mutation, settingsQuery.data]);
-
-  return {
-    ro: settingsQuery.data?.readOnly ?? false,
-    canToggle: Boolean(settingsQuery.data?.canToggle),
-    toggle,
-    isPending: settingsQuery.isPending || mutation.isPending,
-    error: settingsQuery.error ?? mutation.error ?? null,
+    try {
+      const response = await authFetch('/api/admin/settings');
+      setCanToggle(response.ok);
+    } catch {
+      setCanToggle(false);
+    }
   };
+
+  useEffect(() => {
+    void load();
+    const id = setInterval(() => {
+      void load();
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const toggle = async () => {
+    const value = ro ? '0' : '1';
+    await authFetch('/api/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'read_only', value }),
+    });
+    await load();
+  };
+
+  return { ro, canToggle, toggle };
 }

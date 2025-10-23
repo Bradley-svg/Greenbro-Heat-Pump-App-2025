@@ -22,7 +22,7 @@ const NAV_ITEMS: NavItem[] = [
 
 export function AppLayout(): JSX.Element {
   const { user, logout, status } = useAuth();
-  const { ro, canToggle, toggle, isPending } = useReadOnly();
+  const { ro, canToggle, toggle } = useReadOnly();
 
   const permittedNav = NAV_ITEMS.filter((item) => hasAnyRole(user?.roles ?? [], ROUTE_ROLES[item.roleKey]));
   const allowToggle = Boolean(user?.roles.includes('admin')) && canToggle;
@@ -50,11 +50,7 @@ export function AppLayout(): JSX.Element {
         <header className="app-topbar">
           <div className="app-topbar__title">{status === 'authenticated' ? 'Control Centre' : 'Loading…'}</div>
           <div className="app-topbar__actions">
-            <ReadOnlyPill
-              readOnly={ro}
-              onToggle={allowToggle ? toggle : undefined}
-              disabled={isPending}
-            />
+            <ReadOnlyPill readOnly={ro} onToggle={allowToggle ? toggle : undefined} />
             <div className="app-topbar__account">
               {user ? (
                 <>

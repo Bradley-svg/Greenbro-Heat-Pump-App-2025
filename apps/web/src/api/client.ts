@@ -7,7 +7,10 @@ export function setAuthToken(tok: string | null) {
   try {
     if (tok) localStorage.setItem('auth_token', tok);
     else localStorage.removeItem('auth_token');
-  } catch {}
+  } catch (error) {
+    // Ignore storage failures (e.g. private browsing mode).
+    void error;
+  }
   listeners.forEach((l) => l());
 }
 export function getAuthToken() {
