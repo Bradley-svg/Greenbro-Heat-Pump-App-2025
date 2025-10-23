@@ -647,6 +647,9 @@ export default function DevicesPage() {
                 {virtualizationEnabled
                   ? virtualRows.map((virtualRow) => {
                       const device = rows[virtualRow.index];
+                      if (!device) {
+                        return null;
+                      }
                       return (
                         <tr
                           key={device.id}

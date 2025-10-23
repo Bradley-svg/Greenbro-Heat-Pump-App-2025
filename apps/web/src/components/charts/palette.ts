@@ -66,17 +66,19 @@ function withAlpha(color: string, opacity: number): string {
   }
 
   const rgbMatch = trimmed.match(/^rgb\s*\(([^)]+)\)$/i);
-  if (rgbMatch) {
-    const [r, g, b] = rgbMatch[1].split(',').map((part) => Number.parseFloat(part.trim()));
+  if (rgbMatch?.[1]) {
+    const components = rgbMatch[1].split(',').map((part) => Number.parseFloat(part.trim()));
+    const [r, g, b] = components as [number | undefined, number | undefined, number | undefined];
     return `rgba(${safeNumber(r)}, ${safeNumber(g)}, ${safeNumber(b)}, ${value})`;
   }
 
   const rgbaMatch = trimmed.match(/^rgba\s*\(([^)]+)\)$/i);
-  if (rgbaMatch) {
-    const [r, g, b] = rgbaMatch[1]
+  if (rgbaMatch?.[1]) {
+    const components = rgbaMatch[1]
       .split(',')
       .slice(0, 3)
       .map((part) => Number.parseFloat(part.trim()));
+    const [r, g, b] = components as [number | undefined, number | undefined, number | undefined];
     return `rgba(${safeNumber(r)}, ${safeNumber(g)}, ${safeNumber(b)}, ${value})`;
   }
 
@@ -101,6 +103,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function safeNumber(value: number): number {
-  return Number.isFinite(value) ? value : 0;
+function safeNumber(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }

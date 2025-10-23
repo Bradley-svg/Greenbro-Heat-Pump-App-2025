@@ -2,6 +2,9 @@
   "name": "greenbro-cloudflare",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "apps/web"
+  ],
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -9,7 +12,7 @@
     "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
     "copy-guard": "node scripts/copy-guard.mjs",
     "lint": "eslint src apps/web/src apps/web/vite.config.ts",
-    "typecheck": "npm run typecheck --prefix apps/web",
+    "typecheck": "npm run -w apps/web typecheck",
     "axe:pdf": "BASE_URL=http://127.0.0.1:8788 playwright test tests/pdf-a11y.spec.ts -g @pdf",
     "test:smoke": "BASE_URL=http://127.0.0.1:4173 playwright test --config=tests/playwright.config.ts tests/mute-toast.spec.ts",
     "test:smoke:ci": "BASE_URL=http://127.0.0.1:4173 playwright test --config=tests/playwright.config.ts tests/mute-toast.spec.ts --timeout=45000",

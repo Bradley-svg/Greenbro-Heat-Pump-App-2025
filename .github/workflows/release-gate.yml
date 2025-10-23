@@ -10,10 +10,17 @@ jobs:
         with:
           node-version: '20'
 
-      - run: npm ci
+      - name: Install root
+        run: npm ci
 
-      - run: npm --prefix apps/web run build
-      - run: npm --prefix apps/web run preview &
+      - name: Install web workspace
+        run: npm ci -w apps/web
+
+      - name: Build web
+        run: npm run -w apps/web build
+
+      - name: Preview (background)
+        run: npm run -w apps/web preview &
       - run: npx wait-on http://127.0.0.1:4173
 
       - run: npm run lint --if-present
@@ -30,6 +37,12 @@ jobs:
       - run: npm run axe:pdf
 
       - uses: microsoft/playwright-github-action@v1
-      - run: npm run test:smoke:ci
+        with:
+          with-deps: true
+
+      - name: Smoke E2E
+        env:
+          BASE_URL: http://127.0.0.1:4173
+        run: npm run -w apps/web test:smoke
 
       - run: npm run lh:ci

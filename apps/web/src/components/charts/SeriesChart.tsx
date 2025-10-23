@@ -28,13 +28,16 @@ export function nearestIndex(xs: number[], x: number): number {
   let hi = xs.length - 1;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;
-    if (xs[mid] < x) {
+    const midValue = xs[mid]!;
+    if (midValue < x) {
       lo = mid;
     } else {
       hi = mid;
     }
   }
-  return Math.abs(x - xs[lo]) <= Math.abs(xs[hi] - x) ? lo : hi;
+  const loValue = xs[lo]!;
+  const hiValue = xs[hi]!;
+  return Math.abs(x - loValue) <= Math.abs(hiValue - x) ? lo : hi;
 }
 
 interface SeriesChartProps {

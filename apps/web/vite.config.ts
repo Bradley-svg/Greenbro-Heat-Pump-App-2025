@@ -1,34 +1,38 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import { fileURLToPath, URL } from 'node:url';
+import path from "node:path";
+import { fileURLToPath, URL } from "node:url";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
-const indexHtml = fileURLToPath(new URL('./index.html', import.meta.url));
-const brandServiceWorker = fileURLToPath(new URL('./src/sw/brand-sw.ts', import.meta.url));
+const resolveFrom = (relativePath: string) => fileURLToPath(new URL(relativePath, import.meta.url));
+const dirname = resolveFrom(".");
+const indexHtml = resolveFrom("./index.html");
+const brandServiceWorker = resolveFrom("./src/sw/brand-sw.ts");
 
 export default defineConfig({
   plugins: [react()],
   server: { port: 5173 },
   resolve: {
     alias: {
-      '@app': fileURLToPath(new URL('./src/app', import.meta.url)),
-      '@pages': fileURLToPath(new URL('./src/pages', import.meta.url)),
-      '@components': fileURLToPath(new URL('./src/components', import.meta.url)),
-      '@hooks': fileURLToPath(new URL('./src/hooks', import.meta.url)),
-      '@api': fileURLToPath(new URL('./src/api', import.meta.url)),
-      '@utils': fileURLToPath(new URL('./src/utils', import.meta.url)),
-    },
+      "@": path.resolve(dirname, "src"),
+      "@app": resolveFrom("./src/app"),
+      "@pages": resolveFrom("./src/pages"),
+      "@components": resolveFrom("./src/components"),
+      "@hooks": resolveFrom("./src/hooks"),
+      "@api": resolveFrom("./src/api"),
+      "@utils": resolveFrom("./src/utils")
+    }
   },
   build: {
     rollupOptions: {
       input: {
         main: indexHtml,
-        'brand-sw': brandServiceWorker,
+        "brand-sw": brandServiceWorker
       },
       output: {
-        entryFileNames: (chunk) => (chunk.name === 'brand-sw' ? 'brand-sw.js' : 'assets/[name].[hash].js'),
-        chunkFileNames: 'assets/[name].[hash].js',
-        assetFileNames: 'assets/[name].[hash][extname]',
-      },
-    },
-  },
+        entryFileNames: (chunk) => (chunk.name === "brand-sw" ? "brand-sw.js" : "assets/[name].[hash].js"),
+        chunkFileNames: "assets/[name].[hash].js",
+        assetFileNames: "assets/[name].[hash][extname]"
+      }
+    }
+  }
 });

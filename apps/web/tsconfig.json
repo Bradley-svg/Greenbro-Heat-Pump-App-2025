@@ -1,25 +1,24 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
     "jsx": "react-jsx",
-    "moduleResolution": "Bundler",
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "allowSyntheticDefaultImports": true,
-    "strict": true,
-    "noEmit": true,
-    "forceConsistentCasingInFileNames": true,
-    "baseUrl": "./src",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "baseUrl": ".",
     "paths": {
-      "@app/*": ["app/*"],
-      "@pages/*": ["pages/*"],
-      "@features/*": ["features/*"],
-      "@components/*": ["components/*"],
-      "@hooks/*": ["hooks/*"],
-      "@api/*": ["api/*"],
-      "@utils/*": ["utils/*"]
-    }
-  }
+      "@/*": ["src/*"],
+      "@app/*": ["src/app/*"],
+      "@pages/*": ["src/pages/*"],
+      "@features/*": ["src/features/*"],
+      "@components/*": ["src/components/*"],
+      "@hooks/*": ["src/hooks/*"],
+      "@api/*": ["src/api/*"],
+      "@utils/*": ["src/utils/*"]
+    },
+    "types": ["vite/client", "react", "react-dom"],
+    "skipLibCheck": true,
+    "strict": true
+  },
+  "include": ["src", "vite.config.ts"]
 }

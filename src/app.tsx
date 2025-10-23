@@ -362,7 +362,12 @@ function formatWindowLabel(hours: number): string {
 }
 
 function keyToPath(key: string): string {
-  return `/${key}`;
+  const trimmed = key.trim();
+  if (!trimmed) {
+    return '/api/reports/';
+  }
+  const normalized = trimmed.replace(/^\/+/, '');
+  return normalized.startsWith('api/reports/') ? `/${normalized}` : `/api/reports/${normalized}`;
 }
 
 function normalizeReportPath(path: string): string | null {

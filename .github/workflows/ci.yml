@@ -14,25 +14,30 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps
+      - name: Install root
         run: npm ci
 
-      - name: Build SPA
-        run: npm --prefix apps/web run build
+      - name: Install web workspace
+        run: npm ci -w apps/web
 
-      - name: Start Vite preview
-        run: npm --prefix apps/web run preview -- --host 127.0.0.1 --port 4173 &
+      - name: Build web
+        run: npm run -w apps/web build
+
+      - name: Preview (background)
+        run: npm run -w apps/web preview &
 
       - name: Wait for preview
         run: npx wait-on http://127.0.0.1:4173
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps
+      - name: Install Playwright (action)
+        uses: microsoft/playwright-github-action@v1
+        with:
+          with-deps: true
 
-      - name: Run smoke (mute toggle)
+      - name: Smoke E2E
         env:
           BASE_URL: http://127.0.0.1:4173
-        run: npm run test:smoke:ci
+        run: npm run -w apps/web test:smoke
 
   a11y:
     runs-on: ubuntu-22.04
@@ -42,23 +47,25 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install root dependencies
+      - name: Install root
         run: npm ci
 
-      - name: Install web dependencies
-        run: npm --prefix apps/web ci
+      - name: Install web workspace
+        run: npm ci -w apps/web
 
-      - name: Build SPA
-        run: npm --prefix apps/web run build
+      - name: Build web
+        run: npm run -w apps/web build
 
-      - name: Start Vite preview
-        run: npm --prefix apps/web run preview -- --host 127.0.0.1 --port 4173 &
+      - name: Preview (background)
+        run: npm run -w apps/web preview &
 
       - name: Wait for preview
         run: npx wait-on http://127.0.0.1:4173
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps
+      - name: Install Playwright (action)
+        uses: microsoft/playwright-github-action@v1
+        with:
+          with-deps: true
 
       - name: Run Axe checks
         env:
