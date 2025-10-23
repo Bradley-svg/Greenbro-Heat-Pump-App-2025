@@ -17,8 +17,10 @@
     "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.0",
     "@cloudflare/workers-types": "^4.20241018.0",
     "@eslint/js": "^9.14.0",
+    "@playwright/test": "^1.56.1",
     "@types/node": "^22.9.0",
     "@typescript-eslint/eslint-plugin": "^8.13.0",
     "@typescript-eslint/parser": "^8.13.0",

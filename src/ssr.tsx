@@ -1771,10 +1771,12 @@ ${readOnlySnippet}
 
 export function Page({
   title = 'GreenBro Control Centre',
+  metaRefreshSec,
   head,
   children,
 }:{
   title?: string;
+  metaRefreshSec?: number;
   head?: JSX.Element | JSX.Element[];
   children: JSX.Element;
 }) {
@@ -1788,6 +1790,9 @@ export function Page({
         <link rel="icon" type="image/svg+xml" href="/brand/logo.svg" />
         {/* Theme colour for PWA-ish surfaces */}
         <meta name="theme-color" content="#0b0e12" />
+        {metaRefreshSec != null ? (
+          <meta httpEquiv="refresh" content={String(metaRefreshSec)} />
+        ) : null}
         {/* Shared brand CSS already served from Worker */}
         <link rel="stylesheet" href="/brand.css" />
         {head}
@@ -1800,6 +1805,7 @@ export function Page({
 export const renderer = jsxRenderer(({ children }) => {
   const c = useRequestContext();
   const path = c.req.path;
+  const metaRefreshSec = c.get('metaRefreshSec') as number | undefined;
   const isActive = (href: string) => {
     if (href === '/') {
       return path === '/';
@@ -1832,6 +1838,7 @@ export const renderer = jsxRenderer(({ children }) => {
   return (
     <Page
       title={pageTitle}
+      metaRefreshSec={metaRefreshSec}
       head={
         <style>{`
           body{margin:0;background:var(--gb-bg);color:var(--gb-ink);font-family:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}

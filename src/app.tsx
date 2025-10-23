@@ -701,7 +701,7 @@ async function dispatchDeviceCommand(
   return new Response(res.body, { status: res.status, headers: res.headers });
 }
 
-type Ctx = { Bindings: Env; Variables: { auth?: AccessContext } };
+type Ctx = { Bindings: Env; Variables: { auth?: AccessContext; metaRefreshSec?: number } };
 
 const app = new Hono<Ctx>();
 
@@ -3186,6 +3186,18 @@ app.get('/api/ops/health', async (c) => {
 });
 
 app.get('/ops', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  const auth = jwt ? await verifyAccessJWT(c.env, jwt).catch(() => null) : null;
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  const readOnly = await isReadOnly(c.env.DB);
+  if (readOnly) {
+    c.set('metaRefreshSec', 60);
+  }
+
   const snapshot = await computeOpsSnapshot(c.env.DB);
   return c.render(<OpsPage snapshot={snapshot} />);
 });
