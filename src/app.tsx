@@ -25,6 +25,7 @@ import {
   AdminArchivePage,
   AdminPresetsPage,
   AdminSettingsPage,
+  AdminCommissioningPage,
   AdminReportsPage,
   AdminReportsOutboxPage,
   AdminReportsHistoryPage,
@@ -36,6 +37,7 @@ import {
   type ClientSloSummary,
   type ReportHistoryRow,
   type AdminArchiveRow,
+  type AdminCommissioningRow,
   type DeployRibbon,
 } from './ssr';
 import {
@@ -50,6 +52,9 @@ import { withSecurityHeaders } from './security';
 import { preflight } from './utils/preflight';
 import { getVersion } from './utils/version';
 import { validateHeartbeat, validateIngest } from './lib/schemas';
+import { getLatestTelemetry, computeDeltaT } from './lib/commissioning';
+import { emailCommissioning } from './lib/email';
+import { getSetting, setSetting } from './lib/settings';
 
 let pdfModulePromise: Promise<typeof import('./pdf')> | undefined;
 const getPdfModule = () => {
@@ -81,15 +86,12 @@ function escapeForLike(value: string) {
   return value.replace(/[%_]/g, (match) => `\\${match}`);
 }
 
-async function getSetting(DB: D1Database, key: string) {
-  const r = await DB.prepare("SELECT value FROM settings WHERE key=?").bind(key).first<{ value: string }>();
-  return r?.value ?? null;
-}
-async function setSetting(DB: D1Database, key: string, value: string) {
-  await DB.prepare(
-    "INSERT INTO settings (key,value,updated_at) VALUES (?,?,datetime('now')) " +
-      "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
-  ).bind(key, value).run();
+function numberFromSetting(value: string | null, fallback = 0): number {
+  if (value == null) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 export async function getDeploySettings(DB: D1Database) {
@@ -1650,6 +1652,19 @@ app.post('/api/heartbeat/:profileId', async (c) => {
   return c.json({ ok: true });
 });
 
+app.get('/api/commissioning/settings', async (c) => {
+  const [delta, flow, cop] = await Promise.all([
+    getSetting(c.env.DB, 'commissioning_delta_t_min'),
+    getSetting(c.env.DB, 'commissioning_flow_min_lpm'),
+    getSetting(c.env.DB, 'commissioning_cop_min'),
+  ]);
+  return c.json({
+    delta_t_min: numberFromSetting(delta, 0),
+    flow_min_lpm: numberFromSetting(flow, 0),
+    cop_min: numberFromSetting(cop, 0),
+  });
+});
+
 app.get('/api/commissioning/checklists', async (c) => {
   const rows = await c.env.DB.prepare(
     'SELECT checklist_id,name,version FROM commissioning_checklists ORDER BY created_at DESC',
@@ -1665,6 +1680,132 @@ app.get('/api/commissioning/checklist/:id', async (c) => {
     .bind(id)
     .first();
   return row ? c.json(row) : c.text('Not Found', 404);
+});
+
+app.get('/api/commissioning/sessions', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes,
+            (SELECT MAX(updated_at) FROM commissioning_steps WHERE session_id = cs.session_id) AS last_update
+       FROM commissioning_sessions cs
+       ORDER BY started_at DESC
+       LIMIT 200`,
+  ).all<{
+    session_id: string;
+    device_id: string;
+    site_id: string | null;
+    operator_sub: string;
+    started_at: string;
+    finished_at: string | null;
+    status: string;
+    notes: string | null;
+    last_update: string | null;
+  }>();
+
+  const sessions = (rows.results ?? []).map((row) => ({
+    session_id: row.session_id,
+    device_id: row.device_id,
+    site_id: row.site_id ?? null,
+    operator_sub: row.operator_sub,
+    started_at: row.started_at,
+    finished_at: row.finished_at ?? null,
+    status: row.status,
+    notes: row.notes ?? null,
+    last_update: row.last_update ?? null,
+  }));
+
+  return c.json(sessions);
+});
+
+app.get('/api/commissioning/session/:id', async (c) => {
+  const id = c.req.param('id');
+  const session = await c.env.DB.prepare(
+    'SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes FROM commissioning_sessions WHERE session_id=?',
+  )
+    .bind(id)
+    .first<{
+      session_id: string;
+      device_id: string;
+      site_id: string | null;
+      operator_sub: string;
+      started_at: string;
+      finished_at: string | null;
+      status: string;
+      notes: string | null;
+    }>();
+
+  if (!session) {
+    return c.text('Not Found', 404);
+  }
+
+  const steps = await c.env.DB.prepare(
+    'SELECT step_id,title,state,readings_json,comment,updated_at FROM commissioning_steps WHERE session_id=? ORDER BY updated_at',
+  )
+    .bind(id)
+    .all<{
+      step_id: string;
+      title: string;
+      state: string;
+      readings_json: string | null;
+      comment: string | null;
+      updated_at: string;
+    }>();
+
+  const artifacts = await c.env.DB.prepare(
+    'SELECT kind,r2_key,size_bytes,created_at FROM commissioning_artifacts WHERE session_id=?',
+  )
+    .bind(id)
+    .all<{
+      kind: string;
+      r2_key: string;
+      size_bytes: number | null;
+      created_at: string;
+    }>();
+
+  const parsedSteps = (steps.results ?? []).map((row) => {
+    let readings: Record<string, unknown> | null = null;
+    if (row.readings_json) {
+      try {
+        const parsed = JSON.parse(row.readings_json);
+        if (parsed && typeof parsed === 'object') {
+          readings = parsed as Record<string, unknown>;
+        }
+      } catch (error) {
+        console.warn('commissioning step readings parse failed', error);
+      }
+    }
+    return {
+      step_id: row.step_id,
+      title: row.title,
+      state: row.state,
+      readings,
+      comment: row.comment ?? null,
+      updated_at: row.updated_at,
+    };
+  });
+
+  const artifactMap = new Map<string, { r2_key: string; size_bytes: number | null; created_at: string }>();
+  for (const row of artifacts.results ?? []) {
+    artifactMap.set(row.kind, {
+      r2_key: row.r2_key,
+      size_bytes: row.size_bytes ?? null,
+      created_at: row.created_at,
+    });
+  }
+
+  return c.json({
+    session: {
+      session_id: session.session_id,
+      device_id: session.device_id,
+      site_id: session.site_id ?? null,
+      operator_sub: session.operator_sub,
+      started_at: session.started_at,
+      finished_at: session.finished_at ?? null,
+      status: session.status,
+      notes: session.notes ?? null,
+    },
+    steps: parsedSteps,
+    artifacts: Object.fromEntries(artifactMap.entries()),
+  });
 });
 
 app.post('/api/commissioning/start', async (c) => {
@@ -1767,6 +1908,143 @@ app.post('/api/commissioning/finalise', async (c) => {
     .run();
 
   return c.json({ ok: true, r2_key: key });
+});
+
+app.post('/api/commissioning/measure-now', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+
+  const body = await c.req
+    .json<{
+      session_id: string;
+      step_id: string;
+      expectations?: { delta_t_min?: number; flow_min_lpm?: number; cop_min?: number };
+    }>()
+    .catch(() => null);
+
+  if (!body?.session_id || !body.step_id) {
+    return c.text('Bad Request', 400);
+  }
+
+  const session = await c.env.DB.prepare('SELECT device_id FROM commissioning_sessions WHERE session_id=?')
+    .bind(body.session_id)
+    .first<{ device_id: string }>();
+  if (!session) {
+    return c.text('Session not found', 404);
+  }
+
+  const latest = await getLatestTelemetry(c.env.DB, session.device_id);
+  if (!latest) {
+    return c.text('No telemetry yet', 409);
+  }
+
+  const dtMin =
+    body.expectations?.delta_t_min ?? numberFromSetting(await getSetting(c.env.DB, 'commissioning_delta_t_min'), 0);
+  const flowMin =
+    body.expectations?.flow_min_lpm ?? numberFromSetting(await getSetting(c.env.DB, 'commissioning_flow_min_lpm'), 0);
+  const copMin =
+    body.expectations?.cop_min ?? numberFromSetting(await getSetting(c.env.DB, 'commissioning_cop_min'), 0);
+
+  const deltaT = latest.delta_t ?? computeDeltaT(latest.outlet, latest.ret);
+  const flowValue = typeof latest.flow_lpm === 'number' ? latest.flow_lpm : null;
+  const copValue = typeof latest.cop === 'number' ? latest.cop : null;
+
+  const flowOk = flowValue == null ? flowMin === 0 : flowValue >= flowMin;
+  const dtOk = deltaT == null ? dtMin === 0 : deltaT >= dtMin;
+  const copOk = copValue == null ? copMin === 0 : copValue >= copMin;
+  const pass = flowOk && dtOk && copOk;
+
+  const readings = {
+    ts: latest.ts,
+    outlet: typeof latest.outlet === 'number' ? latest.outlet : null,
+    return: typeof latest.ret === 'number' ? latest.ret : null,
+    flow_lpm: flowValue,
+    delta_t: deltaT,
+    cop: copValue,
+  };
+
+  await c.env.DB.prepare(
+    "UPDATE commissioning_steps SET state=?, readings_json=?, updated_at=datetime('now') WHERE session_id=? AND step_id=?",
+  )
+    .bind(pass ? 'pass' : 'fail', JSON.stringify(readings), body.session_id, body.step_id)
+    .run();
+
+  return c.json({
+    ok: true,
+    pass,
+    delta_t: deltaT,
+    flow_lpm: flowValue,
+    cop: copValue,
+    ts: latest.ts,
+    thresholds: { delta_t_min: dtMin, flow_min_lpm: flowMin, cop_min: copMin },
+  });
+});
+
+app.post('/api/commissioning/labels', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+
+  const body = await c.req.json<{ session_id: string }>().catch(() => null);
+  if (!body?.session_id) {
+    return c.text('Bad Request', 400);
+  }
+
+  const session = await c.env.DB.prepare('SELECT device_id, site_id FROM commissioning_sessions WHERE session_id=?')
+    .bind(body.session_id)
+    .first<{ device_id: string; site_id: string | null }>();
+  if (!session) {
+    return c.text('Not Found', 404);
+  }
+
+  const { renderDeviceLabels } = await import('./reports/labels-pdf');
+  const { key, size } = await renderDeviceLabels(c.env as Env, {
+    device_id: session.device_id,
+    site_id: session.site_id ?? null,
+  });
+
+  await c.env.DB.prepare(
+    'INSERT OR REPLACE INTO commissioning_artifacts (session_id, kind, r2_key, size_bytes) VALUES (?,?,?,?)',
+  )
+    .bind(body.session_id, 'labels', key, size)
+    .run();
+
+  return c.json({ ok: true, r2_key: key, size });
+});
+
+app.post('/api/commissioning/email-report', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const body = await c.req.json<{ session_id: string }>().catch(() => null);
+  if (!body?.session_id) {
+    return c.text('Bad Request', 400);
+  }
+
+  const row = await c.env.DB.prepare(
+    "SELECT r2_key FROM commissioning_artifacts WHERE session_id=? AND kind='pdf'",
+  )
+    .bind(body.session_id)
+    .first<{ r2_key: string }>();
+  if (!row) {
+    return c.text('No PDF artefact', 409);
+  }
+
+  const recipients = (await getSetting(c.env.DB, 'commissioning_report_recipients')) ?? '';
+  const res = await emailCommissioning(
+    c.env,
+    recipients,
+    'Commissioning Report',
+    `Session ${body.session_id}`,
+    row.r2_key,
+  );
+  return c.json(res);
 });
 
 app.get('/api/alerts', async (c) => {
@@ -3822,6 +4100,92 @@ app.get('/admin/presets', async (c) => {
   await attachDeployRibbon(c, auth);
   await attachVersionInfo(c, auth);
   return c.render(<AdminPresetsPage />);
+});
+
+app.get('/admin/commissioning', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
+
+  const sessions = await c.env.DB.prepare(
+    `SELECT session_id, device_id, site_id, status, started_at, finished_at, notes,
+            (SELECT MAX(updated_at) FROM commissioning_steps WHERE session_id = cs.session_id) AS last_update
+       FROM commissioning_sessions cs
+       ORDER BY started_at DESC
+       LIMIT 100`,
+  ).all<{
+    session_id: string;
+    device_id: string;
+    site_id: string | null;
+    status: string;
+    started_at: string;
+    finished_at: string | null;
+    notes: string | null;
+    last_update: string | null;
+  }>();
+
+  const sessionRows = sessions.results ?? [];
+  const artifactMap = new Map<string, Map<string, { r2_key: string; size_bytes: number | null; created_at: string }>>();
+  if (sessionRows.length > 0) {
+    const placeholders = sessionRows.map(() => '?').join(',');
+    const artifactRows = await c.env.DB.prepare(
+      `SELECT session_id, kind, r2_key, size_bytes, created_at
+         FROM commissioning_artifacts
+        WHERE session_id IN (${placeholders})`,
+    )
+      .bind(...sessionRows.map((row) => row.session_id))
+      .all<{
+        session_id: string;
+        kind: string;
+        r2_key: string;
+        size_bytes: number | null;
+        created_at: string;
+      }>();
+
+    for (const row of artifactRows.results ?? []) {
+      let target = artifactMap.get(row.session_id);
+      if (!target) {
+        target = new Map();
+        artifactMap.set(row.session_id, target);
+      }
+      target.set(row.kind, {
+        r2_key: row.r2_key,
+        size_bytes: row.size_bytes ?? null,
+        created_at: row.created_at,
+      });
+    }
+  }
+
+  const toRow = (row: (typeof sessionRows)[number]): AdminCommissioningRow => {
+    const artifacts = artifactMap.get(row.session_id) ?? new Map();
+    return {
+      session_id: row.session_id,
+      device_id: row.device_id,
+      site_id: row.site_id ?? null,
+      status: row.status,
+      started_at: row.started_at,
+      finished_at: row.finished_at ?? null,
+      last_update: row.last_update ?? null,
+      notes: row.notes ?? null,
+      artifacts: Object.fromEntries(artifacts.entries()) as Record<
+        string,
+        { r2_key: string; size_bytes: number | null; created_at: string } | undefined
+      >,
+    };
+  };
+
+  const open = sessionRows.filter((row) => row.status === 'in_progress').map(toRow);
+  const completed = sessionRows.filter((row) => row.status !== 'in_progress').map(toRow);
+
+  return c.render(<AdminCommissioningPage open={open} completed={completed} />);
 });
 
 app.get('/admin/sites', async (c) => {

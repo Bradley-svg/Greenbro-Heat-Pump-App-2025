@@ -1898,6 +1898,7 @@ export const renderer = jsxRenderer(({ children }) => {
     if (path.startsWith('/admin/email')) return `${baseTitle} — Email`;
     if (path.startsWith('/admin/maintenance')) return `${baseTitle} — Maintenance`;
     if (path.startsWith('/admin/settings')) return `${baseTitle} — Settings`;
+    if (path.startsWith('/admin/commissioning')) return `${baseTitle} — Commissioning`;
     if (path.startsWith('/admin/sites')) return `${baseTitle} — Sites`;
     if (path.startsWith('/clients/')) return `${baseTitle} — Client SLO`;
     return baseTitle;
@@ -2031,6 +2032,9 @@ export const renderer = jsxRenderer(({ children }) => {
           </a>
           <a href="/admin/sites" class={isActive('/admin/sites') ? 'active' : undefined}>
             Admin Sites
+          </a>
+          <a href="/admin/commissioning" class={isActive('/admin/commissioning') ? 'active' : undefined}>
+            Commissioning
           </a>
           <a href="/admin/reports" class={isActive('/admin/reports') ? 'active' : undefined}>
             Reports
@@ -2740,6 +2744,167 @@ export function AdminSitesPage() {
         <tbody id="maps-tbody"></tbody>
       </table>
       <SecureScript dangerouslySetInnerHTML={{ __html: adminSitesScript }} />
+    </div>
+  );
+}
+
+type CommissioningArtifactInfo = { r2_key: string; size_bytes: number | null; created_at: string };
+
+export type AdminCommissioningRow = {
+  session_id: string;
+  device_id: string;
+  site_id: string | null;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  last_update: string | null;
+  notes: string | null;
+  artifacts: Record<string, CommissioningArtifactInfo | undefined>;
+};
+
+type AdminCommissioningPageProps = {
+  open: AdminCommissioningRow[];
+  completed: AdminCommissioningRow[];
+};
+
+const adminCommissioningScript = `
+(function(){
+  async function post(url, payload){
+    const res = await fetch(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(!res.ok){
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    return res.json();
+  }
+
+  document.addEventListener('click', async function(event){
+    const target = event.target instanceof HTMLElement ? event.target.closest('[data-action]') : null;
+    if(!target) return;
+    const action = target.getAttribute('data-action');
+    const sessionId = target.getAttribute('data-session');
+    if(!action || !sessionId) return;
+    target.setAttribute('disabled', 'true');
+    try {
+      if(action === 'labels'){
+        await post('/api/commissioning/labels', {session_id: sessionId});
+        alert('Labels emitted to R2.');
+      } else if(action === 'email'){
+        const res = await post('/api/commissioning/email-report', {session_id: sessionId});
+        if(res && res.ok){
+          alert('Commissioning report email posted.');
+        } else {
+          alert('No webhook configured for commissioning emails.');
+        }
+      }
+    } catch(error){
+      alert('Action failed: ' + (error && error.message ? error.message : String(error)));
+    } finally {
+      target.removeAttribute('disabled');
+    }
+  });
+})();
+`;
+
+export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
+  const renderArtifact = (row: AdminCommissioningRow, kind: string) => {
+    const artifact = row.artifacts[kind];
+    return artifact ? <code>{artifact.r2_key}</code> : '—';
+  };
+
+  const openBody =
+    props.open.length === 0 ? (
+      <tr>
+        <td colSpan={6} class="table-empty">
+          No sessions in progress.
+        </td>
+      </tr>
+    ) : (
+      props.open.map((row) => (
+        <tr key={row.session_id}>
+          <td>
+            <code>{row.session_id}</code>
+          </td>
+          <td>{row.device_id}</td>
+          <td>{row.site_id ?? '—'}</td>
+          <td>{row.started_at}</td>
+          <td>{row.last_update ?? '—'}</td>
+          <td>
+            <button class="btn" type="button" data-action="labels" data-session={row.session_id}>
+              Emit labels
+            </button>
+          </td>
+        </tr>
+      ))
+    );
+
+  const completedBody =
+    props.completed.length === 0 ? (
+      <tr>
+        <td colSpan={8} class="table-empty">
+          No completed sessions yet.
+        </td>
+      </tr>
+    ) : (
+      props.completed.map((row) => (
+        <tr key={row.session_id}>
+          <td>
+            <code>{row.session_id}</code>
+          </td>
+          <td>{row.device_id}</td>
+          <td>{row.site_id ?? '—'}</td>
+          <td>{row.status}</td>
+          <td>{row.finished_at ?? '—'}</td>
+          <td>{renderArtifact(row, 'pdf')}</td>
+          <td>{renderArtifact(row, 'labels')}</td>
+          <td>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn" type="button" data-action="labels" data-session={row.session_id}>
+                Emit labels
+              </button>
+              <button class="btn" type="button" data-action="email" data-session={row.session_id}>
+                Email report
+              </button>
+            </div>
+          </td>
+        </tr>
+      ))
+    );
+
+  return (
+    <div class="card">
+      <h2>Admin — Commissioning sessions</h2>
+      <h3>Open sessions</h3>
+      <table id="commissioning-open">
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Device</th>
+            <th>Site</th>
+            <th>Started</th>
+            <th>Last update</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>{openBody}</tbody>
+      </table>
+      <h3 style="margin-top:24px">Completed sessions</h3>
+      <table id="commissioning-completed">
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Device</th>
+            <th>Site</th>
+            <th>Status</th>
+            <th>Finished</th>
+            <th>PDF</th>
+            <th>Labels</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>{completedBody}</tbody>
+      </table>
+      <SecureScript dangerouslySetInnerHTML={{ __html: adminCommissioningScript }} />
     </div>
   );
 }

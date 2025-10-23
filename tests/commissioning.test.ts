@@ -75,6 +75,11 @@ class MockD1Database {
   #sessions = new Map<string, SessionRow>();
   #steps = new Map<string, StepRow>();
   #artifacts = new Map<string, ArtifactRow>();
+  #latest = new Map<string, { ts: string; metrics_json: string | null; delta_t: number | null; cop: number | null }>();
+  #telemetry = new Map<
+    string,
+    Array<{ ts: string; metrics_json: string | null; delta_t: number | null; cop: number | null }>
+  >();
 
   prepare(sql: string) {
     return new MockD1PreparedStatement(sql, this);
@@ -84,11 +89,97 @@ class MockD1Database {
     this.#checklists.set(row.checklist_id, row);
   }
 
-  getArtifact(key: string) {
-    return this.#artifacts.get(`${key}|pdf`);
+  setSetting(key: string, value: string) {
+    this.#settings.set(key, value);
+  }
+
+  seedLatestState(
+    deviceId: string,
+    row: { ts: string; metrics_json?: string | null; delta_t?: number | null; cop?: number | null },
+  ) {
+    this.#latest.set(deviceId, {
+      ts: row.ts,
+      metrics_json: row.metrics_json ?? null,
+      delta_t: row.delta_t ?? null,
+      cop: row.cop ?? null,
+    });
+  }
+
+  seedTelemetry(
+    deviceId: string,
+    row: { ts: string; metrics_json?: string | null; delta_t?: number | null; cop?: number | null },
+  ) {
+    const existing = this.#telemetry.get(deviceId) ?? [];
+    existing.push({
+      ts: row.ts,
+      metrics_json: row.metrics_json ?? null,
+      delta_t: row.delta_t ?? null,
+      cop: row.cop ?? null,
+    });
+    this.#telemetry.set(deviceId, existing);
+  }
+
+  getStep(sessionId: string, stepId: string) {
+    return this.#steps.get(`${sessionId}:${stepId}`);
+  }
+
+  getArtifact(sessionId: string, kind: string) {
+    return this.#artifacts.get(`${sessionId}|${kind}`);
+  }
+
+  #lastUpdated(sessionId: string): string | null {
+    let latest: string | null = null;
+    for (const step of this.#steps.values()) {
+      if (step.session_id !== sessionId) continue;
+      if (!latest || step.updated_at.localeCompare(latest) > 0) {
+        latest = step.updated_at;
+      }
+    }
+    return latest;
   }
 
   async execute<T>(sql: string, args: unknown[], mode: 'first' | 'all' | 'run') {
+    if (sql.includes('FROM commissioning_sessions cs') && sql.includes('last_update')) {
+      const includeOperator = sql.includes('operator_sub');
+      const rows = [...this.#sessions.values()]
+        .sort((a, b) => b.started_at.localeCompare(a.started_at))
+        .map((row) => ({
+          session_id: row.session_id,
+          device_id: row.device_id,
+          site_id: row.site_id,
+          status: row.status,
+          started_at: row.started_at,
+          finished_at: row.finished_at,
+          notes: row.notes,
+          last_update: this.#lastUpdated(row.session_id),
+          ...(includeOperator ? { operator_sub: row.operator_sub } : {}),
+        }));
+      return { results: rows as unknown as T[] };
+    }
+
+    if (sql.startsWith('SELECT session_id, kind, r2_key, size_bytes, created_at FROM commissioning_artifacts WHERE session_id IN')) {
+      const sessionIds = args.map((value) => String(value));
+      const results: Array<{
+        session_id: string;
+        kind: string;
+        r2_key: string;
+        size_bytes: number | null;
+        created_at: string;
+      }> = [];
+      for (const [key, artifact] of this.#artifacts.entries()) {
+        const [session_id, kind] = key.split('|');
+        if (!sessionIds.includes(session_id)) continue;
+        results.push({
+          session_id,
+          kind,
+          r2_key: artifact.r2_key,
+          size_bytes: artifact.size_bytes,
+          created_at: artifact.created_at,
+        });
+      }
+      return { results: results as unknown as T[] };
+    }
+
     switch (sql) {
       case 'SELECT value FROM settings WHERE key=?': {
         const key = String(args[0]);
@@ -169,6 +260,18 @@ class MockD1Database {
         }
         return { success: true };
       }
+      case "UPDATE commissioning_steps SET state=?, readings_json=?, updated_at=datetime('now') WHERE session_id=? AND step_id=?": {
+        const [state, readings_json, session_id, step_id] = args as [string, string | null, string, string];
+        const key = `${session_id}:${step_id}`;
+        const existing = this.#steps.get(key);
+        if (existing) {
+          existing.state = state;
+          existing.readings_json = readings_json;
+          existing.updated_at = new Date().toISOString();
+          this.#steps.set(key, existing);
+        }
+        return { success: true };
+      }
       case "UPDATE commissioning_sessions SET status=?, finished_at=datetime('now'), notes=COALESCE(?,notes) WHERE session_id=?": {
         const [status, notes, session_id] = args as [string, string | null, string];
         const existing = this.#sessions.get(session_id);
@@ -182,7 +285,23 @@ class MockD1Database {
         }
         return { success: true };
       }
-      case 'INSERT OR REPLACE INTO commissioning_artifacts(session_id,kind,r2_key,size_bytes) VALUES (?,?,?,?)': {
+      case 'SELECT device_id FROM commissioning_sessions WHERE session_id=?': {
+        const id = String(args[0] ?? '');
+        const row = this.#sessions.get(id) ?? null;
+        return row ? ({ device_id: row.device_id } as unknown as T) : null;
+      }
+      case 'SELECT device_id, site_id FROM commissioning_sessions WHERE session_id=?': {
+        const id = String(args[0] ?? '');
+        const row = this.#sessions.get(id) ?? null;
+        return row ? ({ device_id: row.device_id, site_id: row.site_id } as unknown as T) : null;
+      }
+      case "SELECT r2_key FROM commissioning_artifacts WHERE session_id=? AND kind='pdf'": {
+        const id = String(args[0] ?? '');
+        const artifact = this.#artifacts.get(`${id}|pdf`) ?? null;
+        return artifact ? ({ r2_key: artifact.r2_key } as unknown as T) : null;
+      }
+      case 'INSERT OR REPLACE INTO commissioning_artifacts(session_id,kind,r2_key,size_bytes) VALUES (?,?,?,?)':
+      case 'INSERT OR REPLACE INTO commissioning_artifacts (session_id, kind, r2_key, size_bytes) VALUES (?,?,?,?)': {
         const [session_id, kind, r2_key, size_bytes] = args as [string, string, string, number];
         const now = new Date().toISOString();
         this.#artifacts.set(`${session_id}|${kind}`, {
@@ -193,6 +312,22 @@ class MockD1Database {
           created_at: now,
         });
         return { success: true };
+      }
+      case 'SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes FROM commissioning_sessions WHERE session_id=?': {
+        const id = String(args[0] ?? '');
+        const row = this.#sessions.get(id) ?? null;
+        return row
+          ? (({
+              session_id: row.session_id,
+              device_id: row.device_id,
+              site_id: row.site_id,
+              operator_sub: row.operator_sub,
+              started_at: row.started_at,
+              finished_at: row.finished_at,
+              status: row.status,
+              notes: row.notes,
+            } as unknown as T) as T)
+          : null;
       }
       case 'SELECT * FROM commissioning_sessions WHERE session_id=?': {
         const id = String(args[0] ?? '');
@@ -207,6 +342,29 @@ class MockD1Database {
           .filter((row) => row.session_id === id)
           .sort((a, b) => a.updated_at.localeCompare(b.updated_at));
         return { results: rows as unknown as T[] };
+      }
+      case 'SELECT kind,r2_key,size_bytes,created_at FROM commissioning_artifacts WHERE session_id=?': {
+        const id = String(args[0] ?? '');
+        const rows: ArtifactRow[] = [];
+        for (const artifact of this.#artifacts.values()) {
+          if (artifact.session_id === id) {
+            rows.push({ ...artifact });
+          }
+        }
+        return mode === 'first'
+          ? ((rows[0] ? (rows[0] as unknown as T) : null) as T | null)
+          : ({ results: rows as unknown as T[] });
+      }
+      case 'SELECT ts, metrics_json, delta_t, cop FROM latest_state WHERE device_id=?': {
+        const id = String(args[0] ?? '');
+        const row = this.#latest.get(id) ?? null;
+        return row ? ({ ...row } as unknown as T) : null;
+      }
+      case 'SELECT ts, metrics_json, delta_t, cop FROM telemetry WHERE device_id=? ORDER BY ts DESC LIMIT 1': {
+        const id = String(args[0] ?? '');
+        const rows = this.#telemetry.get(id) ?? [];
+        const row = rows.length > 0 ? rows[rows.length - 1] : null;
+        return row ? ({ ...row } as unknown as T) : null;
       }
       case 'INSERT INTO ops_metrics (ts, route, status_code, duration_ms, device_id) VALUES (?, ?, ?, ?, ?)': {
         return { success: true };
@@ -228,6 +386,10 @@ class MockR2Bucket {
   getObject(key: string) {
     return this.#objects.get(key) ?? null;
   }
+
+  async createSignedUrl({ key }: { key: string; expiration: Date }) {
+    return new URL(`https://example.com/${encodeURIComponent(key)}`);
+  }
 }
 
 function createEnv(): Env & { REPORTS: MockR2Bucket; DB: MockD1Database } {
@@ -247,6 +409,11 @@ function createEnv(): Env & { REPORTS: MockR2Bucket; DB: MockD1Database } {
     ]),
     created_at: new Date().toISOString(),
   });
+  db.setSetting('commissioning_delta_t_min', '5');
+  db.setSetting('commissioning_flow_min_lpm', '6');
+  db.setSetting('commissioning_cop_min', '2.5');
+  db.setSetting('commissioning_report_recipients', 'qa@greenbro.example,ops@greenbro.example');
+  db.setSetting('ops_webhook_url', 'https://hooks.example/ops');
   const bucket = new MockR2Bucket();
   const doStub = {
     idFromName: () => 'stub',
@@ -387,4 +554,140 @@ test('commissioning flow stores step updates and generates PDF artifact', async 
   assert.ok(stored, 'expected PDF artifact to be written');
   assert.ok((stored?.body.length ?? 0) > 0, 'pdf bytes should be non-empty');
   assert.equal(stored?.httpMetadata?.contentType, 'application/pdf');
+});
+
+test('measure-now updates step with latest telemetry', async () => {
+  const env = createEnv();
+  const ctx = createCtx();
+
+  const startRes = await worker.fetch(
+    new Request('http://test/api/commissioning/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: 'device-2', checklist_id: 'greenbro-standard-v1' }),
+    }),
+    env,
+    ctx,
+  );
+  const { session_id: sessionId } = (await startRes.json()) as { session_id: string };
+
+  env.DB.seedLatestState('device-2', {
+    ts: '2024-01-01T00:00:00.000Z',
+    metrics_json: JSON.stringify({ outlet_temp_c: 47, return_temp_c: 40, flow_lpm: 6.2 }),
+    delta_t: null,
+    cop: 3.1,
+  });
+
+  const measureRes = await worker.fetch(
+    new Request('http://test/api/commissioning/measure-now', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, step_id: 'deltaT_under_load' }),
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(measureRes.status, 200);
+  const measureBody = (await measureRes.json()) as { ok: boolean; pass: boolean; delta_t: number };
+  assert.equal(measureBody.ok, true);
+  assert.equal(measureBody.pass, true);
+  assert.ok(measureBody.delta_t >= 5);
+
+  const step = env.DB.getStep(sessionId, 'deltaT_under_load');
+  assert.ok(step);
+  assert.equal(step?.state, 'pass');
+  assert.ok(step?.readings_json);
+  const readings = JSON.parse(step!.readings_json ?? '{}') as { delta_t: number; flow_lpm: number };
+  assert.equal(readings.delta_t >= 5, true);
+  assert.equal(readings.flow_lpm >= 6, true);
+});
+
+test('labels endpoint stores artifact in R2', async () => {
+  const env = createEnv();
+  const ctx = createCtx();
+
+  const startRes = await worker.fetch(
+    new Request('http://test/api/commissioning/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: 'device-3', site_id: 'site-9', checklist_id: 'greenbro-standard-v1' }),
+    }),
+    env,
+    ctx,
+  );
+  const { session_id: sessionId } = (await startRes.json()) as { session_id: string };
+
+  const labelsRes = await worker.fetch(
+    new Request('http://test/api/commissioning/labels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(labelsRes.status, 200);
+  const body = (await labelsRes.json()) as { r2_key: string };
+  assert.ok(body.r2_key);
+
+  const stored = env.REPORTS.getObject(body.r2_key);
+  assert.ok(stored, 'expected labels PDF to be persisted');
+  assert.equal(stored?.httpMetadata?.contentType, 'application/pdf');
+
+  const dbArtifact = env.DB.getArtifact(sessionId, 'labels');
+  assert.ok(dbArtifact);
+  assert.equal(dbArtifact?.r2_key, body.r2_key);
+});
+
+test('email-report posts to ops webhook with signed URL', async () => {
+  const env = createEnv();
+  const ctx = createCtx();
+
+  const startRes = await worker.fetch(
+    new Request('http://test/api/commissioning/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: 'device-4', checklist_id: 'greenbro-standard-v1' }),
+    }),
+    env,
+    ctx,
+  );
+  const { session_id: sessionId } = (await startRes.json()) as { session_id: string };
+
+  await env.DB.prepare('INSERT OR REPLACE INTO commissioning_artifacts(session_id,kind,r2_key,size_bytes) VALUES (?,?,?,?)')
+    .bind(sessionId, 'pdf', 'reports/session.pdf', 2048)
+    .run();
+  await env.REPORTS.put('reports/session.pdf', new Uint8Array([1, 2, 3]), {
+    httpMetadata: { contentType: 'application/pdf' },
+  });
+
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: string }> = [];
+  globalThis.fetch = (async (input: RequestInfo, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const body = init?.body ? String(init.body) : '';
+    calls.push({ url, body });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const res = await worker.fetch(
+      new Request('http://test/api/commissioning/email-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { ok: boolean };
+    assert.equal(body.ok, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://hooks.example/ops');
+    assert.ok(calls[0].body.includes(`Session ${sessionId}`));
+    assert.ok(calls[0].body.includes('https://example.com/'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
