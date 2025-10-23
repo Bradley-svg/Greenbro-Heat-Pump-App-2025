@@ -2796,6 +2796,13 @@ const adminCommissioningScript = `
         } else {
           alert('No webhook configured for commissioning emails.');
         }
+      } else if(action === 'zip'){
+        const res = await post('/api/commissioning/provisioning-zip', {session_id: sessionId});
+        if(res && res.ok){
+          alert('Provisioning ZIP generated.');
+        } else {
+          alert('ZIP generation failed.');
+        }
       }
     } catch(error){
       alert('Action failed: ' + (error && error.message ? error.message : String(error)));
@@ -2841,7 +2848,7 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
   const completedBody =
     props.completed.length === 0 ? (
       <tr>
-        <td colSpan={8} class="table-empty">
+        <td colSpan={9} class="table-empty">
           No completed sessions yet.
         </td>
       </tr>
@@ -2857,6 +2864,7 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
           <td>{row.finished_at ?? '—'}</td>
           <td>{renderArtifact(row, 'pdf')}</td>
           <td>{renderArtifact(row, 'labels')}</td>
+          <td>{renderArtifact(row, 'zip')}</td>
           <td>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <button class="btn" type="button" data-action="labels" data-session={row.session_id}>
@@ -2864,6 +2872,9 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
               </button>
               <button class="btn" type="button" data-action="email" data-session={row.session_id}>
                 Email report
+              </button>
+              <button class="btn" type="button" data-action="zip" data-session={row.session_id}>
+                Provisioning ZIP
               </button>
             </div>
           </td>
@@ -2899,6 +2910,7 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
             <th>Finished</th>
             <th>PDF</th>
             <th>Labels</th>
+            <th>Provisioning ZIP</th>
             <th>Actions</th>
           </tr>
         </thead>

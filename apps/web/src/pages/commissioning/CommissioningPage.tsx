@@ -5,13 +5,15 @@ import { api } from '@/api/http';
 import { useToast } from '@app/providers/ToastProvider';
 import { useReadOnly } from '@hooks/useReadOnly';
 
-const StepUpdate = z.object({
+const StepUpdateSchema = z.object({
   session_id: z.string(),
   step_id: z.string(),
   state: z.enum(['pending', 'pass', 'fail', 'skip']),
   readings: z.record(z.any()).optional(),
   comment: z.string().optional(),
 });
+
+type StepUpdateInput = z.infer<typeof StepUpdateSchema>;
 
 type ChecklistSummary = {
   checklist_id: string;
@@ -54,6 +56,7 @@ type CommissioningSettings = {
 };
 
 const MEASURE_STEPS = new Set(['deltaT_under_load', 'flow_detected']);
+const WINDOW_MEASURE_STEP = 'deltaT_under_load';
 
 export default function CommissioningPage(): JSX.Element {
   const qc = useQueryClient();
@@ -136,7 +139,8 @@ export default function CommissioningPage(): JSX.Element {
   });
 
   const updateStep = useMutation({
-    mutationFn: (payload: z.infer<typeof StepUpdate>) => api.post('/api/commissioning/step', payload).then((r) => r.json()),
+    mutationFn: (payload: StepUpdateInput) =>
+      api.post('/api/commissioning/step', StepUpdateSchema.parse(payload)).then((r) => r.json()),
     onSuccess: (_data, variables) => {
       void qc.invalidateQueries({ queryKey: ['comm:session', variables.session_id] });
       void qc.invalidateQueries({ queryKey: ['comm:sessions'] });
@@ -178,6 +182,30 @@ export default function CommissioningPage(): JSX.Element {
     onError: () => toast.error('Failed to capture measurement'),
   });
 
+  const measureWindow = useMutation({
+    mutationFn: (payload: { session_id: string; step_id: string; window_s?: number }) =>
+      api.post('/api/commissioning/measure-window', payload).then((r) => r.json()),
+    onSuccess: (data, variables) => {
+      void qc.invalidateQueries({ queryKey: ['comm:session', variables.session_id] });
+      if (data?.ok) {
+        const dt = typeof data.sample?.delta_t_med === 'number' ? data.sample.delta_t_med : null;
+        const thresholdRaw = typeof data.thresholds?.dtMin === 'number'
+          ? data.thresholds.dtMin
+          : thresholds.delta_t_min;
+        const threshold = Number.isFinite(thresholdRaw) ? thresholdRaw : 0;
+        const dtText = dt != null ? `${dt.toFixed(1)}°C` : '—';
+        if (data.pass) {
+          toast.success(`ΔT ${dtText} ≥ ${threshold.toFixed(1)}°C`);
+        } else {
+          toast.warning(`Below threshold — ΔT ${dtText}`);
+        }
+      } else {
+        toast.error('Measurement failed');
+      }
+    },
+    onError: () => toast.error('Failed to capture window measurement'),
+  });
+
   const labels = useMutation({
     mutationFn: (session_id: string) =>
       api.post('/api/commissioning/labels', { session_id }).then((r) => r.json()),
@@ -186,6 +214,20 @@ export default function CommissioningPage(): JSX.Element {
       toast.success('Labels generated');
     },
     onError: () => toast.error('Failed to generate labels'),
+  });
+
+  const provisioningZip = useMutation({
+    mutationFn: (session_id: string) =>
+      api.post('/api/commissioning/provisioning-zip', { session_id }).then((r) => r.json()),
+    onSuccess: (data, session_id) => {
+      if (data?.ok) {
+        toast.success('Provisioning ZIP ready');
+        void qc.invalidateQueries({ queryKey: ['comm:session', session_id] });
+      } else {
+        toast.error('ZIP generation failed');
+      }
+    },
+    onError: () => toast.error('Failed to create provisioning ZIP'),
   });
 
   const email = useMutation({
@@ -239,6 +281,11 @@ export default function CommissioningPage(): JSX.Element {
     measure.mutate({ session_id: currentSession.session_id, step_id: step.step_id });
   };
 
+  const handleMeasureWindow = (step: StepResult) => {
+    if (!currentSession) return;
+    measureWindow.mutate({ session_id: currentSession.session_id, step_id: step.step_id, window_s: 90 });
+  };
+
   const handleFinalize = (outcome: 'passed' | 'failed') => {
     if (!currentSession) return;
     finalise.mutate({
@@ -251,6 +298,11 @@ export default function CommissioningPage(): JSX.Element {
   const handleGenerateLabels = () => {
     if (!currentSession) return;
     labels.mutate(currentSession.session_id);
+  };
+
+  const handleProvisioningZip = () => {
+    if (!currentSession) return;
+    provisioningZip.mutate(currentSession.session_id);
   };
 
   const handleEmail = () => {
@@ -444,6 +496,14 @@ export default function CommissioningPage(): JSX.Element {
                 <button
                   className="app-button"
                   type="button"
+                  onClick={handleProvisioningZip}
+                  disabled={actionDisabled || provisioningZip.isPending}
+                >
+                  {provisioningZip.isPending ? 'Generating…' : 'Provisioning ZIP'}
+                </button>
+                <button
+                  className="app-button"
+                  type="button"
                   onClick={handleEmail}
                   disabled={actionDisabled || email.isPending || !artifacts.pdf}
                 >
@@ -457,6 +517,9 @@ export default function CommissioningPage(): JSX.Element {
                 </div>
                 <div>
                   <strong>Labels</strong>: {artifacts.labels ? <code>{artifacts.labels.r2_key}</code> : '—'}
+                </div>
+                <div>
+                  <strong>Provisioning ZIP</strong>: {artifacts.zip ? <code>{artifacts.zip.r2_key}</code> : '—'}
                 </div>
               </div>
 
@@ -472,9 +535,15 @@ export default function CommissioningPage(): JSX.Element {
                       onChange={(state) => handleStateChange(step, state)}
                       onSaveComment={(comment) => handleSaveComment(step, comment)}
                       onMeasure={MEASURE_STEPS.has(step.step_id) ? () => handleMeasure(step) : undefined}
+                      onMeasureWindow={
+                        step.step_id === WINDOW_MEASURE_STEP ? () => handleMeasureWindow(step) : undefined
+                      }
                       disabled={actionDisabled}
                       updating={updateStep.isPending}
                       measuring={measure.isPending && measure.variables?.step_id === step.step_id}
+                      measuringWindow={
+                        measureWindow.isPending && measureWindow.variables?.step_id === step.step_id
+                      }
                     />
                   ))
                 )}
@@ -493,12 +562,25 @@ type StepCardProps = {
   onChange: (state: StepResult['state']) => void;
   onSaveComment: (comment: string) => void;
   onMeasure?: () => void;
+  onMeasureWindow?: () => void;
   disabled: boolean;
   updating: boolean;
   measuring: boolean;
+  measuringWindow: boolean;
 };
 
-function StepCard({ step, thresholds, onChange, onSaveComment, onMeasure, disabled, updating, measuring }: StepCardProps) {
+function StepCard({
+  step,
+  thresholds,
+  onChange,
+  onSaveComment,
+  onMeasure,
+  onMeasureWindow,
+  disabled,
+  updating,
+  measuring,
+  measuringWindow,
+}: StepCardProps) {
   const [comment, setComment] = useState(step.comment ?? '');
 
   useEffect(() => {
@@ -507,11 +589,15 @@ function StepCard({ step, thresholds, onChange, onSaveComment, onMeasure, disabl
 
   const readings = useMemo(() => (step.readings && typeof step.readings === 'object' ? step.readings : null), [step.readings]);
   const capturedAt = typeof readings?.ts === 'string' ? readings.ts : null;
-  const deltaT = toNumber(readings?.delta_t ?? readings?.deltaT);
-  const flow = toNumber(readings?.flow_lpm ?? readings?.flow);
-  const outlet = toNumber(readings?.outlet ?? readings?.outlet_temp_c);
-  const ret = toNumber(readings?.return ?? readings?.return_temp_c);
-  const cop = toNumber(readings?.cop);
+  const deltaT = toNumber(readings?.delta_t ?? readings?.deltaT ?? readings?.delta_t_med);
+  const flow = toNumber(readings?.flow_lpm ?? readings?.flow ?? readings?.flow_lpm_med);
+  const outlet = toNumber(readings?.outlet ?? readings?.outlet_temp_c ?? readings?.outlet_c_med);
+  const ret = toNumber(readings?.return ?? readings?.return_temp_c ?? readings?.return_c_med);
+  const cop = toNumber(readings?.cop ?? readings?.cop_med);
+  const windowSeconds = toNumber(readings?.window_s);
+  const sampleCount = toNumber(readings?.count);
+
+  const showMeasurements = Boolean(onMeasure || onMeasureWindow);
 
   return (
     <div className="commissioning-step" style={{ border: '1px solid rgba(0,0,0,0.1)', borderRadius: '12px', padding: '12px' }}>
@@ -524,6 +610,12 @@ function StepCard({ step, thresholds, onChange, onSaveComment, onMeasure, disabl
       {capturedAt || deltaT != null || flow != null || cop != null ? (
         <ul style={{ margin: '8px 0', paddingLeft: '18px', fontSize: '0.9em' }}>
           {capturedAt ? <li>Captured at {formatDate(capturedAt)}</li> : null}
+          {windowSeconds != null ? (
+            <li>
+              Window {formatNumber(windowSeconds, 0)} s
+              {sampleCount != null ? ` (${formatNumber(sampleCount, 0)} samples)` : null}
+            </li>
+          ) : null}
           {deltaT != null ? <li>ΔT {formatNumber(deltaT, 1)} °C</li> : null}
           {flow != null ? <li>Flow {formatNumber(flow, 2)} L/min</li> : null}
           {outlet != null && ret != null ? <li>Temps {formatNumber(outlet, 1)} / {formatNumber(ret, 1)} °C</li> : null}
@@ -531,16 +623,30 @@ function StepCard({ step, thresholds, onChange, onSaveComment, onMeasure, disabl
         </ul>
       ) : null}
 
-      {onMeasure ? (
+      {showMeasurements ? (
         <div style={{ display: 'grid', gap: '6px', marginBottom: '8px' }}>
-          <button
-            className="app-button"
-            type="button"
-            onClick={onMeasure}
-            disabled={disabled || measuring}
-          >
-            {measuring ? 'Measuring…' : 'Measure now'}
-          </button>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+            {onMeasure ? (
+              <button
+                className="app-button"
+                type="button"
+                onClick={onMeasure}
+                disabled={disabled || measuring}
+              >
+                {measuring ? 'Measuring…' : 'Measure now'}
+              </button>
+            ) : null}
+            {onMeasureWindow ? (
+              <button
+                className="app-button"
+                type="button"
+                onClick={onMeasureWindow}
+                disabled={disabled || measuringWindow}
+              >
+                {measuringWindow ? 'Measuring…' : 'Measure (90 s median)'}
+              </button>
+            ) : null}
+          </div>
           <span style={{ fontSize: '0.8em', color: 'rgba(71, 85, 105, 0.85)' }}>
             Targets: ΔT ≥ {formatNumber(thresholds.delta_t_min, 1)} °C, Flow ≥ {formatNumber(thresholds.flow_min_lpm, 1)} L/min,
             COP ≥ {formatNumber(thresholds.cop_min, 1)}

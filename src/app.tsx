@@ -52,7 +52,7 @@ import { withSecurityHeaders } from './security';
 import { preflight } from './utils/preflight';
 import { getVersion } from './utils/version';
 import { validateHeartbeat, validateIngest } from './lib/schemas';
-import { getLatestTelemetry, computeDeltaT } from './lib/commissioning';
+import { getLatestTelemetry, computeDeltaT, getWindowSample } from './lib/commissioning';
 import { emailCommissioning } from './lib/email';
 import { getSetting, setSetting } from './lib/settings';
 
@@ -1984,6 +1984,68 @@ app.post('/api/commissioning/measure-now', async (c) => {
   });
 });
 
+app.post('/api/commissioning/measure-window', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+
+  const body = await c.req
+    .json<{
+      session_id: string;
+      step_id: string;
+      window_s?: number;
+      thresholds?: { delta_t_min?: number; flow_min_lpm?: number; cop_min?: number };
+    }>()
+    .catch(() => null);
+
+  if (!body?.session_id || !body.step_id) {
+    return c.text('Bad Request', 400);
+  }
+
+  const session = await c.env.DB.prepare('SELECT device_id FROM commissioning_sessions WHERE session_id=?')
+    .bind(body.session_id)
+    .first<{ device_id: string }>();
+  if (!session) {
+    return c.text('Session not found', 404);
+  }
+
+  const dtMin = body.thresholds?.delta_t_min
+    ?? numberFromSetting(await getSetting(c.env.DB, 'commissioning_delta_t_min'), 0);
+  const flowMin = body.thresholds?.flow_min_lpm
+    ?? numberFromSetting(await getSetting(c.env.DB, 'commissioning_flow_min_lpm'), 0);
+  const copMin = body.thresholds?.cop_min
+    ?? numberFromSetting(await getSetting(c.env.DB, 'commissioning_cop_min'), 0);
+
+  const windowSeconds = Math.max(10, Math.min(300, body.window_s ?? 90));
+  const sample = await getWindowSample(c.env.DB, session.device_id, windowSeconds);
+
+  const okDt = sample.delta_t_med != null ? sample.delta_t_med >= dtMin : false;
+  const okFlow = flowMin ? (sample.flow_lpm_med ?? Number.NEGATIVE_INFINITY) >= flowMin : true;
+  const okCop = copMin ? (sample.cop_med ?? Number.NEGATIVE_INFINITY) >= copMin : true;
+  const pass = okDt && okFlow && okCop;
+
+  await c.env.DB.prepare(
+    "UPDATE commissioning_steps SET state=?, readings_json=?, updated_at=datetime('now') WHERE session_id=? AND step_id=?",
+  )
+    .bind(
+      pass ? 'pass' : 'fail',
+      JSON.stringify({ ...sample, thresholds: { dtMin, flMin: flowMin, copMin } }),
+      body.session_id,
+      body.step_id,
+    )
+    .run();
+
+  return c.json({
+    ok: true,
+    pass,
+    sample,
+    thresholds: { dtMin, flMin: flowMin, copMin },
+  });
+});
+
 app.post('/api/commissioning/labels', async (c) => {
   const auth = c.get('auth');
   requireRole(auth, ['admin', 'ops']);
@@ -2014,6 +2076,41 @@ app.post('/api/commissioning/labels', async (c) => {
     'INSERT OR REPLACE INTO commissioning_artifacts (session_id, kind, r2_key, size_bytes) VALUES (?,?,?,?)',
   )
     .bind(body.session_id, 'labels', key, size)
+    .run();
+
+  return c.json({ ok: true, r2_key: key, size });
+});
+
+app.post('/api/commissioning/provisioning-zip', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+
+  const body = await c.req.json<{ session_id: string }>().catch(() => null);
+  if (!body?.session_id) {
+    return c.text('Bad Request', 400);
+  }
+
+  const session = await c.env.DB.prepare('SELECT device_id FROM commissioning_sessions WHERE session_id=?')
+    .bind(body.session_id)
+    .first<{ device_id: string }>();
+  if (!session) {
+    return c.text('Not Found', 404);
+  }
+
+  const { renderProvisioningZip } = await import('./reports/provisioning-zip');
+  const { key, size } = await renderProvisioningZip(c.env, {
+    device_id: session.device_id,
+    session_id: body.session_id,
+  });
+
+  await c.env.DB.prepare(
+    'INSERT OR REPLACE INTO commissioning_artifacts(session_id, kind, r2_key, size_bytes) VALUES (?,?,?,?)',
+  )
+    .bind(body.session_id, 'zip', key, size)
     .run();
 
   return c.json({ ok: true, r2_key: key, size });
