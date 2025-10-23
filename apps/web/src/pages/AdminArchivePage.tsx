@@ -1,6 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchArchiveLogs, type ArchiveResponse, type ArchiveRow } from '@api/admin';
+import {
+  fetchArchiveLogs,
+  fetchArchivePresets,
+  type ArchivePresetDefinition,
+  type ArchiveResponse,
+  type ArchiveRow,
+} from '@api/admin';
 import { resolveApiUrl } from '@api/client';
 import { useAuthFetch } from '@hooks/useAuthFetch';
 
@@ -14,6 +20,7 @@ type ColumnDefinition = {
 };
 
 type Preset = {
+  id: string;
   name: string;
   columns: string[];
 };
@@ -23,6 +30,7 @@ type SelectionMap = Record<ArchiveTableKey, string[]>;
 type ArchiveFormat = 'ndjson' | 'csv';
 
 const GZIP_LEVEL_STORAGE_KEY = 'greenbro-archive-gz-level';
+const STAGE_STORAGE_KEY = 'greenbro-archive-stage';
 const DEFAULT_GZIP_LEVEL = 6;
 
 const COLUMN_SCHEMAS: Record<ArchiveTableKey, ColumnDefinition[]> = {
@@ -64,18 +72,26 @@ const COLUMN_SCHEMAS: Record<ArchiveTableKey, ColumnDefinition[]> = {
   ],
 };
 
-const COLUMN_PRESETS: Record<ArchiveTableKey, Preset[]> = {
+const FALLBACK_COLUMN_PRESETS: Record<ArchiveTableKey, Preset[]> = {
   telemetry: [
-    { name: 'Minimal', columns: ['ts', 'device_id', 'delta_t', 'cop'] },
-    { name: 'Diagnostics', columns: ['ts', 'device_id', 'delta_t', 'cop', 'metrics_json', 'status', 'faults_json'] },
-    { name: 'Power', columns: ['ts', 'device_id', 'cop', 'kW_el', 'kW_th'] },
+    { id: 'minimal', name: 'Minimal', columns: ['ts', 'device_id', 'delta_t', 'cop'] },
+    {
+      id: 'diagnostics',
+      name: 'Diagnostics',
+      columns: ['ts', 'device_id', 'delta_t', 'cop', 'metrics_json', 'status', 'faults_json'],
+    },
+    { id: 'power', name: 'Power', columns: ['ts', 'device_id', 'cop', 'kW_el', 'kW_th'] },
   ],
   alerts: [
-    { name: 'Triage', columns: ['opened_at', 'closed_at', 'device_id', 'type', 'severity', 'state'] },
-    { name: 'Full', columns: ['opened_at', 'closed_at', 'device_id', 'type', 'severity', 'state', 'meta_json'] },
+    { id: 'triage', name: 'Triage', columns: ['opened_at', 'closed_at', 'device_id', 'type', 'severity', 'state'] },
+    {
+      id: 'full',
+      name: 'Full',
+      columns: ['opened_at', 'closed_at', 'device_id', 'type', 'severity', 'state', 'meta_json'],
+    },
   ],
   incidents: [
-    { name: 'Summary', columns: ['opened_at', 'closed_at', 'site_id', 'root_cause', 'severity', 'state'] },
+    { id: 'summary', name: 'Summary', columns: ['opened_at', 'closed_at', 'site_id', 'root_cause', 'severity', 'state'] },
   ],
 };
 
@@ -142,6 +158,13 @@ function clampGzipLevel(level: number): number {
   return Math.min(9, Math.max(1, Math.round(level)));
 }
 
+function getDefaultStageEnabled(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  return window.localStorage.getItem(STAGE_STORAGE_KEY) === '1';
+}
+
 function getDefaultGzipLevel(): number {
   if (typeof window === 'undefined') {
     return DEFAULT_GZIP_LEVEL;
@@ -197,11 +220,19 @@ function formatTimestamp(value: string | null): string {
   }
 }
 
-function buildDownloadHref(row: ArchiveRow, gzipEnabled: boolean, gzipLevel: number): string {
+function buildDownloadHref(
+  row: ArchiveRow,
+  gzipEnabled: boolean,
+  gzipLevel: number,
+  stageEnabled: boolean,
+): string {
   const params = new URLSearchParams({ key: row.key });
   if (gzipEnabled) {
     params.set('gz', '1');
     params.set('gzl', String(gzipLevel));
+  }
+  if (stageEnabled) {
+    params.set('stage', '1');
   }
   return resolveApiUrl(`/api/admin/archive/download?${params.toString()}`);
 }
@@ -212,6 +243,7 @@ function buildOnDemandHref(
   format: ArchiveFormat,
   gzipEnabled: boolean,
   gzipLevel: number,
+  stageEnabled: boolean,
 ): string {
   const params = new URLSearchParams({ table, format });
   if (columns.length) {
@@ -220,6 +252,9 @@ function buildOnDemandHref(
   if (gzipEnabled) {
     params.set('gz', '1');
     params.set('gzl', String(gzipLevel));
+  }
+  if (stageEnabled) {
+    params.set('stage', '1');
   }
   return resolveApiUrl(`/api/admin/archive/export?${params.toString()}`);
 }
@@ -233,9 +268,16 @@ export function AdminArchivePage(): JSX.Element {
   const authFetch = useAuthFetch();
   const [selectedDate, setSelectedDate] = useState<string>(() => getYesterdayIso());
   const [selectedTable, setSelectedTable] = useState<ArchiveTableKey>('telemetry');
+  const [stageEnabled, setStageEnabled] = useState<boolean>(() => getDefaultStageEnabled());
   const [gzipEnabled, setGzipEnabled] = useState<boolean>(true);
   const [gzipLevel, setGzipLevel] = useState<number>(() => getDefaultGzipLevel());
   const [selections, setSelections] = useState<SelectionMap>(() => computeInitialSelections());
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(STAGE_STORAGE_KEY, stageEnabled ? '1' : '0');
+    }
+  }, [stageEnabled]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -246,6 +288,13 @@ export function AdminArchivePage(): JSX.Element {
   const archiveQuery = useQuery<ArchiveResponse>({
     queryKey: ['admin-archive', selectedDate],
     queryFn: () => fetchArchiveLogs(selectedDate, authFetch),
+  });
+
+  const presetsQuery = useQuery<ArchivePresetDefinition[]>({
+    queryKey: ['admin-archive-presets', selectedTable],
+    queryFn: () => fetchArchivePresets(selectedTable, authFetch),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
   });
 
   const schema = COLUMN_SCHEMAS[selectedTable];
@@ -300,8 +349,25 @@ export function AdminArchivePage(): JSX.Element {
   const maxDate = new Date().toISOString().slice(0, 10);
 
   const builderDisabled = validColumns.length === 0;
+  const presets = useMemo<Preset[]>(() => {
+    const serverPresets = (presetsQuery.data ?? [])
+      .map((preset) => ({
+        id: preset.id,
+        name: preset.name,
+        columns: normaliseColumns(selectedTable, preset.cols),
+      }))
+      .filter((preset) => preset.columns.length > 0);
 
-  const presets = COLUMN_PRESETS[selectedTable];
+    if (serverPresets.length > 0) {
+      return serverPresets;
+    }
+
+    return FALLBACK_COLUMN_PRESETS[selectedTable].map((preset) => ({
+      id: preset.id,
+      name: preset.name,
+      columns: normaliseColumns(selectedTable, preset.columns),
+    }));
+  }, [presetsQuery.data, selectedTable]);
 
   return (
     <div className="page">
@@ -316,6 +382,14 @@ export function AdminArchivePage(): JSX.Element {
         <header style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
           <h3 style={{ margin: 0 }}>On-demand export builder</h3>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <label className="data-table__muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={stageEnabled}
+                onChange={(event) => setStageEnabled(event.target.checked)}
+              />
+              Stage (Content-Length)
+            </label>
             <label className="data-table__muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <input
                 type="checkbox"
@@ -353,7 +427,7 @@ export function AdminArchivePage(): JSX.Element {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {presets.map((preset) => (
                 <button
-                  key={preset.name}
+                  key={preset.id}
                   type="button"
                   className="app-button app-button--secondary"
                   onClick={() => applyPreset(preset.columns)}
@@ -410,7 +484,11 @@ export function AdminArchivePage(): JSX.Element {
           <a
             className="app-button"
             style={builderDisabled ? { pointerEvents: 'none', opacity: 0.6 } : undefined}
-            href={builderDisabled ? undefined : buildOnDemandHref(selectedTable, validColumns, 'ndjson', gzipEnabled, gzipLevel)}
+            href={
+              builderDisabled
+                ? undefined
+                : buildOnDemandHref(selectedTable, validColumns, 'ndjson', gzipEnabled, gzipLevel, stageEnabled)
+            }
             download={buildDownloadName(selectedTable, 'ndjson', gzipEnabled)}
             aria-disabled={builderDisabled}
             onClick={(event) => {
@@ -424,7 +502,11 @@ export function AdminArchivePage(): JSX.Element {
           <a
             className="app-button"
             style={builderDisabled ? { pointerEvents: 'none', opacity: 0.6 } : undefined}
-            href={builderDisabled ? undefined : buildOnDemandHref(selectedTable, validColumns, 'csv', gzipEnabled, gzipLevel)}
+            href={
+              builderDisabled
+                ? undefined
+                : buildOnDemandHref(selectedTable, validColumns, 'csv', gzipEnabled, gzipLevel, stageEnabled)
+            }
             download={buildDownloadName(selectedTable, 'csv', gzipEnabled)}
             aria-disabled={builderDisabled}
             onClick={(event) => {
@@ -488,7 +570,10 @@ export function AdminArchivePage(): JSX.Element {
                       </td>
                       <td>{formatTimestamp(row.exportedAt)}</td>
                       <td>
-                        <a className="app-button" href={buildDownloadHref(row, gzipEnabled, gzipLevel)}>
+                        <a
+                          className="app-button"
+                          href={buildDownloadHref(row, gzipEnabled, gzipLevel, stageEnabled)}
+                        >
                           Download
                         </a>
                       </td>
