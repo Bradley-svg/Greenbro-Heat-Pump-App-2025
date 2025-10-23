@@ -1,4 +1,5 @@
 import type { Env, IngestMessage, TelemetryPayload } from './types';
+import { computeDerivedFromTelemetry } from './lib/math';
 
 export async function handleQueueBatch(
   batch: MessageBatch<IngestMessage>,
@@ -12,7 +13,7 @@ export async function handleQueueBatch(
 
       if (message.body.type === 'telemetry') {
         const telemetry = sanitizeTelemetry(message.body.body);
-        const derived = computeDerived(telemetry);
+        const derived = computeDerivedFromTelemetry(telemetry);
 
         await persistTelemetry(env, telemetry, derived);
         await upsertLatest(env, telemetry, derived);
@@ -71,39 +72,6 @@ function sanitizeTelemetry(input: TelemetryPayload): TelemetryPayload {
           .filter((fault): fault is { code: string; active: boolean } => fault !== undefined)
       : undefined,
   };
-}
-
-function computeDerived(telemetry: TelemetryPayload) {
-  const supply = telemetry.metrics.supplyC ?? null;
-  const ret = telemetry.metrics.returnC ?? null;
-  const flow = telemetry.metrics.flowLps ?? null;
-  const power = telemetry.metrics.powerKW ?? null;
-
-  const deltaT = supply != null && ret != null ? round1(supply - ret) : null;
-  const rho = 0.997;
-  const cp = 4.186;
-  const thermalKW = flow != null && deltaT != null ? round2((rho * cp * flow * deltaT) / 1_000) : null;
-
-  let cop: number | null = null;
-  let copQuality: 'measured' | 'estimated' | null = null;
-
-  if (thermalKW != null && power != null && power > 0.05) {
-    cop = round2(thermalKW / power);
-    copQuality = 'measured';
-  } else if (thermalKW != null) {
-    cop = null;
-    copQuality = 'estimated';
-  }
-
-  return { deltaT, thermalKW, cop, copQuality };
-}
-
-function round1(value: number) {
-  return Math.round(value * 10) / 10;
-}
-
-function round2(value: number) {
-  return Math.round(value * 100) / 100;
 }
 
 async function persistTelemetry(

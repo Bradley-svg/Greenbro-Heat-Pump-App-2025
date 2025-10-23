@@ -1,0 +1,13 @@
+:root {
+  --gb-bg: #0b0e12;
+  --gb-ink: #e7f0ea;
+  --gb-ac: #22d36a;
+  --gb-warn: #f2c94c;
+  --gb-crit: #ff4d4f;
+  --gb-muted: #9fb0c0;
+}
+
+body {
+  background: var(--gb-bg);
+  color: var(--gb-ink);
+}

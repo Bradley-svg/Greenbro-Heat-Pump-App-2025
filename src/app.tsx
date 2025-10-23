@@ -4,19 +4,15 @@ import type { ExecutionContext, MessageBatch, ScheduledEvent } from '@cloudflare
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import type {
+  ClientMonthlyReportPayload,
+  CommissioningPayload,
+  IncidentReportV2Payload,
+} from './pdf';
 import type { Env, IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO, DeviceDO } from './do';
 import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
-import {
-  generateCommissioningPDF,
-  generateClientMonthlyReport,
-  generateIncidentReportV2,
-  type ClientMonthlyReportPayload,
-  type CommissioningPayload,
-  type IncidentReportV2Payload,
-} from './pdf';
 import { BRAND, brandCss, brandEmail, brandLogoSvg, brandLogoWhiteSvg, brandLogoMonoSvg } from './brand';
 import {
   renderer,
@@ -52,6 +48,22 @@ import { sweepIncidents } from './incidents';
 import { withSecurityHeaders } from './security';
 import { preflight } from './utils/preflight';
 import { getVersion } from './utils/version';
+
+let pdfModulePromise: Promise<typeof import('./pdf')> | undefined;
+const getPdfModule = () => {
+  if (!pdfModulePromise) {
+    pdfModulePromise = import('./pdf');
+  }
+  return pdfModulePromise;
+};
+
+let pdfLibPromise: Promise<typeof import('pdf-lib')> | undefined;
+const getPdfLib = () => {
+  if (!pdfLibPromise) {
+    pdfLibPromise = import('pdf-lib');
+  }
+  return pdfLibPromise;
+};
 
 void DeviceStateDO;
 void DeviceDO;
@@ -2400,6 +2412,7 @@ app.post('/api/commissioning/:deviceId/report', async (c) => {
   requireRole(auth, ['admin', 'ops', 'contractor']);
   const deviceId = c.req.param('deviceId');
   const payload = await c.req.json<Omit<CommissioningPayload, 'deviceId'>>();
+  const { generateCommissioningPDF } = await getPdfModule();
   const res = await generateCommissioningPDF(c.env, { ...payload, deviceId });
   return c.json(res);
 });
@@ -2477,6 +2490,7 @@ app.post('/api/reports/incident', async (c) => {
       reason: string | null;
     }>();
 
+  const { PDFDocument, StandardFonts } = await getPdfLib();
   const pdf = await PDFDocument.create();
   let page = pdf.addPage([595, 842]);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -2599,6 +2613,7 @@ app.post('/api/reports/incident/v2', async (c) => {
   const windowEnd = new Date();
   const payload = await buildIncidentReportV2Payload(c.env, siteId, windowHours, { windowEnd });
 
+  const { generateIncidentReportV2 } = await getPdfModule();
   const pdf = await generateIncidentReportV2(c.env, payload);
   const path = keyToPath(pdf.key);
 
@@ -2764,6 +2779,7 @@ app.post('/api/reports/client-monthly', async (c) => {
 
   const { payload, client } = prepared;
 
+  const { generateClientMonthlyReport } = await getPdfModule();
   const pdf = await generateClientMonthlyReport(c.env, payload);
 
   await logReportDelivery(c.env.DB, {
@@ -2975,6 +2991,7 @@ app.post('/api/reports/client-monthly/v2', async (c) => {
 
   const { payload, client } = prepared;
 
+  const { generateClientMonthlyReport } = await getPdfModule();
   const pdf = await generateClientMonthlyReport(c.env, payload);
   const path = keyToPath(pdf.key);
   await logReportDelivery(c.env.DB, {
@@ -3225,6 +3242,8 @@ app.post('/api/ops/monthly-run', async (c) => {
     emailed?: boolean;
     error?: string;
   }> = [];
+
+  const { generateClientMonthlyReport } = await getPdfModule();
 
   for (const row of rows.results ?? []) {
     try {
@@ -4135,54 +4154,10 @@ async function recomputeBaselines(DB: D1Database) {
         row.cop_n,
       );
     }),
-  );
-}
-
-function hourOfWeek(tsIso: string) {
-  const d = new Date(tsIso);
-  const day = (d.getUTCDay() + 6) % 7;
-  return day * 24 + d.getUTCHours();
-}
-
-function z(value: number, mean?: number | null, std?: number | null) {
-  if (std == null || std === 0) return 0;
-  return (value - (mean ?? 0)) / std;
-}
-
-function computeDerived(metrics: TelemetryPayload['metrics']): Derived {
-  const supply = metrics.supplyC ?? null;
-  const ret = metrics.returnC ?? null;
-  const flow = metrics.flowLps ?? null;
-  const power = metrics.powerKW ?? null;
-
-  const deltaT = supply != null && ret != null ? round1(supply - ret) : null;
-  const rho = 0.997;
-  const cp = 4.186;
-  const thermalKW = flow != null && deltaT != null ? round2((rho * cp * flow * deltaT) / 1_000) : null;
-
-  let cop: number | null = null;
-  let copQuality: 'measured' | 'estimated' | null = null;
-
-  if (thermalKW != null && power != null && power > 0.05) {
-    cop = round2(thermalKW / power);
-    copQuality = 'measured';
-  } else if (thermalKW != null) {
-    cop = null;
-    copQuality = 'estimated';
+    );
   }
 
-  return { deltaT, thermalKW, cop, copQuality };
-}
-
-function round1(value: number) {
-  return Math.round(value * 10) / 10;
-}
-
-function round2(value: number) {
-  return Math.round(value * 100) / 100;
-}
-
-async function logOpsMetric(
+  async function logOpsMetric(
   DB: D1Database,
   route: string,
   statusCode: number,
@@ -4955,6 +4930,7 @@ export default {
       const reference = evt.scheduledTime ? new Date(evt.scheduledTime) : new Date();
       const monthKey = previousMonthKey(reference);
       const sloRows = await env.DB.prepare('SELECT client_id FROM client_slos').all<{ client_id: string }>();
+      const { generateClientMonthlyReport } = await getPdfModule();
       for (const row of sloRows.results ?? []) {
         try {
           const { payload } = await buildClientMonthlyReportPayload(env, row.client_id, monthKey);
