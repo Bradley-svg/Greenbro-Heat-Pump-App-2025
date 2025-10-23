@@ -969,6 +969,16 @@ app.get('/api/admin/archive/download', async (c) => {
     return c.text('Not Found', 404);
   }
 
+  const preset = url.searchParams.get('preset') ?? '';
+  const stage = url.searchParams.get('stage') === '1';
+  const columnsParam = url.searchParams.get('columns');
+  const cols = columnsParam
+    ? columnsParam
+        .split(',')
+        .map((column) => column.trim())
+        .filter((column) => column.length > 0)
+    : [];
+
   const shouldGzip = url.searchParams.get('gz') === '1';
   const gzipLevel = shouldGzip ? parseGzipLevel(url.searchParams.get('gzl')) : null;
 
@@ -980,23 +990,106 @@ app.get('/api/admin/archive/download', async (c) => {
   headers.set('Cache-Control', 'private, max-age=0, must-revalidate');
 
   const safeName = sanitizeArchiveFileName(key);
-  let appliedGzip = false;
-  let body: ReadableStream<Uint8Array> | null = object.body;
+  const withoutGz = safeName.endsWith('.gz') ? safeName.slice(0, -3) : safeName;
+  const lastDot = withoutGz.lastIndexOf('.');
+  const fmt = lastDot !== -1 ? withoutGz.slice(lastDot + 1) : 'ndjson';
+  const baseWithSig = lastDot !== -1 ? withoutGz.slice(0, lastDot) : withoutGz;
+  const baseMatch = /^([A-Za-z0-9_-]+)-/.exec(baseWithSig);
+  const base = baseMatch ? baseMatch[1] : baseWithSig;
 
-  if (shouldGzip && body) {
-    const compressed = maybeGzip(body, gzipLevel);
-    if (compressed) {
-      body = compressed;
-      appliedGzip = true;
-      headers.set('Content-Type', 'application/gzip');
-      headers.delete('Content-Length');
+  const originalBuffer = await new Response(object.body).arrayBuffer();
+
+  let responseBuffer = originalBuffer;
+  let appliedGzip = false;
+
+  if (shouldGzip) {
+    const originalStream = new Response(originalBuffer).body;
+    if (originalStream) {
+      const compressed = maybeGzip(originalStream, gzipLevel);
+      if (compressed) {
+        responseBuffer = await new Response(compressed).arrayBuffer();
+        appliedGzip = true;
+        headers.set('Content-Type', 'application/gzip');
+        headers.delete('Content-Length');
+      }
+    }
+  }
+
+  if (!appliedGzip) {
+    headers.set('Content-Type', headers.get('Content-Type') ?? 'application/x-ndjson');
+  }
+
+  if (stage) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${key}:${preset}:${cols.join(',')}`));
+    const sig = Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+      .slice(0, 12);
+    const stamp = new Date().toISOString().slice(0, 10);
+    const idPart = preset && preset !== '__all__' ? `p-${preset}-` : '';
+    const stagedKey = `staged/${stamp}/${base}-${idPart}${sig}.${fmt}${appliedGzip ? '.gz' : ''}`;
+    const bucket: any = (c.env as any).ARCHIVE || (c.env as any).REPORTS;
+    try {
+      if (bucket?.put) {
+        await bucket.put(stagedKey, responseBuffer, {
+          httpMetadata: {
+            contentType: fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/x-ndjson',
+          },
+          customMetadata: {
+            preset: preset || '',
+            columns: cols.join(','),
+          },
+        });
+      }
+    } catch (error) {
+      console.warn('archive staging failed', error);
     }
   }
 
   const finalName = appliedGzip ? ensureGzSuffix(safeName) : safeName;
   headers.set('Content-Disposition', `attachment; filename="${finalName}"`);
 
-  return new Response(body, { headers });
+  return new Response(responseBuffer, { headers });
+});
+
+app.get('/api/admin/archive/staged-for', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+
+  const date = c.req.query('date');
+  const base = c.req.query('base');
+  if (!date || !base) {
+    return c.text('Bad Request', 400);
+  }
+
+  const bucket: any = (c.env as any).ARCHIVE || (c.env as any).REPORTS;
+  if (!bucket?.list) {
+    return c.json({});
+  }
+  let latest: any = null;
+
+  try {
+    const prefix = `staged/${date}/${base}-`;
+    const res = await bucket.list({ prefix });
+    for (const o of res.objects || []) {
+      const m = /-p-([A-Za-z0-9_-]+)-/.exec(o.key);
+      const preset = m ? m[1] : o.customMetadata?.preset || null;
+      if (!latest || (o.uploaded && latest.uploaded && o.uploaded > latest.uploaded)) {
+        latest = { key: o.key, preset, size: o.size, uploaded: o.uploaded };
+      }
+    }
+  } catch (error) {
+    console.warn('staged-for lookup failed', error);
+  }
+
+  return c.json(latest || {});
 });
 
 // --- Ingest: Telemetry & Heartbeat ---

@@ -686,6 +686,43 @@ const adminArchiveScript = `
       }
     });
   }
+
+  const body = document.querySelector('.archive-table tbody');
+  if(!body) return;
+  const rows = Array.from(body.querySelectorAll('tr'));
+  if(!rows.length) return;
+  const activeDate = dateInput && dateInput.value ? dateInput.value : null;
+  if(!activeDate) return;
+
+  rows.forEach(function(row){
+    const code = row.querySelector('td:nth-child(4) code');
+    const targetCell = row.querySelector('td:last-child');
+    if(!code || !targetCell || targetCell.querySelector('.preset-badge')) return;
+    const key = (code.textContent || '').trim();
+    if(!key) return;
+    const parts = key.split('/');
+    let file = parts.length ? parts[parts.length - 1] : key;
+    if(!file) return;
+    if(file.endsWith('.gz')){
+      file = file.slice(0, -3);
+    }
+    const dot = file.lastIndexOf('.');
+    const base = dot !== -1 ? file.slice(0, dot) : file;
+    if(!base) return;
+    const params = new URLSearchParams({ date: activeDate, base });
+    fetch('/api/admin/archive/staged-for?' + params.toString())
+      .then(function(res){ return res.ok ? res.json() : null; })
+      .then(function(meta){
+        if(!meta || !meta.preset) return;
+        if(targetCell.querySelector('.preset-badge')) return;
+        const badge = document.createElement('span');
+        badge.className = 'chip preset-badge';
+        badge.textContent = 'Preset: ' + meta.preset;
+        badge.style.marginLeft = '6px';
+        targetCell.appendChild(badge);
+      })
+      .catch(function(){});
+  });
 })();
 ${readOnlySnippet}
 `;
@@ -2260,6 +2297,9 @@ export function AdminArchivePage(props: { date: string; rows: AdminArchiveRow[] 
           Date
           <input type="date" name="date" value={selectedDate} max={maxDate} />
         </label>
+        <a class="btn" href="/admin/presets" style="margin-left:auto">
+          Edit presets
+        </a>
         <button class="btn" type="submit">Load</button>
       </form>
       {rows.length ? (
