@@ -3208,15 +3208,25 @@ async function schemaSnapshot(DB: D1Database) {
 app.get('/api/ops/readiness', async (c) => {
   const bypass = c.env.DEV_AUTH_BYPASS === '1';
   if (!bypass) {
-    const jwt = c.req.header('Cf-Access-Jwt-Assertion');
-    if (!jwt) {
+    const hasAdminOpsRole = (ctx: AccessContext | null | undefined) =>
+      Boolean(ctx?.roles?.some((role) => role === 'admin' || role === 'ops'));
+
+    const sessionAuth = c.get('auth') as AccessContext | undefined;
+    let authorized = hasAdminOpsRole(sessionAuth);
+
+    if (!authorized) {
+      const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+      if (jwt) {
+        const accessAuth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+        if (hasAdminOpsRole(accessAuth)) {
+          authorized = true;
+        }
+      }
+    }
+
+    if (!authorized) {
       return c.text('Unauthorized', 401);
     }
-    const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
-    if (!auth) {
-      return c.text('Unauthorized', 401);
-    }
-    requireRole(auth, ['admin', 'ops']);
   }
 
   const [db, brand, reports, schema, readOnly, deploy] = await Promise.all([

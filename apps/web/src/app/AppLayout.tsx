@@ -4,6 +4,7 @@ import { useToast } from './providers/ToastProvider';
 import { ROUTE_ROLES } from '@utils/rbac';
 import type { Role } from '@utils/types';
 import { useReadOnly } from '@hooks/useReadOnly';
+import { useDeployRibbon } from '@hooks/useDeployRibbon';
 
 interface NavItem {
   to: string;
@@ -25,6 +26,7 @@ export function AppLayout(): JSX.Element {
   const { user, logout, status } = useAuth();
   const { ro, canToggle, toggle } = useReadOnly();
   const toast = useToast();
+  const { deploy, dismiss } = useDeployRibbon();
 
   const permittedNav = NAV_ITEMS.filter((item) => hasAnyRole(user?.roles ?? [], ROUTE_ROLES[item.roleKey]));
   const allowToggle = Boolean(user?.roles.includes('admin')) && canToggle;
@@ -63,6 +65,22 @@ export function AppLayout(): JSX.Element {
               />
               Mute notifications
             </label>
+            {deploy ? (
+              <div
+                className={`deploy-chip ${deploy.color}`}
+                role="status"
+                aria-label={`Deployment: ${deploy.color}${deploy.msg ? ` — ${deploy.msg}` : ''}`}
+              >
+                <span className="dot" aria-hidden="true" />
+                <span className="txt">
+                  Deployment: <strong className="cap">{deploy.color}</strong>
+                  {deploy.msg ? <span className="sub"> — {deploy.msg}</span> : null}
+                </span>
+                <button className="x" aria-label="Dismiss readiness banner" onClick={dismiss} type="button">
+                  ×
+                </button>
+              </div>
+            ) : null}
             <div className="app-topbar__account">
               {user ? (
                 <>

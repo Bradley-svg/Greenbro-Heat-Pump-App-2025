@@ -424,6 +424,74 @@ svg.spark.crit {
   color: var(--gb-muted);
 }
 
+.deploy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--gb-border, rgba(255, 255, 255, 0.1));
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  box-shadow: var(--gb-shadow, 0 8px 24px rgba(0, 0, 0, 0.25));
+}
+
+.deploy-chip .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.deploy-chip .cap {
+  text-transform: capitalize;
+}
+
+.deploy-chip .sub {
+  opacity: 0.85;
+  font-weight: 500;
+}
+
+.deploy-chip .x {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.8;
+  margin-left: 4px;
+}
+
+.deploy-chip .x:hover {
+  opacity: 1;
+}
+
+.deploy-chip.blue {
+  color: #7fb7ff;
+  background: rgba(127, 183, 255, 0.08);
+}
+
+.deploy-chip.blue .dot {
+  background: #7fb7ff;
+}
+
+.deploy-chip.green {
+  color: #2ae580;
+  background: rgba(42, 229, 128, 0.08);
+}
+
+.deploy-chip.green .dot {
+  background: #2ae580;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deploy-chip .dot {
+    box-shadow: none;
+  }
+}
+
 .card {
   background: var(--gb-card);
   border: 1px solid var(--gb-card-border);
