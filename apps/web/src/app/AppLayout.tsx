@@ -55,6 +55,7 @@ export function AppLayout(): JSX.Element {
             <ReadOnlyPill readOnly={ro} onToggle={allowToggle ? toggle : undefined} />
             <label className="app-topbar__mute">
               <input
+                data-testid="toast-mute"
                 type="checkbox"
                 checked={toast.muted}
                 onChange={(event) => toast.setMuted(event.target.checked)}

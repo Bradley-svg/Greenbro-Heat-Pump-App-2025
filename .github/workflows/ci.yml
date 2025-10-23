@@ -31,6 +31,11 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps
 
+      - name: Burn toast mute smoke
+        env:
+          BASE_URL: http://127.0.0.1:5173
+        run: npm run test:smoke
+
       - name: Run Axe checks
         env:
           BASE_URL: http://127.0.0.1:5173

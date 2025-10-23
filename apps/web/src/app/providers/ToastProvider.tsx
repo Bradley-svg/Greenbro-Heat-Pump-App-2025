@@ -211,7 +211,13 @@ export function ToastProvider({ children }: PropsWithChildren): JSX.Element {
   return (
     <ToastContext.Provider value={contextValue}>
       {children}
-      <section className="toast-container" aria-live="polite" aria-atomic="false" role="region">
+      <section
+        className="toast-container"
+        data-testid="toast-container"
+        aria-live="polite"
+        aria-atomic="false"
+        role="region"
+      >
         {toasts.map((toast) => (
           <article
             key={toast.id}
