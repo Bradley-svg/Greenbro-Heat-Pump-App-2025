@@ -575,6 +575,28 @@ async function fastBurnMonitor(env: Env): Promise<FastBurnResult> {
   }
   return { snapshot, action };
 }
+
+async function pruneStaged(env: Env, days = 14) {
+  const bucket: any = (env as any).ARCHIVE || (env as any).REPORTS;
+  if (!bucket?.list) return;
+  const cutoff = new Date(Date.now() - days * 86400000);
+
+  let cursor: string | undefined;
+  do {
+    const res: any = await bucket.list({ prefix: 'staged/', cursor });
+    cursor = res.truncated ? res.cursor : undefined;
+    for (const o of res.objects || []) {
+      const m = /^staged\/(\d{4}-\d{2}-\d{2})\//.exec(o.key);
+      const d = m ? new Date(`${m[1]}T00:00:00Z`) : o.uploaded ? new Date(o.uploaded) : null;
+      if (d && d < cutoff) {
+        try {
+          await bucket.delete(o.key);
+        } catch {}
+      }
+    }
+  } while (cursor);
+}
+
 async function isReadOnly(DB: D1Database) {
   return (await getSetting(DB, 'read_only')) === '1';
 }
@@ -4300,5 +4322,9 @@ export default {
         }
       }
     }
+
+    try {
+      await pruneStaged(env, 14);
+    } catch {}
   },
 };
