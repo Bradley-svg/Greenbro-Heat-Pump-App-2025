@@ -1788,12 +1788,14 @@ export function Page({
   metaRefreshSec,
   head,
   ribbon,
+  version,
   children,
 }: {
   title?: string;
   metaRefreshSec?: number;
   head?: JSX.Element | JSX.Element[];
   ribbon?: DeployRibbon;
+  version?: { build_sha: string; build_date?: string };
   children: JSX.Element;
 }) {
   return (
@@ -1836,6 +1838,22 @@ export function Page({
           </div>
         ) : null}
         {children}
+        {version ? (
+          <div class="ver-chip" aria-label={`Build ${version.build_sha}`}>
+            <style>{`
+              .ver-chip{
+                position:fixed; right:12px; bottom:10px; z-index:999;
+                font: 600 11px/1 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu;
+                color:#9FB0C0; background:rgba(15,20,32,.6);
+                border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:6px 8px;
+                backdrop-filter: blur(4px);
+              }
+              .ver-chip .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+            `}</style>
+            <span class="mono">{version.build_sha.slice(0, 7)}</span>
+            {version.build_date ? <span> · {version.build_date}</span> : null}
+          </div>
+        ) : null}
       </body>
     </html>
   );
@@ -1846,6 +1864,7 @@ export const renderer = jsxRenderer(({ children }) => {
   const path = c.req.path;
   const metaRefreshSec = c.get('metaRefreshSec') as number | undefined;
   const ribbon = c.get('ribbon') as DeployRibbon | undefined;
+  const version = c.get('version') as { build_sha: string; build_date?: string } | undefined;
   const isActive = (href: string) => {
     if (href === '/') {
       return path === '/';
@@ -1880,6 +1899,7 @@ export const renderer = jsxRenderer(({ children }) => {
       title={pageTitle}
       metaRefreshSec={metaRefreshSec}
       ribbon={ribbon}
+      version={version}
       head={
         <style>{`
           body{margin:0;background:var(--gb-bg);color:var(--gb-ink);font-family:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}

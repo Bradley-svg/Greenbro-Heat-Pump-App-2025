@@ -51,6 +51,7 @@ import { handleQueueBatch as baseQueueHandler } from './queue';
 import { sweepIncidents } from './incidents';
 import { withSecurityHeaders } from './security';
 import { preflight } from './utils/preflight';
+import { getVersion } from './utils/version';
 
 void DeviceStateDO;
 void DeviceDO;
@@ -684,6 +685,24 @@ async function attachDeployRibbon(c: Context<Ctx>, auth: AccessContext | null | 
     ribbon.text = deploy.msg;
   }
   c.set('ribbon', ribbon);
+}
+
+function canSeeVersionChip(auth: AccessContext | null | undefined) {
+  if (!auth) {
+    return false;
+  }
+  return auth.roles.includes('admin') || auth.roles.includes('ops');
+}
+
+async function attachVersionInfo(c: Context<Ctx>, auth: AccessContext | null | undefined) {
+  if (!canSeeVersionChip(auth)) {
+    return;
+  }
+  const version = await getVersion(c.env);
+  c.set('version', {
+    build_sha: version.build_sha,
+    build_date: version.build_date || undefined,
+  });
 }
 
 async function guardWrite(c: any) {
@@ -3102,6 +3121,7 @@ app.get('/', async (c) => {
   const jwt = c.req.header('Cf-Access-Jwt-Assertion');
   const auth = jwt ? await verifyAccessJWT(c.env, jwt).catch(() => null) : null;
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   const data = await buildOverviewData(c.env.DB, auth ?? undefined);
   return c.render(<OverviewPage data={data} />);
 });
@@ -3258,6 +3278,30 @@ app.get('/api/ops/readiness', async (c) => {
   return withSecurityHeaders(c.json(body));
 });
 
+app.get('/api/ops/version', async (c) => {
+  const bypass = c.env.DEV_AUTH_BYPASS === '1';
+  let allowed = false;
+
+  if (!bypass) {
+    const sessionAuth = c.get('auth') as AccessContext | undefined;
+    if (canSeeVersionChip(sessionAuth)) {
+      allowed = true;
+    } else {
+      const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+      if (jwt) {
+        const accessAuth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+        allowed = canSeeVersionChip(accessAuth);
+      }
+    }
+    if (!allowed) {
+      return c.text('Forbidden', 403);
+    }
+  }
+
+  const body = await getVersion(c.env);
+  return withSecurityHeaders(c.json(body));
+});
+
 app.get('/api/ops/health', async (c) => {
   const auth = c.get('auth');
   if (!auth) {
@@ -3276,6 +3320,7 @@ app.get('/ops', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
 
   const readOnly = await isReadOnly(c.env.DB);
   if (readOnly) {
@@ -3298,6 +3343,7 @@ app.get('/alerts', async (c) => {
     }
   })();
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
 
   const url = new URL(c.req.url);
   const state = url.searchParams.get('state') ?? undefined;
@@ -3356,6 +3402,7 @@ app.get('/clients/:clientId/slo', async (c) => {
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
+  await attachVersionInfo(c, auth);
   const clientId = c.req.param('clientId');
   if (!canAccessClient(auth, clientId)) {
     return c.text('Forbidden', 403);
@@ -3392,6 +3439,7 @@ app.get('/devices', async (c) => {
     return c.text('Unauthorized', 401);
   }
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
 
   let sql = `SELECT d.device_id, d.site_id, s.name AS site_name, s.region,
                     d.online, d.last_seen_at,
@@ -3432,6 +3480,7 @@ app.get('/admin/archive', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   const url = new URL(c.req.url);
   const parsed = parseDateParam(url.searchParams.get('date'));
   const fallback = addUtcDays(startOfUtcDay(new Date()), -1);
@@ -3451,6 +3500,7 @@ app.get('/admin/presets', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   return c.render(<AdminPresetsPage />);
 });
 
@@ -3465,6 +3515,7 @@ app.get('/admin/sites', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   return c.render(<AdminSitesPage />);
 });
 
@@ -3479,6 +3530,7 @@ app.get('/admin/email', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   return c.render(<AdminEmailPage />);
 });
 
@@ -3493,6 +3545,7 @@ app.get('/admin/maintenance', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   return c.render(<AdminMaintenancePage />);
 });
 
@@ -3507,6 +3560,7 @@ app.get('/admin/settings', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   return c.render(<AdminSettingsPage />);
 });
 
@@ -3521,6 +3575,7 @@ app.get('/admin/reports/outbox', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   const url = new URL(c.req.url);
   const getRaw = (key: string) => url.searchParams.get(key) ?? '';
   const statusValue = url.searchParams.has('status') ? getRaw('status') : 'generated';
@@ -3557,6 +3612,7 @@ app.get('/admin/reports', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   return c.render(<AdminReportsPage />);
 });
 
@@ -3571,6 +3627,7 @@ app.get('/admin/reports/history', async (c) => {
   }
   requireRole(auth, ['admin', 'ops']);
   await attachDeployRibbon(c, auth);
+  await attachVersionInfo(c, auth);
   const url = new URL(c.req.url);
   const get = (key: string) => {
     const value = url.searchParams.get(key);

@@ -486,6 +486,29 @@ svg.spark.crit {
   background: #2ae580;
 }
 
+.ver-chip-spa {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--gb-border, rgba(255, 255, 255, 0.1));
+  color: #9fb0c0;
+  background: rgba(15, 20, 32, 0.6);
+  font-weight: 600;
+  font-size: 11px;
+  backdrop-filter: blur(4px);
+}
+
+.ver-chip-spa .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.ver-chip-spa .warn {
+  color: var(--gb-warn, #f2c94c);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .deploy-chip .dot {
     box-shadow: none;

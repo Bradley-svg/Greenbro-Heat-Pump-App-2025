@@ -5,6 +5,7 @@ import { ROUTE_ROLES } from '@utils/rbac';
 import type { Role } from '@utils/types';
 import { useReadOnly } from '@hooks/useReadOnly';
 import { useDeployRibbon } from '@hooks/useDeployRibbon';
+import { useVersion } from '@hooks/useVersion';
 
 interface NavItem {
   to: string;
@@ -27,6 +28,7 @@ export function AppLayout(): JSX.Element {
   const { ro, canToggle, toggle } = useReadOnly();
   const toast = useToast();
   const { deploy, dismiss } = useDeployRibbon();
+  const { data: version } = useVersion();
 
   const permittedNav = NAV_ITEMS.filter((item) => hasAnyRole(user?.roles ?? [], ROUTE_ROLES[item.roleKey]));
   const allowToggle = Boolean(user?.roles.includes('admin')) && canToggle;
@@ -79,6 +81,16 @@ export function AppLayout(): JSX.Element {
                 <button className="x" aria-label="Dismiss readiness banner" onClick={dismiss} type="button">
                   ×
                 </button>
+              </div>
+            ) : null}
+            {version ? (
+              <div
+                className="ver-chip-spa"
+                title={`Build ${version.build_sha}${version.build_date ? ` • ${version.build_date}` : ''}`}
+              >
+                <span className="mono">{version.build_sha.slice(0, 7)}</span>
+                {version.build_date ? <span className="muted"> · {version.build_date}</span> : null}
+                {version.schema_ok === false ? <span className="warn"> · schema?</span> : null}
               </div>
             ) : null}
             <div className="app-topbar__account">

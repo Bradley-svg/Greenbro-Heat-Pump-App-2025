@@ -20,6 +20,9 @@ export interface Env {
   WRITE_MIN_C?: string;
   WRITE_MAX_C?: string;
   DEV_AUTH_BYPASS?: string;
+  BUILD_SHA?: string;
+  BUILD_DATE?: string;
+  BUILD_SOURCE?: string;
 }
 
 export type TelemetryPayload = {
