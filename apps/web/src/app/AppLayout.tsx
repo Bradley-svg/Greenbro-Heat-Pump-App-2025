@@ -17,6 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/commissioning', label: 'Commissioning', roleKey: 'commissioning' },
   { to: '/ops', label: 'Ops', roleKey: 'ops' },
   { to: '/admin', label: 'Admin', roleKey: 'admin' },
+  { to: '/admin/archive', label: 'Archive', roleKey: 'admin' },
 ];
 
 export function AppLayout(): JSX.Element {

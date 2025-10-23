@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './AppLayout';
 import { useAuth } from './providers/AuthProvider';
 import { FullScreenLoader } from '@components/FullScreenLoader';
@@ -14,6 +14,7 @@ import { CommissioningPage } from '@pages/CommissioningPage';
 import OpsPage from '@pages/ops/OpsPage';
 import { AdminPage } from '@pages/AdminPage';
 import { UnauthorizedPage } from '@pages/UnauthorizedPage';
+import { AdminArchivePage } from '@pages/AdminArchivePage';
 
 export function AppRouter(): JSX.Element {
   return (
@@ -75,10 +76,13 @@ export function AppRouter(): JSX.Element {
             path="admin"
             element={
               <RoleGuard roles={ROUTE_ROLES.admin}>
-                <AdminPage />
+                <Outlet />
               </RoleGuard>
             }
-          />
+          >
+            <Route index element={<AdminPage />} />
+            <Route path="archive" element={<AdminArchivePage />} />
+          </Route>
         </Route>
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Routes>

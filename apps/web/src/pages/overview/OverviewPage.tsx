@@ -66,7 +66,7 @@ export default function OverviewPage() {
         return [];
       }
       const json = await res.json();
-      const series = Array.isArray(json?.series) ? json.series : [];
+      const series: unknown[] = Array.isArray(json?.series) ? json.series : [];
       return series.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
     },
     refetchInterval: 10000,

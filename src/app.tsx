@@ -413,6 +413,64 @@ async function listArchiveRows(DB: D1Database, day: Date): Promise<AdminArchiveR
   }
 }
 
+function sanitizeArchiveFileName(key: string): string {
+  const base = key
+    .split('/')
+    .filter((part) => part.length > 0)
+    .at(-1);
+  const fallback = base && base.trim().length > 0 ? base : 'export.ndjson';
+  const sanitized = fallback.replace(/[^a-zA-Z0-9_.-]+/g, '_');
+  if (/\.[A-Za-z0-9]+$/.test(sanitized)) {
+    return sanitized;
+  }
+  return `${sanitized}.ndjson`;
+}
+
+function ensureGzSuffix(name: string): string {
+  return name.endsWith('.gz') ? name : `${name}.gz`;
+}
+
+function parseGzipLevel(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const clamped = Math.round(Math.min(9, Math.max(1, parsed)));
+  return clamped;
+}
+
+function maybeGzip(stream: ReadableStream<Uint8Array>, level: number | null): ReadableStream<Uint8Array> | null {
+  if (typeof CompressionStream === 'undefined') {
+    return null;
+  }
+
+  const Ctor = CompressionStream as unknown as {
+    new (format: string, options?: { level?: number }): CompressionStream;
+  };
+
+  let gzip: CompressionStream;
+  try {
+    gzip = level != null ? new Ctor('gzip', { level }) : new Ctor('gzip');
+  } catch (error) {
+    try {
+      gzip = new Ctor('gzip');
+    } catch (fallbackError) {
+      console.warn('CompressionStream unavailable', fallbackError);
+      return null;
+    }
+  }
+
+  try {
+    return stream.pipeThrough(gzip);
+  } catch (error) {
+    console.warn('gzip transform failed', error);
+    return null;
+  }
+}
+
 type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number };
 type FastBurnAction = 'opened' | 'closed' | 'none';
 type FastBurnResult = { snapshot: BurnSnapshot; action: FastBurnAction };
@@ -821,24 +879,38 @@ app.get('/api/admin/archive/download', async (c) => {
     return c.text('Bad Request', 400);
   }
   const object = await c.env.REPORTS.get(key);
-  if (!object) {
+  if (!object || !object.body) {
     return c.text('Not Found', 404);
   }
+
+  const shouldGzip = url.searchParams.get('gz') === '1';
+  const gzipLevel = shouldGzip ? parseGzipLevel(url.searchParams.get('gzl')) : null;
+
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   if (!headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/x-ndjson');
   }
   headers.set('Cache-Control', 'private, max-age=0, must-revalidate');
-  const safeName = (() => {
-    const base = key.split('/')
-      .filter((part) => part.length > 0)
-      .at(-1) || 'export.ndjson';
-    const sanitized = base.replace(/[^a-zA-Z0-9_.-]+/g, '_');
-    return sanitized.endsWith('.ndjson') ? sanitized : `${sanitized}.ndjson`;
-  })();
-  headers.set('Content-Disposition', `attachment; filename="${safeName}"`);
-  return new Response(object.body, { headers });
+
+  const safeName = sanitizeArchiveFileName(key);
+  let appliedGzip = false;
+  let body: ReadableStream<Uint8Array> | null = object.body;
+
+  if (shouldGzip && body) {
+    const compressed = maybeGzip(body, gzipLevel);
+    if (compressed) {
+      body = compressed;
+      appliedGzip = true;
+      headers.set('Content-Type', 'application/gzip');
+      headers.delete('Content-Length');
+    }
+  }
+
+  const finalName = appliedGzip ? ensureGzSuffix(safeName) : safeName;
+  headers.set('Content-Disposition', `attachment; filename="${finalName}"`);
+
+  return new Response(body, { headers });
 });
 
 // --- Ingest: Telemetry & Heartbeat ---
