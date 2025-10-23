@@ -14,7 +14,15 @@ function KPI({ label, value, band, children }:{
   return (
     <div className={`kpi ${band}`}>
       <div className="label">{label}</div>
-      <div className="value">{value}</div>
+      <div
+        className="value"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-label={`${label}: ${value}`}
+      >
+        {value}
+      </div>
       {children}
     </div>
   );

@@ -18,7 +18,15 @@ function CompactStat({
   return (
     <div className={`compact-dashboard__stat compact-dashboard__stat--${band}`}>
       <span className="compact-dashboard__stat-label">{label}</span>
-      <span className="compact-dashboard__stat-value">{value}</span>
+      <span
+        className="compact-dashboard__stat-value"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        aria-label={`${label}: ${value}`}
+      >
+        {value}
+      </span>
       {helper ? <span className="compact-dashboard__stat-helper">{helper}</span> : null}
     </div>
   );

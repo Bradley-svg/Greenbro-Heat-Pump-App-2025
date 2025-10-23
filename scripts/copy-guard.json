@@ -1,7 +1,7 @@
 {
   "banned": [
-    { "pattern": "\\\bCenter\\\b", "hint": "Use ‘Centre’." },
-    { "pattern": "\\\bFleet\\\b", "hint": "Use ‘devices’." }
+    { "pattern": "\\\bCenter\\\b", "hint": "Use ‘Centre’ (British English)." },
+    { "pattern": "\\\bfleet\\\b", "hint": "Use ‘devices’ unless legally required." }
   ],
   "ignorePaths": ["**/node_modules/**", "**/dist/**", "**/*.png", "**/*.svg"]
 }

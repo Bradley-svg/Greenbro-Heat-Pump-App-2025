@@ -432,62 +432,108 @@ async function listArchiveRows(DB: D1Database, day: Date): Promise<AdminArchiveR
   }
 }
 
-function sanitizeArchiveFileName(key: string): string {
-  const base = key
-    .split('/')
-    .filter((part) => part.length > 0)
-    .at(-1);
-  const fallback = base && base.trim().length > 0 ? base : 'export.ndjson';
-  const sanitized = fallback.replace(/[^a-zA-Z0-9_.-]+/g, '_');
-  if (/\.[A-Za-z0-9]+$/.test(sanitized)) {
-    return sanitized;
-  }
-  return `${sanitized}.ndjson`;
+async function sha256Hex(input: string | ArrayBuffer | Uint8Array): Promise<string> {
+  const data =
+    typeof input === 'string'
+      ? new TextEncoder().encode(input)
+      : input instanceof ArrayBuffer
+        ? new Uint8Array(input)
+        : input;
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
-function ensureGzSuffix(name: string): string {
-  return name.endsWith('.gz') ? name : `${name}.gz`;
+function formatCsvValue(value: unknown): string {
+  if (value == null) {
+    return '';
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : '';
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  const escaped = str.replace(/"/g, '""');
+  return /[",\r\n]/.test(str) ? `"${escaped}"` : escaped;
 }
 
-function parseGzipLevel(value: string | null): number | null {
-  if (!value) {
-    return null;
-  }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return null;
-  }
-  const clamped = Math.round(Math.min(9, Math.max(1, parsed)));
-  return clamped;
-}
+function ndjsonToCsvStream(
+  stream: ReadableStream<Uint8Array>,
+  columns?: string[],
+): ReadableStream<Uint8Array> {
+  const initialColumns = columns && columns.length > 0 ? [...columns] : undefined;
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      const encoder = new TextEncoder();
+      let buffer = '';
+      let headerWritten = false;
+      let cols = initialColumns;
 
-function maybeGzip(stream: ReadableStream<Uint8Array>, level: number | null): ReadableStream<Uint8Array> | null {
-  if (typeof CompressionStream === 'undefined') {
-    return null;
-  }
+      const writeHeader = () => {
+        if (!headerWritten && cols && cols.length > 0) {
+          controller.enqueue(encoder.encode(cols.join(',') + '\n'));
+          headerWritten = true;
+        }
+      };
 
-  const Ctor = CompressionStream as unknown as {
-    new (format: string, options?: { level?: number }): CompressionStream;
-  };
+      const pushRow = (record: Record<string, unknown>) => {
+        if (!cols || cols.length === 0) {
+          cols = Object.keys(record);
+        }
+        if (!cols || cols.length === 0) {
+          return;
+        }
+        writeHeader();
+        const values = cols.map((key) => formatCsvValue(record[key]));
+        controller.enqueue(encoder.encode(values.join(',') + '\n'));
+      };
 
-  let gzip: CompressionStream;
-  try {
-    gzip = level != null ? new Ctor('gzip', { level }) : new Ctor('gzip');
-  } catch (error) {
-    try {
-      gzip = new Ctor('gzip');
-    } catch (fallbackError) {
-      console.warn('CompressionStream unavailable', fallbackError);
-      return null;
-    }
-  }
+      const processLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return;
+        }
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === 'object') {
+            pushRow(parsed as Record<string, unknown>);
+          }
+        } catch (error) {
+          console.warn('ndjson parse failed', error);
+        }
+      };
 
-  try {
-    return stream.pipeThrough(gzip);
-  } catch (error) {
-    console.warn('gzip transform failed', error);
-    return null;
-  }
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          let newlineIndex = buffer.indexOf('\n');
+          while (newlineIndex !== -1) {
+            const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
+            buffer = buffer.slice(newlineIndex + 1);
+            processLine(line);
+            newlineIndex = buffer.indexOf('\n');
+          }
+        }
+        buffer += decoder.decode();
+        if (buffer.length > 0) {
+          processLine(buffer.replace(/\r$/, ''));
+        }
+        writeHeader();
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
 }
 
 type BurnSnapshot = { total: number; ok: number; errRate: number; burn: number };
@@ -954,102 +1000,87 @@ app.get('/api/admin/archive', async (c) => {
 });
 
 app.get('/api/admin/archive/download', async (c) => {
-  const auth = c.get('auth');
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  const auth = jwt ? await verifyAccessJWT(c.env, jwt).catch(() => null) : null;
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
-  const url = new URL(c.req.url);
-  const key = url.searchParams.get('key');
+
+  const key = c.req.query('key');
   if (!key) {
     return c.text('Bad Request', 400);
   }
-  const object = await c.env.REPORTS.get(key);
-  if (!object || !object.body) {
+  const fmt = (c.req.query('format') || 'ndjson').toLowerCase();
+  const cols = c
+    .req
+    .query('columns')
+    ?.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const gz = c.req.query('gz') === '1' || c.req.query('gzip') === '1';
+  const gzl = Math.max(1, Math.min(9, Number(c.req.query('gzl') || 0) || 0));
+  const stage = c.req.query('stage') === '1';
+
+  const bucket: any = (c.env as any).ARCHIVE || (c.env as any).REPORTS;
+  const src = await bucket.get(key);
+  if (!src) {
     return c.text('Not Found', 404);
   }
 
-  const preset = url.searchParams.get('preset') ?? '';
-  const stage = url.searchParams.get('stage') === '1';
-  const columnsParam = url.searchParams.get('columns');
-  const cols = columnsParam
-    ? columnsParam
-        .split(',')
-        .map((column) => column.trim())
-        .filter((column) => column.length > 0)
-    : [];
+  const base = (key.split('/').pop() || 'export').replace(/\.ndjson$/, '');
 
-  const shouldGzip = url.searchParams.get('gz') === '1';
-  const gzipLevel = shouldGzip ? parseGzipLevel(url.searchParams.get('gzl')) : null;
-
-  const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  if (!headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/x-ndjson');
-  }
-  headers.set('Cache-Control', 'private, max-age=0, must-revalidate');
-
-  const safeName = sanitizeArchiveFileName(key);
-  const withoutGz = safeName.endsWith('.gz') ? safeName.slice(0, -3) : safeName;
-  const lastDot = withoutGz.lastIndexOf('.');
-  const fmt = lastDot !== -1 ? withoutGz.slice(lastDot + 1) : 'ndjson';
-  const baseWithSig = lastDot !== -1 ? withoutGz.slice(0, lastDot) : withoutGz;
-  const baseMatch = /^([A-Za-z0-9_-]+)-/.exec(baseWithSig);
-  const base = baseMatch ? baseMatch[1] : baseWithSig;
-
-  const originalBuffer = await new Response(object.body).arrayBuffer();
-
-  let responseBuffer = originalBuffer;
-  let appliedGzip = false;
-
-  if (shouldGzip) {
-    const originalStream = new Response(originalBuffer).body;
-    if (originalStream) {
-      const compressed = maybeGzip(originalStream, gzipLevel);
-      if (compressed) {
-        responseBuffer = await new Response(compressed).arrayBuffer();
-        appliedGzip = true;
-        headers.set('Content-Type', 'application/gzip');
-        headers.delete('Content-Length');
+  const withGzip = (stream: ReadableStream<Uint8Array>) => {
+    if (!gz) return stream;
+    try {
+      return stream.pipeThrough(new (globalThis as any).CompressionStream('gzip', { level: gzl || 6 }));
+    } catch (error) {
+      try {
+        return stream.pipeThrough(new (globalThis as any).CompressionStream('gzip'));
+      } catch (fallbackError) {
+        console.warn('gzip unavailable', error, fallbackError);
+        return stream;
       }
     }
-  }
-
-  if (!appliedGzip) {
-    headers.set('Content-Type', headers.get('Content-Type') ?? 'application/x-ndjson');
-  }
+  };
 
   if (stage) {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${key}:${preset}:${cols.join(',')}`));
-    const sig = Array.from(new Uint8Array(digest))
-      .map((byte) => byte.toString(16).padStart(2, '0'))
-      .join('')
-      .slice(0, 12);
+    const sig = await sha256Hex(JSON.stringify({ key, fmt, cols, gz, gzl }));
     const stamp = new Date().toISOString().slice(0, 10);
-    const idPart = preset && preset !== '__all__' ? `p-${preset}-` : '';
-    const stagedKey = `staged/${stamp}/${base}-${idPart}${sig}.${fmt}${appliedGzip ? '.gz' : ''}`;
-    const bucket: any = (c.env as any).ARCHIVE || (c.env as any).REPORTS;
-    try {
-      if (bucket?.put) {
-        await bucket.put(stagedKey, responseBuffer, {
-          httpMetadata: {
-            contentType: fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/x-ndjson',
-          },
-          customMetadata: {
-            preset: preset || '',
-            columns: cols.join(','),
-          },
-        });
-      }
-    } catch (error) {
-      console.warn('archive staging failed', error);
+    const stagedKey = `staged/${stamp}/${base}-${sig}.${fmt}${gz ? '.gz' : ''}`;
+    if (!(await bucket.head?.(stagedKey))) {
+      const body = withGzip(
+        fmt === 'csv'
+          ? ndjsonToCsvStream(src.body as ReadableStream<Uint8Array>, cols?.length ? cols : undefined)
+          : (src.body as ReadableStream<Uint8Array>),
+      );
+      await bucket.put(stagedKey, body, {
+        httpMetadata: { contentType: fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/x-ndjson' },
+      });
     }
+    return c.redirect(`/api/admin/archive/object?key=${encodeURIComponent(stagedKey)}`, 302);
   }
 
-  const finalName = appliedGzip ? ensureGzSuffix(safeName) : safeName;
-  headers.set('Content-Disposition', `attachment; filename="${finalName}"`);
+  if (fmt === 'csv') {
+    const s = ndjsonToCsvStream(src.body as ReadableStream<Uint8Array>, cols?.length ? cols : undefined);
+    return new Response(withGzip(s), {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${base}.csv${gz ? '.gz' : ''}"`,
+        'Cache-Control': 'no-store',
+        ...(gz ? { 'Content-Encoding': 'gzip' } : {}),
+      },
+    });
+  }
 
-  return new Response(responseBuffer, { headers });
+  return new Response(withGzip(src.body as ReadableStream<Uint8Array>), {
+    headers: {
+      'Content-Type': 'application/x-ndjson',
+      'Content-Disposition': `attachment; filename="${base}.ndjson${gz ? '.gz' : ''}"`,
+      'Cache-Control': 'no-store',
+      ...(gz ? { 'Content-Encoding': 'gzip' } : {}),
+    },
+  });
 });
 
 app.get('/api/admin/archive/staged-for', async (c) => {

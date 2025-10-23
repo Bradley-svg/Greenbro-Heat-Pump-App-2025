@@ -61,11 +61,20 @@ function GaugeCard({ title, value, target, invert=false, fmt=pct, subtitle }:{
   const bar = <div style={{ height:8, background:'#e5e7eb', borderRadius:999 }}>
     <div style={{ width:`${(frac*100).toFixed(1)}%`, height:8, borderRadius:999, background: pass==null? '#94a3b8' : pass? '#22c55e' : '#ef4444' }} />
   </div>;
+  const display = fmt(v ?? undefined);
   return (
     <div style={{ border:'1px solid #ddd', padding:12, borderRadius:8 }}>
       <div style={{ color:'#666' }}>{title}</div>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-        <div style={{ fontSize:24 }}>{fmt(v ?? undefined)}</div>
+        <div
+          style={{ fontSize:24 }}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          aria-label={`${title}: ${display}`}
+        >
+          {display}
+        </div>
         <div style={{ fontSize:12, color:'#666' }}>{subtitle ?? `target ${fmt(target)}`}</div>
       </div>
       {bar}

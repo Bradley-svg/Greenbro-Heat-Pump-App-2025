@@ -1769,6 +1769,34 @@ const maintenanceScript = `
 ${readOnlySnippet}
 `;
 
+export function Page({
+  title = 'GreenBro Control Centre',
+  head,
+  children,
+}:{
+  title?: string;
+  head?: JSX.Element | JSX.Element[];
+  children: JSX.Element;
+}) {
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>{title}</title>
+        {/* Brand favicon (keeps light/dark crisp because SVG) */}
+        <link rel="icon" type="image/svg+xml" href="/brand/logo.svg" />
+        {/* Theme colour for PWA-ish surfaces */}
+        <meta name="theme-color" content="#0b0e12" />
+        {/* Shared brand CSS already served from Worker */}
+        <link rel="stylesheet" href="/brand.css" />
+        {head}
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+
 export const renderer = jsxRenderer(({ children }) => {
   const c = useRequestContext();
   const path = c.req.path;
@@ -1782,14 +1810,29 @@ export const renderer = jsxRenderer(({ children }) => {
     return path === href || path.startsWith(`${href}/`);
   };
 
+  const baseTitle = 'GreenBro Control Centre';
+  const pageTitle = (() => {
+    if (path === '/' || path.startsWith('/overview')) return `${baseTitle} — Overview`;
+    if (path.startsWith('/ops')) return `${baseTitle} — Ops`;
+    if (path.startsWith('/alerts')) return `${baseTitle} — Alerts`;
+    if (path.startsWith('/devices')) return `${baseTitle} — Devices`;
+    if (path.startsWith('/admin/archive')) return `${baseTitle} — Archive`;
+    if (path.startsWith('/admin/presets')) return `${baseTitle} — Presets`;
+    if (path.startsWith('/admin/reports/outbox')) return `${baseTitle} — Report Outbox`;
+    if (path.startsWith('/admin/reports/history')) return `${baseTitle} — Report History`;
+    if (path.startsWith('/admin/reports')) return `${baseTitle} — Reports`;
+    if (path.startsWith('/admin/email')) return `${baseTitle} — Email`;
+    if (path.startsWith('/admin/maintenance')) return `${baseTitle} — Maintenance`;
+    if (path.startsWith('/admin/settings')) return `${baseTitle} — Settings`;
+    if (path.startsWith('/admin/sites')) return `${baseTitle} — Sites`;
+    if (path.startsWith('/clients/')) return `${baseTitle} — Client SLO`;
+    return baseTitle;
+  })();
+
   return (
-    <html lang="en">
-      <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>GreenBro Control Centre — Devices</title>
-        <link rel="icon" href="/brand/logo.svg" type="image/svg+xml" />
-        <link rel="stylesheet" href="/brand.css" />
+    <Page
+      title={pageTitle}
+      head={
         <style>{`
           body{margin:0;background:var(--gb-bg);color:var(--gb-ink);font-family:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
           a{color:var(--gb-primary-500)}
@@ -1889,56 +1932,55 @@ export const renderer = jsxRenderer(({ children }) => {
           .archive-table{width:100%;border-collapse:collapse;margin-top:12px}
           .archive-table th,.archive-table td{padding:10px 12px;border-bottom:1px solid rgba(11,14,18,0.08);text-align:left}
         `}</style>
-      </head>
-      <body>
-        <header>
-          <span class="brand-mark"><img src="/brand/logo.svg" alt="GreenBro" height="24" width="24" /><span>GreenBro Control Centre</span></span>
-          <nav>
-            <a href="/" class={isActive('/') ? 'active' : undefined}>
-              Overview
-            </a>
-            <a href="/ops" class={isActive('/ops') ? 'active' : undefined}>
-              Ops &amp; Security
-            </a>
-            <a href="/alerts" class={isActive('/alerts') ? 'active' : undefined}>
-              Alerts
-            </a>
-            <a href="/devices" class={isActive('/devices') ? 'active' : undefined}>
-              Devices
-            </a>
-            <a href="/admin/sites" class={isActive('/admin/sites') ? 'active' : undefined}>
-              Admin Sites
-            </a>
-            <a href="/admin/reports" class={isActive('/admin/reports') ? 'active' : undefined}>
-              Reports
-            </a>
-            <a
-              href="/admin/reports/outbox"
-              class={isActive('/admin/reports/outbox') ? 'active' : undefined}
-            >
-              Outbox
-            </a>
-            <a href="/admin/email" class={isActive('/admin/email') ? 'active' : undefined}>
-              Email
-            </a>
-            <a href="/admin/maintenance" class={isActive('/admin/maintenance') ? 'active' : undefined}>
-              Maintenance
-            </a>
-            <a href="/admin/archive" class={isActive('/admin/archive') ? 'active' : undefined}>
-              Archive
-            </a>
-            <a href="/admin/presets" class={isActive('/admin/presets') ? 'active' : undefined}>
-              Presets
-            </a>
-            <a href="/admin/settings" class={isActive('/admin/settings') ? 'active' : undefined}>
-              Admin Settings
-            </a>
-          </nav>
-        </header>
-        <div class="wrap">{children}</div>
-        <script dangerouslySetInnerHTML={{ __html: readOnlyScript }} />
-      </body>
-    </html>
+      }
+    >
+      <header>
+        <span class="brand-mark"><img src="/brand/logo.svg" alt="GreenBro" height="24" width="24" /><span>GreenBro Control Centre</span></span>
+        <nav>
+          <a href="/" class={isActive('/') ? 'active' : undefined}>
+            Overview
+          </a>
+          <a href="/ops" class={isActive('/ops') ? 'active' : undefined}>
+            Ops &amp; Security
+          </a>
+          <a href="/alerts" class={isActive('/alerts') ? 'active' : undefined}>
+            Alerts
+          </a>
+          <a href="/devices" class={isActive('/devices') ? 'active' : undefined}>
+            Devices
+          </a>
+          <a href="/admin/sites" class={isActive('/admin/sites') ? 'active' : undefined}>
+            Admin Sites
+          </a>
+          <a href="/admin/reports" class={isActive('/admin/reports') ? 'active' : undefined}>
+            Reports
+          </a>
+          <a
+            href="/admin/reports/outbox"
+            class={isActive('/admin/reports/outbox') ? 'active' : undefined}
+          >
+            Outbox
+          </a>
+          <a href="/admin/email" class={isActive('/admin/email') ? 'active' : undefined}>
+            Email
+          </a>
+          <a href="/admin/maintenance" class={isActive('/admin/maintenance') ? 'active' : undefined}>
+            Maintenance
+          </a>
+          <a href="/admin/archive" class={isActive('/admin/archive') ? 'active' : undefined}>
+            Archive
+          </a>
+          <a href="/admin/presets" class={isActive('/admin/presets') ? 'active' : undefined}>
+            Presets
+          </a>
+          <a href="/admin/settings" class={isActive('/admin/settings') ? 'active' : undefined}>
+            Admin Settings
+          </a>
+        </nav>
+      </header>
+      <div class="wrap">{children}</div>
+      <script dangerouslySetInnerHTML={{ __html: readOnlyScript }} />
+    </Page>
   );
 });
 
@@ -1949,26 +1991,54 @@ export function OverviewPage(props: { data: OverviewData }) {
   const deltaRange = rangeLabel(data.series.deltaT, 1);
   const copRange = rangeLabel(data.series.cop, 2);
   const initialJson = encodeJson(data);
+  const kpiOnlineValue = Number.isFinite(data.kpis.onlinePct) ? data.kpis.onlinePct.toFixed(1) : '0.0';
+  const kpiOnlineDisplay = `${kpiOnlineValue}%`;
+  const kpiAlertsDisplay = String(data.kpis.openAlerts ?? 0);
+  const kpiCopDisplay =
+    typeof data.kpis.avgCop === 'number' && Number.isFinite(data.kpis.avgCop)
+      ? data.kpis.avgCop.toFixed(2)
+      : '—';
 
   return (
     <div id="overview" class="overview-layout">
       <div class="grid overview-kpis">
         <div class="card kpi-card">
           <h3>Online %</h3>
-          <div class="kpi-value" data-kpi="online">
-            {Number.isFinite(data.kpis.onlinePct) ? data.kpis.onlinePct.toFixed(1) : '0.0'}%
+          <div
+            class="kpi-value"
+            data-kpi="online"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Online %: ${kpiOnlineDisplay}`}
+          >
+            {kpiOnlineDisplay}
           </div>
         </div>
         <div class="card kpi-card">
           <h3>Open alerts</h3>
-          <div class="kpi-value" data-kpi="alerts">{data.kpis.openAlerts}</div>
+          <div
+            class="kpi-value"
+            data-kpi="alerts"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Open alerts: ${kpiAlertsDisplay}`}
+          >
+            {kpiAlertsDisplay}
+          </div>
         </div>
         <div class="card kpi-card">
           <h3>Avg COP</h3>
-          <div class="kpi-value" data-kpi="cop">
-            {typeof data.kpis.avgCop === 'number' && Number.isFinite(data.kpis.avgCop)
-              ? data.kpis.avgCop.toFixed(2)
-              : '—'}
+          <div
+            class="kpi-value"
+            data-kpi="cop"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Avg COP: ${kpiCopDisplay}`}
+          >
+            {kpiCopDisplay}
           </div>
         </div>
       </div>
@@ -2060,6 +2130,10 @@ export function OpsPage(props: { snapshot: OpsSnapshot }) {
   const canaryLabelBase = canaryState === 'ok' ? 'Canary OK' : canaryState === 'warn' ? 'Canary Warn' : 'Canary Crit';
   const canaryLabel = canaryLabelBase + ' · ' + (canaryMinutes != null ? canaryMinutes + 'm' : '—');
   const initialJson = encodeJson(snap);
+  const burnDisplay = `×${burnRate.toFixed(2)}`;
+  const totalSuccessDisplay = `${total.successPct.toFixed(2)}%`;
+  const windowSuccessDisplay = `${window1k.successPct.toFixed(2)}%`;
+  const heartbeatDisplay = `${heartbeat.onlinePct.toFixed(1)}%`;
 
   return (
     <div class="card" id="ops-slo">
@@ -2077,28 +2151,64 @@ export function OpsPage(props: { snapshot: OpsSnapshot }) {
       <div class="ops-grid">
         <div class="ops-tile">
           <span class="ops-label">Ingest burn (1k ev)</span>
-          <span class="ops-value" data-field="burn-rate">×{burnRate.toFixed(2)}</span>
+          <span
+            class="ops-value"
+            data-field="burn-rate"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Ingest burn: ${burnDisplay}`}
+          >
+            {burnDisplay}
+          </span>
           <span class="ops-status" data-field="burn-status" data-state={burnState}>
             {burnLabel}
           </span>
         </div>
         <div class="ops-tile">
           <span class="ops-label">Ingest success (total)</span>
-          <span class="ops-value" data-field="ingest-total-success">{total.successPct.toFixed(2)}%</span>
+          <span
+            class="ops-value"
+            data-field="ingest-total-success"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Ingest success total: ${totalSuccessDisplay}`}
+          >
+            {totalSuccessDisplay}
+          </span>
           <span class="ops-subtext" data-field="ingest-total-count">
             {fmt(total.success)} ok / {fmt(total.total)} total ({fmt(total.error)} errors)
           </span>
         </div>
         <div class="ops-tile">
           <span class="ops-label">Ingest success (1k window)</span>
-          <span class="ops-value" data-field="ingest-recent-success">{window1k.successPct.toFixed(2)}%</span>
+          <span
+            class="ops-value"
+            data-field="ingest-recent-success"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Ingest success 1k window: ${windowSuccessDisplay}`}
+          >
+            {windowSuccessDisplay}
+          </span>
           <span class="ops-subtext" data-field="ingest-recent-count">
             {fmt(window1k.success)} ok / {fmt(window1k.total)} ({fmt(window1k.error)} errors)
           </span>
         </div>
         <div class="ops-tile">
           <span class="ops-label">Heartbeat online now</span>
-          <span class="ops-value" data-field="heartbeat-pct">{heartbeat.onlinePct.toFixed(1)}%</span>
+          <span
+            class="ops-value"
+            data-field="heartbeat-pct"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`Heartbeat online: ${heartbeatDisplay}`}
+          >
+            {heartbeatDisplay}
+          </span>
           <span class="ops-subtext" data-field="heartbeat-count">
             {fmt(heartbeat.online)} / {fmt(heartbeat.total)} devices
           </span>

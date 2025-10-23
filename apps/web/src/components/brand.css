@@ -560,6 +560,18 @@ svg.spark.crit {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .kpi.neon,
+  .glow,
+  .sparkline path,
+  .sparkline .area {
+    animation: none !important;
+    transition: none !important;
+    filter: none !important;
+    box-shadow: none !important;
+  }
+}
+
 @media (forced-colors: active) {
   :root {
     --gb-primary-700: Highlight;
