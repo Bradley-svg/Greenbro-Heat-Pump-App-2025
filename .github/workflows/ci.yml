@@ -25,17 +25,20 @@ jobs:
         run: npm run -w apps/web build
 
       - name: Cache Playwright browsers
+        id: cache-pw-smoke
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/web/package-lock.json') }}
+          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/web/package-lock.json') }}-1.48.2
 
       - name: Install Playwright browsers
+        if: steps.cache-pw-smoke.outputs.cache-hit != 'true'
         working-directory: apps/web
-        run: npx playwright install --with-deps
+        run: npx playwright install --with-deps chromium
 
       - name: Run smoke tests
-        run: npx playwright test tests/mute-toast.spec.ts --config=tests/playwright.config.ts --reporter=line
+        working-directory: apps/web
+        run: npx playwright test tests/mute-toast.spec.ts --reporter=line
 
   a11y:
     runs-on: ubuntu-22.04
@@ -56,17 +59,20 @@ jobs:
         run: npm run -w apps/web build
 
       - name: Cache Playwright browsers
+        id: cache-pw-a11y
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/web/package-lock.json') }}
+          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/web/package-lock.json') }}-1.48.2
 
       - name: Install Playwright browsers
+        if: steps.cache-pw-a11y.outputs.cache-hit != 'true'
         working-directory: apps/web
-        run: npx playwright install --with-deps
+        run: npx playwright install --with-deps chromium
 
       - name: Run Axe checks
-        run: npx playwright test tests/a11y.spec.ts --config=tests/playwright.config.ts --reporter=line
+        working-directory: apps/web
+        run: npx playwright test tests/a11y.spec.ts --reporter=line
 
       - name: Start Worker (dev)
         env:

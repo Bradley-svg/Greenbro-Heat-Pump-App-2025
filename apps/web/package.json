@@ -9,7 +9,9 @@
     "preview": "vite preview --strictPort --host --port 4173",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test:smoke": "playwright test tests/mute-toast.spec.ts"
+    "test:smoke": "playwright test tests/mute-toast.spec.ts",
+    "test:a11y": "playwright test tests/a11y.spec.ts",
+    "axe:pdf": "playwright test tests/pdf-a11y.spec.ts -g @pdf"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.6.0",
@@ -23,7 +25,9 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.0",
     "@eslint/js": "^8.57.1",
+    "@playwright/test": "1.48.2",
     "@types/node": "^20.14.10",
     "@types/react": "^18.3.26",
     "@types/react-dom": "^18.3.7",
