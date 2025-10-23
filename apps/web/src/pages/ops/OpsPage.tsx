@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { Sparkline } from '@components/charts/Sparkline';
+import { useBurnNotifier } from '@hooks/useBurnNotifier';
 
 export default function OpsPage(){
+  useBurnNotifier({ refetchMs: 60000 }); // keep in sync with wallboard cadence
   const slo = useQuery({
     queryKey:['ops-slo'],
     queryFn: async ()=> (await (await fetch('/api/ops/slo')).json()),
