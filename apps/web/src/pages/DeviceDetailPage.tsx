@@ -3,6 +3,7 @@ import { Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@api/client';
 import { useAuthFetch } from '@hooks/useAuthFetch';
+import { useBaselineCompare } from '@hooks/useBaselineCompare';
 import type { DeviceLatestState, TelemetryPoint } from '@api/types';
 import { Legend } from '@components/charts/Legend';
 import {
@@ -37,6 +38,9 @@ interface CommissioningWindowSummary {
 interface DeviceBaselineSummary {
   baseline_id: string;
   created_at: string;
+  label: string | null;
+  is_golden: boolean;
+  expires_at: string | null;
   sample: {
     median: number | null;
     p25: number | null;
@@ -49,6 +53,8 @@ interface DeviceBaselineSummary {
   step_id: string | null;
 }
 
+type BaselineCompareResult = ReturnType<typeof useBaselineCompare>;
+
 export function DeviceDetailPage(): JSX.Element {
   const { deviceId } = useParams<{ deviceId: string }>();
   const [range, setRange] = useState<'24h' | '7d'>('24h');
@@ -56,6 +62,9 @@ export function DeviceDetailPage(): JSX.Element {
   const authFetch = useAuthFetch();
   const queryClient = useQueryClient();
   const [baselineSaving, setBaselineSaving] = useState(false);
+  const [baselineMutating, setBaselineMutating] = useState<string | null>(null);
+  const [drawerTab, setDrawerTab] = useState<'checks' | 'baselines'>('checks');
+  const [xDomain, setXDomain] = useState<[number, number] | null>(null);
   const focusAppliedRef = useRef(false);
   const deltaChartRef = useRef<SeriesChartHandle>(null);
   const copChartRef = useRef<SeriesChartHandle>(null);
@@ -146,6 +155,10 @@ export function DeviceDetailPage(): JSX.Element {
     [baselinesQuery.data],
   );
 
+  const deltaCompare = useBaselineCompare(deviceId, 'delta_t', xDomain);
+  const copCompare = useBaselineCompare(deviceId, 'cop', xDomain);
+  const currentCompare = useBaselineCompare(deviceId, 'current', xDomain);
+
   const lastWindow = useMemo<CommissioningWindowSummary | null>(() => {
     for (const window of windows) {
       if (ensureFiniteRange(window)) {
@@ -169,6 +182,21 @@ export function DeviceDetailPage(): JSX.Element {
     },
     [searchParams, setSearchParams],
   );
+
+  const onDomainChange = useCallback((domain: [number, number] | null) => {
+    setXDomain((current) => {
+      if (!domain && !current) {
+        return current;
+      }
+      if (!domain || !current) {
+        return domain;
+      }
+      if (current[0] === domain[0] && current[1] === domain[1]) {
+        return current;
+      }
+      return domain;
+    });
+  }, []);
 
   const focusWindow = useCallback(
     (window: CommissioningWindowSummary | null | undefined) => {
@@ -258,7 +286,9 @@ export function DeviceDetailPage(): JSX.Element {
         authFetch,
       );
       toast.success('Baseline saved');
+      setDrawerTab('baselines');
       await queryClient.invalidateQueries({ queryKey: ['dev:baselines', deviceId] });
+      await queryClient.invalidateQueries({ queryKey: ['baseline:cmp', deviceId] });
     } catch (error) {
       console.error('Failed to save baseline', error);
       toast.error('Could not save baseline');
@@ -266,6 +296,121 @@ export function DeviceDetailPage(): JSX.Element {
       setBaselineSaving(false);
     }
   }, [authFetch, deviceId, lastWindow, queryClient]);
+
+  const invalidateBaselineQueries = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['dev:baselines', deviceId] }),
+      queryClient.invalidateQueries({ queryKey: ['baseline:cmp', deviceId] }),
+    ]);
+  }, [deviceId, queryClient]);
+
+  const handleBaselineSetGolden = useCallback(
+    async (baselineId: string) => {
+      setBaselineMutating(baselineId);
+      try {
+        await apiFetch(
+          `/api/devices/${deviceId}/baselines/${baselineId}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ is_golden: true }),
+          },
+          authFetch,
+        );
+        toast.success('Baseline marked as golden');
+        await invalidateBaselineQueries();
+      } catch (error) {
+        console.error('Failed to set golden baseline', error);
+        toast.error('Could not update baseline');
+      } finally {
+        setBaselineMutating(null);
+      }
+    },
+    [authFetch, deviceId, invalidateBaselineQueries],
+  );
+
+  const handleBaselineLabelChange = useCallback(
+    async (baselineId: string, label: string | null) => {
+      const normalized = label?.trim() ?? '';
+      const nextValue = normalized.length ? normalized : null;
+      const current = baselines.find((baseline) => baseline.baseline_id === baselineId);
+      if ((current?.label ?? null) === nextValue) {
+        return;
+      }
+      setBaselineMutating(baselineId);
+      try {
+        await apiFetch(
+          `/api/devices/${deviceId}/baselines/${baselineId}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ label: nextValue }),
+          },
+          authFetch,
+        );
+        toast.success('Baseline label updated');
+        await invalidateBaselineQueries();
+      } catch (error) {
+        console.error('Failed to update baseline label', error);
+        toast.error('Could not update baseline');
+      } finally {
+        setBaselineMutating(null);
+      }
+    },
+    [authFetch, baselines, deviceId, invalidateBaselineQueries],
+  );
+
+  const handleBaselineExpiryChange = useCallback(
+    async (baselineId: string, expiresAt: string | null) => {
+      const current = baselines.find((baseline) => baseline.baseline_id === baselineId);
+      if ((current?.expires_at ?? null) === (expiresAt ?? null)) {
+        return;
+      }
+      setBaselineMutating(baselineId);
+      try {
+        await apiFetch(
+          `/api/devices/${deviceId}/baselines/${baselineId}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ expires_at: expiresAt }),
+          },
+          authFetch,
+        );
+        toast.success('Baseline expiry updated');
+        await invalidateBaselineQueries();
+      } catch (error) {
+        console.error('Failed to update baseline expiry', error);
+        toast.error('Could not update baseline');
+      } finally {
+        setBaselineMutating(null);
+      }
+    },
+    [authFetch, baselines, deviceId, invalidateBaselineQueries],
+  );
+
+  const handleBaselineDelete = useCallback(
+    async (baselineId: string) => {
+      setBaselineMutating(baselineId);
+      try {
+        await apiFetch(
+          `/api/devices/${deviceId}/baselines/${baselineId}`,
+          {
+            method: 'DELETE',
+          },
+          authFetch,
+        );
+        toast.success('Baseline deleted');
+        await invalidateBaselineQueries();
+      } catch (error) {
+        console.error('Failed to delete baseline', error);
+        toast.error('Could not delete baseline');
+      } finally {
+        setBaselineMutating(null);
+      }
+    },
+    [authFetch, deviceId, invalidateBaselineQueries],
+  );
 
   const baselineBandBuilder = useMemo<BandOverlayBuilder | undefined>(() => {
     const sample = baselines[0]?.sample;
@@ -468,6 +613,18 @@ export function DeviceDetailPage(): JSX.Element {
           deltaChartRef={deltaChartRef}
           copChartRef={copChartRef}
           currentChartRef={currentChartRef}
+          baselines={baselines.slice(0, 5)}
+          deltaCompare={deltaCompare}
+          copCompare={copCompare}
+          currentCompare={currentCompare}
+          drawerTab={drawerTab}
+          onDrawerTabChange={setDrawerTab}
+          onBaselineSetGolden={handleBaselineSetGolden}
+          onBaselineLabelChange={handleBaselineLabelChange}
+          onBaselineExpiryChange={handleBaselineExpiryChange}
+          onBaselineDelete={handleBaselineDelete}
+          baselineMutatingId={baselineMutating}
+          onDomainChange={onDomainChange}
         />
             <table className="data-table data-table--compact">
               <thead>
@@ -556,6 +713,50 @@ function MinMaxBadges({ pts }: { pts: SeriesPoint[] }) {
   );
 }
 
+function BaselineCompareChips({
+  result,
+  unit,
+  precision = 1,
+}: {
+  result: BaselineCompareResult;
+  unit: string;
+  precision?: number;
+}) {
+  if (result.isLoading) {
+    return <span className="chip">Loading…</span>;
+  }
+  if (result.isError) {
+    return <span className="chip crit">Compare failed</span>;
+  }
+  if (result.isFetching && !result.data) {
+    return <span className="chip">Checking…</span>;
+  }
+  const data = result.data;
+  if (!data?.hasBaseline) {
+    return <span className="chip">No baseline</span>;
+  }
+  const coverage = Number.isFinite(data.coverage) ? data.coverage ?? 0 : 0;
+  const coveragePct = Math.round((coverage || 0) * 100);
+  const drift = typeof data.drift === 'number' && Number.isFinite(data.drift) ? data.drift : null;
+  return (
+    <>
+      <span className="chip ok" title="Fraction of points within baseline IQR">
+        {coveragePct}% in-range
+      </span>
+      {drift != null ? (
+        <span
+          className={`chip ${drift >= 0 ? 'crit' : 'ok'}`}
+          title="Median drift vs baseline"
+        >
+          {drift >= 0 ? '+' : ''}
+          {drift.toFixed(precision)}
+          {unit} vs baseline
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 interface DeviceDetailChartsProps {
   delta: SeriesPoint[];
   deltaRolling: RollingPoint[];
@@ -575,6 +776,18 @@ interface DeviceDetailChartsProps {
   deltaChartRef: RefObject<SeriesChartHandle>;
   copChartRef: RefObject<SeriesChartHandle>;
   currentChartRef: RefObject<SeriesChartHandle>;
+  baselines: DeviceBaselineSummary[];
+  deltaCompare: BaselineCompareResult;
+  copCompare: BaselineCompareResult;
+  currentCompare: BaselineCompareResult;
+  drawerTab: 'checks' | 'baselines';
+  onDrawerTabChange: (tab: 'checks' | 'baselines') => void;
+  onBaselineSetGolden: (baselineId: string) => void;
+  onBaselineLabelChange: (baselineId: string, label: string | null) => void;
+  onBaselineExpiryChange: (baselineId: string, expiresAt: string | null) => void;
+  onBaselineDelete: (baselineId: string) => void;
+  baselineMutatingId: string | null;
+  onDomainChange: (domain: [number, number] | null) => void;
 }
 
 function DeviceDetailCharts({
@@ -596,6 +809,18 @@ function DeviceDetailCharts({
   deltaChartRef,
   copChartRef,
   currentChartRef,
+  baselines,
+  deltaCompare,
+  copCompare,
+  currentCompare,
+  drawerTab,
+  onDrawerTabChange,
+  onBaselineSetGolden,
+  onBaselineLabelChange,
+  onBaselineExpiryChange,
+  onBaselineDelete,
+  baselineMutatingId,
+  onDomainChange,
 }: DeviceDetailChartsProps) {
   const hasSeries = delta.length > 0 || cop.length > 0 || current.length > 0;
   const measurementWindows: TimeWindow[] = measurementWindow
@@ -755,32 +980,45 @@ function DeviceDetailCharts({
               <strong>ΔT</strong>
               <MinMaxBadges pts={delta} />
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="btn btn-pill"
-                onClick={onJumpToWindow}
-                disabled={!hasMeasurementWindow}
-              >
-                Jump to 90 s check
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={onCopyFocusLink}
-                disabled={!lastWindow}
-              >
-                Copy focus link
-              </button>
-              <button
-                type="button"
-                className="btn btn-outline"
-                onClick={onSetBaseline}
-                disabled={!lastWindow || baselineSaving}
-                aria-busy={baselineSaving}
-              >
-                {baselineLabel}
-              </button>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                gap: 8,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <BaselineCompareChips result={deltaCompare} unit="°C" precision={1} />
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn btn-pill"
+                  onClick={onJumpToWindow}
+                  disabled={!hasMeasurementWindow}
+                >
+                  Jump to 90 s check
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={onCopyFocusLink}
+                  disabled={!lastWindow}
+                >
+                  Copy focus link
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={onSetBaseline}
+                  disabled={!lastWindow || baselineSaving}
+                  aria-busy={baselineSaving}
+                >
+                  {baselineLabel}
+                </button>
+              </div>
             </div>
           </div>
           <SeriesChart
@@ -795,6 +1033,7 @@ function DeviceDetailCharts({
             ariaLabel="Delta T trend with alert overlays"
             bandOverlayBuilder={deltaBandOverlayBuilder}
             tooltipExtras={deltaTooltipExtrasFn}
+            onXDomainChange={onDomainChange}
           />
           {measurementCaption ? (
             <p className="muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
@@ -804,9 +1043,22 @@ function DeviceDetailCharts({
         </div>
 
         <div style={{ marginTop: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>COP</strong>
-            <MinMaxBadges pts={cop} />
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <strong>COP</strong>
+              <MinMaxBadges pts={cop} />
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <BaselineCompareChips result={copCompare} unit="×" precision={2} />
+            </div>
           </div>
           <SeriesChart
             ref={copChartRef}
@@ -823,9 +1075,22 @@ function DeviceDetailCharts({
         </div>
 
         <div style={{ marginTop: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>Compressor current</strong>
-            <MinMaxBadges pts={current} />
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <strong>Compressor current</strong>
+              <MinMaxBadges pts={current} />
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <BaselineCompareChips result={currentCompare} unit="A" precision={1} />
+            </div>
           </div>
           <SeriesChart
             ref={currentChartRef}
@@ -846,28 +1111,197 @@ function DeviceDetailCharts({
         </small>
       </div>
 
-      <aside className="drawer" aria-label="Recent 90 s checks">
-        <h4 className="drawer-title">Recent 90 s checks</h4>
-        <ul className="drawer-list">
-          {hasWindows ? (
-            windows.map((w) => (
-              <li key={`${w.session_id}:${w.step_id}`}>
-                <button
-                  type="button"
-                  onClick={() => onSelectWindow(w)}
-                  className={`chip ${w.pass ? 'ok' : 'crit'}`}
-                >
-                  {new Date(w.updated_at).toLocaleTimeString()} · {w.pass ? 'Pass' : 'Fail'}
-                </button>
-              </li>
-            ))
-          ) : (
-            <li className="drawer-empty muted">No commissioning windows</li>
-          )}
-        </ul>
+      <aside className="drawer" aria-label="Device tools">
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <button
+            type="button"
+            className={`pill${drawerTab === 'checks' ? ' is-active' : ''}`}
+            onClick={() => onDrawerTabChange('checks')}
+          >
+            90 s checks
+          </button>
+          <button
+            type="button"
+            className={`pill${drawerTab === 'baselines' ? ' is-active' : ''}`}
+            onClick={() => onDrawerTabChange('baselines')}
+          >
+            Baselines
+          </button>
+        </div>
+        {drawerTab === 'baselines' ? (
+          <>
+            <h4 className="drawer-title">Baselines</h4>
+            <BaselineManagerList
+              baselines={baselines}
+              onSetGolden={onBaselineSetGolden}
+              onLabelChange={onBaselineLabelChange}
+              onExpiryChange={onBaselineExpiryChange}
+              onDelete={onBaselineDelete}
+              busyId={baselineMutatingId}
+            />
+          </>
+        ) : (
+          <>
+            <h4 className="drawer-title">Recent 90 s checks</h4>
+            <ul className="drawer-list">
+              {hasWindows ? (
+                windows.map((w) => (
+                  <li key={`${w.session_id}:${w.step_id}`}>
+                    <button
+                      type="button"
+                      onClick={() => onSelectWindow(w)}
+                      className={`chip ${w.pass ? 'ok' : 'crit'}`}
+                    >
+                      {new Date(w.updated_at).toLocaleTimeString()} · {w.pass ? 'Pass' : 'Fail'}
+                    </button>
+                  </li>
+                ))
+              ) : (
+                <li className="drawer-empty muted">No commissioning windows</li>
+              )}
+            </ul>
+          </>
+        )}
       </aside>
     </div>
   );
+}
+
+interface BaselineManagerListProps {
+  baselines: DeviceBaselineSummary[];
+  onSetGolden: (baselineId: string) => void;
+  onLabelChange: (baselineId: string, label: string | null) => void;
+  onExpiryChange: (baselineId: string, expiresAt: string | null) => void;
+  onDelete: (baselineId: string) => void;
+  busyId: string | null;
+}
+
+function BaselineManagerList({
+  baselines,
+  onSetGolden,
+  onLabelChange,
+  onExpiryChange,
+  onDelete,
+  busyId,
+}: BaselineManagerListProps) {
+  if (!baselines.length) {
+    return <p className="drawer-empty muted">No baselines yet</p>;
+  }
+  return (
+    <ul className="drawer-list">
+      {baselines.map((baseline) => {
+        const busy = busyId === baseline.baseline_id;
+        const labelInputId = `baseline-label-${baseline.baseline_id}`;
+        const expiryInputId = `baseline-expiry-${baseline.baseline_id}`;
+        const expiryValue = toLocalDateTimeInput(baseline.expires_at);
+        const handleDelete = () => {
+          if (typeof window !== 'undefined' && !window.confirm('Delete this baseline?')) {
+            return;
+          }
+          onDelete(baseline.baseline_id);
+        };
+        return (
+          <li key={baseline.baseline_id} aria-busy={busy} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <div>
+                <strong>{baseline.label || 'Baseline'}</strong>
+                <div className="muted" style={{ fontSize: '0.75rem' }}>
+                  {new Date(baseline.created_at).toLocaleString()}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {baseline.is_golden ? (
+                  <span className="chip ok">Golden</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-pill"
+                    onClick={() => onSetGolden(baseline.baseline_id)}
+                    disabled={busy}
+                  >
+                    Set golden
+                  </button>
+                )}
+                {baseline.expires_at ? (
+                  <span className="chip crit">
+                    Expires {new Date(baseline.expires_at).toLocaleDateString()}
+                  </span>
+                ) : (
+                  <span className="chip">No expiry</span>
+                )}
+              </div>
+            </div>
+            <label htmlFor={labelInputId} className="muted" style={{ fontSize: '0.75rem' }}>
+              Label
+            </label>
+            <input
+              key={`${baseline.baseline_id}-label-${baseline.label ?? ''}`}
+              id={labelInputId}
+              type="text"
+              defaultValue={baseline.label ?? ''}
+              onBlur={(event) => onLabelChange(baseline.baseline_id, event.target.value)}
+              disabled={busy}
+              style={{ width: '100%' }}
+            />
+            <label htmlFor={expiryInputId} className="muted" style={{ fontSize: '0.75rem' }}>
+              Expiry
+            </label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                key={`${baseline.baseline_id}-expiry-${expiryValue ?? 'none'}`}
+                id={expiryInputId}
+                type="datetime-local"
+                defaultValue={expiryValue ?? ''}
+                onBlur={(event) => onExpiryChange(baseline.baseline_id, fromLocalDateTimeInput(event.target.value))}
+                disabled={busy}
+              />
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => onExpiryChange(baseline.baseline_id, null)}
+                disabled={busy}
+              >
+                Clear
+              </button>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button type="button" className="btn btn-outline" onClick={handleDelete} disabled={busy}>
+                Delete
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function toLocalDateTimeInput(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const pad = (input: number) => String(input).padStart(2, '0');
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function fromLocalDateTimeInput(value: string): string | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString();
 }
 
 function computeRolling(series: SeriesPoint[]): RollingPoint[] {

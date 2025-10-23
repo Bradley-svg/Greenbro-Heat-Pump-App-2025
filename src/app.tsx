@@ -56,6 +56,7 @@ import { getLatestTelemetry, computeDeltaT, getWindowSample } from './lib/commis
 import { emailCommissioning, emailCommissioningWithZip } from './lib/email';
 import { audit } from './lib/audit';
 import { pruneR2Prefix } from './lib/prune';
+import { compareToIqr } from './lib/baseline';
 import { getSetting, setSetting } from './lib/settings';
 
 let pdfModulePromise: Promise<typeof import('./pdf')> | undefined;
@@ -1203,13 +1204,29 @@ app.post('/api/devices/:id/baselines', async (c) => {
   } catch {
     return c.text('Bad Request', 400);
   }
-  const { kind, sample, thresholds, source_session_id, step_id } = payload ?? {};
+  const {
+    kind,
+    sample,
+    thresholds,
+    source_session_id,
+    step_id,
+    label,
+    is_golden,
+    expires_at,
+  } = payload ?? {};
   if (!kind || !sample) {
     return c.text('Bad Request', 400);
   }
   const id = crypto.randomUUID();
+  if (is_golden) {
+    await c.env.DB.prepare('UPDATE device_baselines SET is_golden=0 WHERE device_id=? AND kind=?')
+      .bind(deviceId, kind)
+      .run();
+  }
   await c.env.DB.prepare(
-    'INSERT INTO device_baselines (baseline_id, device_id, kind, sample_json, thresholds_json, source_session_id, step_id) VALUES (?,?,?,?,?,?,?)',
+    `INSERT INTO device_baselines(
+      baseline_id,device_id,kind,sample_json,thresholds_json,source_session_id,step_id,label,is_golden,expires_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?)`,
   )
     .bind(
       id,
@@ -1219,6 +1236,9 @@ app.post('/api/devices/:id/baselines', async (c) => {
       thresholds ? JSON.stringify(thresholds) : null,
       source_session_id ?? null,
       step_id ?? null,
+      label ?? null,
+      is_golden ? 1 : 0,
+      expires_at ?? null,
     )
     .run();
 
@@ -1231,10 +1251,22 @@ app.get('/api/devices/:id/baselines', async (c) => {
   const deviceId = c.req.param('id');
   const kind = c.req.query('kind') ?? 'delta_t';
   const rows = await c.env.DB.prepare(
-    'SELECT baseline_id, created_at, sample_json, thresholds_json, source_session_id, step_id FROM device_baselines WHERE device_id=? AND kind=? ORDER BY created_at DESC LIMIT 5',
+    `SELECT baseline_id, created_at, sample_json, thresholds_json, source_session_id, step_id, label, is_golden, expires_at
+     FROM device_baselines WHERE device_id=? AND kind=?
+     ORDER BY is_golden DESC, created_at DESC LIMIT 20`,
   )
     .bind(deviceId, kind)
-    .all<{ baseline_id: string; created_at: string; sample_json: string; thresholds_json: string | null; source_session_id: string | null; step_id: string | null }>();
+    .all<{
+      baseline_id: string;
+      created_at: string;
+      sample_json: string;
+      thresholds_json: string | null;
+      source_session_id: string | null;
+      step_id: string | null;
+      label: string | null;
+      is_golden: number | null;
+      expires_at: string | null;
+    }>();
 
   const baselines = (rows.results ?? []).map((row) => {
     let sample: any = null;
@@ -1258,10 +1290,141 @@ app.get('/api/devices/:id/baselines', async (c) => {
       thresholds,
       source_session_id: row.source_session_id,
       step_id: row.step_id,
+      label: row.label ?? null,
+      is_golden: !!row.is_golden,
+      expires_at: row.expires_at ?? null,
     };
   });
 
   return c.json(baselines);
+});
+
+app.patch('/api/devices/:id/baselines/:baselineId', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+  const deviceId = c.req.param('id');
+  const baselineId = c.req.param('baselineId');
+  let payload: any;
+  try {
+    payload = await c.req.json<any>();
+  } catch {
+    return c.text('Bad Request', 400);
+  }
+  const { label, is_golden, expires_at } = payload ?? {};
+  if (is_golden === true) {
+    const kindRow = await c.env.DB.prepare(
+      'SELECT kind FROM device_baselines WHERE baseline_id=? AND device_id=?',
+    )
+      .bind(baselineId, deviceId)
+      .first<{ kind: string }>();
+    if (!kindRow) {
+      return c.text('Not Found', 404);
+    }
+    await c.env.DB.prepare('UPDATE device_baselines SET is_golden=0 WHERE device_id=? AND kind=?')
+      .bind(deviceId, kindRow.kind)
+      .run();
+  }
+
+  await c.env.DB.prepare(
+    `UPDATE device_baselines SET
+      label=COALESCE(?, label),
+      is_golden=COALESCE(?, is_golden),
+      expires_at=COALESCE(?, expires_at)
+    WHERE baseline_id=? AND device_id=?`,
+  )
+    .bind(
+      label ?? null,
+      typeof is_golden === 'boolean' ? (is_golden ? 1 : 0) : null,
+      expires_at ?? null,
+      baselineId,
+      deviceId,
+    )
+    .run();
+
+  return c.json({ ok: true });
+});
+
+app.delete('/api/devices/:id/baselines/:baselineId', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+  const deviceId = c.req.param('id');
+  const baselineId = c.req.param('baselineId');
+  await c.env.DB.prepare('DELETE FROM device_baselines WHERE baseline_id=? AND device_id=?')
+    .bind(baselineId, deviceId)
+    .run();
+  return c.json({ ok: true });
+});
+
+app.get('/api/devices/:id/baseline-compare', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops', 'contractor']);
+  const deviceId = c.req.param('id');
+  const kind = c.req.query('kind') ?? 'delta_t';
+  const from = Number(c.req.query('from') ?? 0);
+  const to = Number(c.req.query('to') ?? 0);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
+    return c.text('Bad Request', 400);
+  }
+
+  const baselineRow = await c.env.DB.prepare(
+    `SELECT sample_json FROM device_baselines
+     WHERE device_id=? AND kind=?
+     ORDER BY is_golden DESC, created_at DESC
+     LIMIT 1`,
+  )
+    .bind(deviceId, kind)
+    .first<{ sample_json: string }>();
+  if (!baselineRow) {
+    return c.json({ hasBaseline: false });
+  }
+  let sample: any = null;
+  try {
+    sample = JSON.parse(baselineRow.sample_json);
+  } catch (error) {
+    console.warn('baseline sample parse error', error);
+  }
+  const p25 = sample?.p25;
+  const p75 = sample?.p75;
+  const baselineMedian = sample?.median;
+  if (typeof p25 !== 'number' || typeof p75 !== 'number') {
+    return c.json({ hasBaseline: false });
+  }
+
+  const column = kind === 'delta_t' ? 'delta_t' : kind === 'cop' ? 'cop' : 'compressor_current';
+  const rows = await c.env.DB.prepare(
+    `SELECT ts, ${column} AS v
+     FROM telemetry
+     WHERE device_id=? AND ts BETWEEN datetime(?, 'unixepoch') AND datetime(?, 'unixepoch')
+     ORDER BY ts ASC
+     LIMIT 5000`,
+  )
+    .bind(deviceId, Math.floor(from / 1000), Math.floor(to / 1000))
+    .all<{ v: number | null }>();
+  const values = (rows.results ?? [])
+    .map((row) => row.v)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+
+  const { coverage, median } = compareToIqr(values, p25, p75);
+  const drift =
+    typeof baselineMedian === 'number' && Number.isFinite(median) ? median - baselineMedian : null;
+
+  return c.json({
+    hasBaseline: true,
+    p25,
+    p75,
+    baselineMedian: typeof baselineMedian === 'number' ? baselineMedian : null,
+    coverage,
+    drift,
+    n: values.length,
+  });
 });
 
 app.post('/api/devices/:id/write', async (c) => {
@@ -5869,6 +6032,13 @@ export default {
       await recomputeBaselines(env.DB).catch((error) => {
         console.error('baseline recompute error', error);
       });
+      await env.DB.prepare(
+        "DELETE FROM device_baselines WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+      )
+        .run()
+        .catch((error) => {
+          console.error('baseline prune error', error);
+        });
       await sweepIncidents(env.DB).catch((error) => {
         console.error('incident sweep error', error);
       });

@@ -112,6 +112,7 @@ interface SeriesChartProps {
   bandOverlay?: BandOverlay | BandOverlay[] | null;
   bandOverlayBuilder?: BandOverlayBuilder;
   tooltipExtras?: (ts: number) => string[];
+  onXDomainChange?: (domain: [number, number] | null) => void;
 }
 
 export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(function SeriesChart(
@@ -130,6 +131,7 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
     bandOverlay: bandOverlayProp = null,
     bandOverlayBuilder,
     tooltipExtras,
+    onXDomainChange,
   }: SeriesChartProps,
   ref,
 ) {
@@ -280,7 +282,7 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
         }
         setXDomainState([start, end]);
       },
-      getXDomain: () => [minTs, maxTs],
+      getXDomain: () => (hasData ? [minTs, maxTs] : null),
     }),
     [hasData, clampTs, minTs, maxTs],
   );
@@ -328,6 +330,14 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
       })()
     : [];
   const tooltipHeight = tooltipLines.length ? 12 + tooltipLines.length * 16 : 0;
+
+  React.useEffect(() => {
+    if (!onXDomainChange) {
+      return;
+    }
+    const domain = hasData ? ([minTs, maxTs] as [number, number]) : null;
+    onXDomainChange(domain);
+  }, [hasData, maxTs, minTs, onXDomainChange]);
 
   const handleMove = (event: React.MouseEvent<SVGRectElement>) => {
     if (!hasData) {
