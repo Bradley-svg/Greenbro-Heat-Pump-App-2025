@@ -1086,6 +1086,63 @@ app.get('/api/devices/:id/latest', async (c) => {
   return row ? c.json(row) : c.text('Not found', 404);
 });
 
+app.get('/api/devices/:id/commissioning/window', async (c) => {
+  const { DB } = c.env;
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+
+  if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
+    if (!auth.clientIds || auth.clientIds.length === 0) {
+      return c.text('Forbidden', 403);
+    }
+  }
+
+  const deviceId = c.req.param('id');
+  const row = await DB.prepare(
+    `
+      SELECT cs.readings_json, cs.updated_at
+        FROM commissioning_steps cs
+        JOIN commissioning_sessions s ON cs.session_id = s.session_id
+       WHERE s.device_id=? AND cs.step_id=?
+       ORDER BY cs.updated_at DESC
+       LIMIT 1
+    `,
+  )
+    .bind(deviceId, 'deltaT_under_load')
+    .first<{ readings_json: string | null; updated_at: string | null }>();
+
+  let sample: Record<string, unknown> | null = null;
+  if (row?.readings_json) {
+    try {
+      const parsed = JSON.parse(row.readings_json);
+      if (parsed && typeof parsed === 'object') {
+        sample = parsed as Record<string, unknown>;
+      }
+    } catch (error) {
+      console.warn('Failed to parse commissioning window sample', error);
+    }
+  }
+
+  let window: { t_start: string; t_end: string } | null = null;
+  if (sample) {
+    const tStart = typeof sample.t_start === 'string' ? sample.t_start : null;
+    const tEnd = typeof sample.t_end === 'string' ? sample.t_end : null;
+    if (tStart && tEnd) {
+      window = { t_start: tStart, t_end: tEnd };
+    }
+  }
+
+  return c.json({
+    ok: true,
+    window,
+    sample,
+    updated_at: row?.updated_at ?? null,
+    step_id: 'deltaT_under_load',
+  });
+});
+
 app.post('/api/devices/:id/write', async (c) => {
   const blocked = await guardWrite(c);
   if (blocked) {
@@ -2095,6 +2152,15 @@ app.post('/api/commissioning/measure-window', async (c) => {
   const okCop = copMin ? (sample.cop_med ?? Number.NEGATIVE_INFINITY) >= copMin : true;
   const pass = okDt && okFlow && okCop;
 
+  const thresholdsPayload = {
+    delta_t_min: dtMin,
+    flow_min_lpm: flowMin,
+    cop_min: copMin,
+    dtMin,
+    flMin: flowMin,
+    copMin,
+  } as const;
+
   await c.env.DB.prepare(
     "UPDATE commissioning_steps SET state=?, readings_json=?, updated_at=datetime('now') WHERE session_id=? AND step_id=?",
   )
@@ -2102,7 +2168,7 @@ app.post('/api/commissioning/measure-window', async (c) => {
       pass ? 'pass' : 'fail',
       JSON.stringify({
         ...sample,
-        thresholds: { delta_t_min: dtMin, flow_min_lpm: flowMin, cop_min: copMin },
+        thresholds: thresholdsPayload,
       }),
       body.session_id,
       body.step_id,
@@ -2111,14 +2177,14 @@ app.post('/api/commissioning/measure-window', async (c) => {
 
   await audit(c.env as any, auth, 'commissioning.measure-window', `${body.session_id}:${body.step_id}`, {
     sample,
-    thresholds: { delta_t_min: dtMin, flow_min_lpm: flowMin, cop_min: copMin },
+    thresholds: thresholdsPayload,
   });
 
   return c.json({
     ok: true,
     pass,
     sample,
-    thresholds: { delta_t_min: dtMin, flow_min_lpm: flowMin, cop_min: copMin },
+    thresholds: thresholdsPayload,
   });
 });
 

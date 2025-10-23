@@ -15,6 +15,8 @@ export interface AlertWindow {
   kind: OverlayKind;
 }
 
+export type TimeWindow = { start: number; end: number; kind?: 'info' | 'warn' | 'crit' };
+
 type PathPt = [number, number];
 
 export interface BandOverlay {
@@ -26,9 +28,16 @@ export interface BandOverlay {
 type ScaleFn = (value: number) => number;
 export type BandOverlayBuilder = (x: ScaleFn, y: ScaleFn) => BandOverlay | null | undefined;
 
+const WINDOW_CLASS: Record<NonNullable<TimeWindow['kind']>, string> = {
+  info: 'gb-window-info',
+  warn: 'gb-window-warn',
+  crit: 'gb-window-crit',
+};
+
 export interface SeriesChartHandle {
   focusTs: (ts: number) => void;
   focusLatestOverlay: (windows: AlertWindow[]) => void;
+  setXDomain: (domain: [number, number] | null) => void;
 }
 
 export function nearestIndex(xs: number[], x: number): number {
@@ -78,6 +87,7 @@ function bandPath(upper: PathPt[], lower: PathPt[]) {
 interface SeriesChartProps {
   data: SeriesPoint[];
   overlays?: AlertWindow[];
+  timeWindows?: TimeWindow[];
   width?: number;
   height?: number;
   pad?: number;
@@ -95,6 +105,7 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
   {
     data,
     overlays = [],
+    timeWindows = [],
     width = 640,
     height = 220,
     pad = 16,
@@ -115,8 +126,28 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
 
   const sorted = useMemo(() => [...data].sort((a, b) => a.ts - b.ts), [data]);
   const hasData = sorted.length > 0;
-  const minTs = hasData ? sorted[0]!.ts : 0;
-  const maxTs = hasData ? sorted.at(-1)!.ts : minTs + 1;
+  const dataMinTs = hasData ? sorted[0]!.ts : 0;
+  const dataMaxTs = hasData ? sorted.at(-1)!.ts : dataMinTs + 1;
+
+  const [xDomain, setXDomainState] = useState<[number, number] | null>(null);
+
+  const [minTs, maxTs] = useMemo(() => {
+    if (!xDomain) {
+      if (dataMaxTs === dataMinTs) {
+        return [dataMinTs, dataMinTs + 1] as const;
+      }
+      return [dataMinTs, dataMaxTs] as const;
+    }
+    const [start, end] = xDomain;
+    const startFinite = Number.isFinite(start) ? start : dataMinTs;
+    const endFinite = Number.isFinite(end) ? end : dataMaxTs;
+    const lo = Math.min(startFinite, endFinite);
+    const hi = Math.max(startFinite, endFinite);
+    if (hi === lo) {
+      return [lo, lo + 1] as const;
+    }
+    return [lo, hi] as const;
+  }, [xDomain, dataMinTs, dataMaxTs]);
   const minV = yDomain?.[0] ?? (hasData ? Math.min(...sorted.map((d) => d.v)) : 0);
   const maxV = yDomain?.[1] ?? (hasData ? Math.max(...sorted.map((d) => d.v)) : 1);
   const widthInner = Math.max(width - pad * 2, 1);
@@ -124,6 +155,8 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
   const spanTs = Math.max(maxTs - minTs, 1);
   const flatSeries = hasData && maxV === minV;
   const spanV = flatSeries ? 1 : Math.max(maxV - minV, 1);
+  const plotTop = pad;
+  const plotHeight = heightInner;
 
   const ts = useMemo(() => sorted.map((point) => point.ts), [sorted]);
 
@@ -171,6 +204,33 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
       .filter((window): window is AlertWindow => Boolean(window));
   }, [hasData, overlays, minTs, maxTs]);
 
+  const windowsToRender = useMemo(() => {
+    if (!timeWindows.length) {
+      return [] as Array<TimeWindow & { kind: NonNullable<TimeWindow['kind']> }>;
+    }
+    return timeWindows
+      .map((window) => {
+        if (!Number.isFinite(window.start) || !Number.isFinite(window.end)) {
+          return null;
+        }
+        const rawStart = Math.min(window.start, window.end);
+        const rawEnd = Math.max(window.start, window.end);
+        const start = Math.max(rawStart, minTs);
+        const end = Math.min(rawEnd, maxTs);
+        if (end <= start) {
+          return null;
+        }
+        const kind = window.kind ?? 'info';
+        return {
+          ...window,
+          start,
+          end,
+          kind,
+        } as TimeWindow & { kind: NonNullable<TimeWindow['kind']> };
+      })
+      .filter((window): window is TimeWindow & { kind: NonNullable<TimeWindow['kind']> } => Boolean(window));
+  }, [timeWindows, minTs, maxTs]);
+
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const clampTs = useCallback((value: number) => Math.min(Math.max(value, minTs), maxTs), [minTs, maxTs]);
   const activeIndex = cursor == null || ts.length === 0 ? undefined : nearestIndex(ts, clampTs(cursor));
@@ -194,6 +254,18 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
         }
         const latest = Math.max(...windows.map((window) => window.end));
         setCursor(clampTs(latest));
+      },
+      setXDomain: (domain) => {
+        if (!domain) {
+          setXDomainState(null);
+          return;
+        }
+        const [start, end] = domain;
+        if (!Number.isFinite(start) || !Number.isFinite(end)) {
+          setXDomainState(null);
+          return;
+        }
+        setXDomainState([start, end]);
       },
     }),
     [hasData, clampTs],
@@ -287,6 +359,7 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
       onKeyDown={handleKeyDown}
     >
       <ChartDefs id={baseId} />
+      <g data-testid="xdomain" data-min={minTs} data-max={maxTs} aria-hidden="true" />
       {grid && hasData ? (
         <g className="chart-grid">
           {ticks.map((tick, index) => {
@@ -299,6 +372,27 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
         </g>
       ) : null}
 
+      <g aria-hidden="true">
+        {windowsToRender.map((window, index) => {
+          const x1 = xScale(window.start);
+          const x2 = xScale(window.end);
+          const x = Math.min(x1, x2);
+          const widthRect = Math.max(1, Math.abs(x2 - x1));
+          return (
+            <rect
+              key={`tw-${index}`}
+              x={x}
+              y={plotTop}
+              width={widthRect}
+              height={plotHeight}
+              className={WINDOW_CLASS[window.kind]}
+              data-testid={`time-window-${index}`}
+              aria-hidden="true"
+            />
+          );
+        })}
+      </g>
+
       <g>
         {overlaysToRender.map((overlay, index) => {
           const startX = xScale(overlay.start);
@@ -309,9 +403,9 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
             <rect
               key={`${overlay.kind}-${index}-${overlay.start}`}
               x={startX}
-              y={pad}
+              y={plotTop}
               width={Math.max(endX - startX, 0)}
-              height={heightInner}
+              height={plotHeight}
               fill={fill}
               stroke={strokeColorOverlay}
               opacity={0.95}

@@ -54,9 +54,30 @@
   stroke: none;
 }
 
+.gb-window-info {
+  fill: color-mix(in oklab, var(--gb-chart-ok) 10%, transparent);
+}
+
+.gb-window-warn {
+  fill: color-mix(in oklab, var(--gb-chart-warn) 12%, transparent);
+}
+
+.gb-window-crit {
+  fill: color-mix(in oklab, var(--gb-chart-crit) 14%, transparent);
+}
+
 @media (forced-colors: active) {
   .gb-chart-median-band {
     outline: 1px solid CanvasText;
+    fill: transparent;
+  }
+}
+
+@media (forced-colors: active) {
+  .gb-window-info,
+  .gb-window-warn,
+  .gb-window-crit {
+    outline: 1px dotted CanvasText;
     fill: transparent;
   }
 }
@@ -615,6 +636,12 @@ svg.spark.crit {
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
+}
+
+.btn-pill {
+  border-radius: 999px;
+  padding-inline: 16px;
+  min-height: 36px;
 }
 
 .app-button:hover,

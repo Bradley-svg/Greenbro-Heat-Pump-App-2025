@@ -52,16 +52,17 @@ export async function getLatestTelemetry(DB: D1Database, deviceId: string) {
 }
 
 export async function getWindowSample(DB: D1Database, device_id: string, seconds = 90) {
+  const since = `-${seconds} seconds`;
   const rows = await DB.prepare(
     `
       SELECT ts, metrics_json, delta_t, cop
       FROM telemetry
       WHERE device_id=? AND ts >= datetime('now', ?)
-      ORDER BY ts DESC
+      ORDER BY ts ASC
       LIMIT 300
     `,
   )
-    .bind(device_id, `-${seconds} seconds`)
+    .bind(device_id, since)
     .all<{
       ts: string;
       metrics_json: string | null;
@@ -69,13 +70,17 @@ export async function getWindowSample(DB: D1Database, device_id: string, seconds
       cop: number | null;
     }>();
 
+  const res = rows.results ?? [];
+  const tStart = res[0]?.ts ?? new Date(Date.now() - seconds * 1000).toISOString();
+  const tEnd = res.at(-1)?.ts ?? new Date().toISOString();
+
   const outlets: number[] = [];
   const returns: number[] = [];
   const flows: number[] = [];
   const deltas: number[] = [];
   const cops: number[] = [];
 
-  for (const r of rows.results ?? []) {
+  for (const r of res) {
     let m: Record<string, unknown> = {};
     if (r.metrics_json) {
       try {
@@ -99,8 +104,10 @@ export async function getWindowSample(DB: D1Database, device_id: string, seconds
     : null;
 
   return {
-    count: rows.results?.length ?? 0,
+    count: res.length,
     window_s: seconds,
+    t_start: tStart,
+    t_end: tEnd,
     outlet_c_med: median(outlets),
     return_c_med: median(returns),
     flow_lpm_med: median(flows),

@@ -2,7 +2,9 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "types": ["@cloudflare/workers-types", "node"],
-    "moduleResolution": "Bundler"
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["src", "tests"]
+  "include": ["src", "tests", "apps/web/src"]
 }

@@ -11,10 +11,19 @@ import {
   type BandOverlayBuilder,
   type SeriesChartHandle,
   type SeriesPoint,
+  type TimeWindow,
 } from '@components/charts/SeriesChart';
 import { rollingStats, type RollingPoint } from '@utils/rolling';
+import { toast } from '@app/providers/toast';
 
 const TELEMETRY_RANGES: Array<'24h' | '7d'> = ['24h', '7d'];
+
+interface CommissioningWindowResponse {
+  ok: boolean;
+  window: { t_start: string; t_end: string } | null;
+  sample?: Record<string, unknown> | null;
+  updated_at?: string | null;
+}
 
 export function DeviceDetailPage(): JSX.Element {
   const { deviceId } = useParams<{ deviceId: string }>();
@@ -45,6 +54,18 @@ export function DeviceDetailPage(): JSX.Element {
     refetchInterval: range === '24h' ? 10_000 : 30_000,
   });
 
+  const commissioningWindowQuery = useQuery({
+    queryKey: ['device', deviceId, 'commissioning-window'],
+    queryFn: () =>
+      apiFetch<CommissioningWindowResponse>(
+        `/api/devices/${deviceId}/commissioning/window`,
+        undefined,
+        authFetch,
+      ),
+    enabled: !!deviceId,
+    refetchInterval: 60_000,
+  });
+
   const telemetryPoints = useMemo(() => telemetryQuery.data ?? [], [telemetryQuery.data]);
 
   const deltaSeries = useMemo(() => buildSeries(telemetryPoints, ['delta_t', 'deltaT', 'delta-t', 'DeltaT']), [
@@ -63,15 +84,7 @@ export function DeviceDetailPage(): JSX.Element {
     [telemetryPoints],
   );
 
-  const deltaRolling = useMemo<RollingPoint[]>(() => {
-    if (deltaSeries.length === 0) {
-      return [];
-    }
-    return rollingStats(
-      deltaSeries.map((point) => ({ t: point.ts, y: point.v })),
-      90_000,
-    );
-  }, [deltaSeries]);
+  const deltaRolling = useMemo<RollingPoint[]>(() => computeRolling(deltaSeries), [deltaSeries]);
 
   const alertWindows = useMemo<AlertWindow[]>(() => {
     const now = Date.now();
@@ -100,6 +113,19 @@ export function DeviceDetailPage(): JSX.Element {
       })
       .filter((window): window is AlertWindow => Boolean(window));
   }, [alertWindowsQuery.data]);
+
+  const measurementWindow = useMemo(() => {
+    const raw = commissioningWindowQuery.data?.window;
+    if (!raw) {
+      return null as { start: number; end: number } | null;
+    }
+    const start = Date.parse(raw.t_start);
+    const end = Date.parse(raw.t_end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return null;
+    }
+    return { start, end };
+  }, [commissioningWindowQuery.data]);
 
   const latest = latestQuery.data;
   const onlineValue = latestQuery.isLoading
@@ -213,6 +239,7 @@ export function DeviceDetailPage(): JSX.Element {
               cop={copSeries}
               current={currentSeries}
               overlays={alertWindows}
+              measurementWindow={measurementWindow}
               range={range}
             />
             <table className="data-table data-table--compact">
@@ -308,15 +335,33 @@ interface DeviceDetailChartsProps {
   cop: SeriesPoint[];
   current: SeriesPoint[];
   overlays: AlertWindow[];
+  measurementWindow: { start: number; end: number } | null;
   range: '24h' | '7d';
 }
 
-function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range }: DeviceDetailChartsProps) {
+function DeviceDetailCharts({
+  delta,
+  deltaRolling,
+  cop,
+  current,
+  overlays,
+  measurementWindow,
+  range,
+}: DeviceDetailChartsProps) {
   const deltaChartRef = useRef<SeriesChartHandle>(null);
   const copChartRef = useRef<SeriesChartHandle>(null);
   const currentChartRef = useRef<SeriesChartHandle>(null);
 
   const hasSeries = delta.length > 0 || cop.length > 0 || current.length > 0;
+  const measurementWindows: TimeWindow[] = measurementWindow
+    ? [{ start: measurementWindow.start, end: measurementWindow.end, kind: 'info' }]
+    : [];
+  const hasMeasurementWindow = measurementWindows.length > 0;
+  const measurementCaption = measurementWindow
+    ? `90 s window from ${new Date(measurementWindow.start).toLocaleTimeString()} to ${new Date(
+        measurementWindow.end,
+      ).toLocaleTimeString()}.`
+    : null;
   if (!hasSeries) {
     return <p>No trend data available for the selected window.</p>;
   }
@@ -330,38 +375,44 @@ function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range
     currentChartRef.current?.focusLatestOverlay(overlays);
   };
 
+  const jumpToMeasurementWindow = () => {
+    if (!measurementWindow) {
+      return;
+    }
+    const span = Math.max(1, measurementWindow.end - measurementWindow.start);
+    const pad = Math.max(span * 0.15, 1_000);
+    const domain: [number, number] = [
+      measurementWindow.start - pad,
+      measurementWindow.end + pad,
+    ];
+    deltaChartRef.current?.setXDomain(domain);
+    copChartRef.current?.setXDomain(domain);
+    currentChartRef.current?.setXDomain(domain);
+    toast.info('Focused 90 s measurement window');
+  };
+
   const chartWidth = typeof window === 'undefined'
     ? 720
     : Math.max(320, Math.min(720, window.innerWidth - 120));
   const chartHeight = 160;
   const hasOverlays = overlays.length > 0;
 
-  const deltaBandOverlayBuilder = useMemo<BandOverlayBuilder | undefined>(() => {
-    if (!deltaRolling.length) {
-      return undefined;
-    }
-    return (xScale, yScale) => {
-      const upper: Array<[number, number]> = [];
-      const lower: Array<[number, number]> = [];
-      for (const sample of deltaRolling) {
-        if (sample.median == null) {
-          continue;
-        }
-        const xCoord = xScale(sample.t);
-        const upperValue = sample.p75 ?? sample.median;
-        const lowerValue = sample.p25 ?? sample.median;
-        if (!Number.isFinite(upperValue) || !Number.isFinite(lowerValue)) {
-          continue;
-        }
-        upper.push([xCoord, yScale(upperValue)]);
-        lower.push([xCoord, yScale(lowerValue)]);
-      }
-      if (!upper.length || !lower.length) {
-        return null;
-      }
-      return { upper, lower, className: 'gb-chart-median-band' };
-    };
-  }, [deltaRolling]);
+  const deltaBandOverlayBuilder = useMemo<BandOverlayBuilder | undefined>(
+    () => createBandOverlayBuilder(deltaRolling),
+    [deltaRolling],
+  );
+
+  const copRolling = useMemo<RollingPoint[]>(() => computeRolling(cop), [cop]);
+  const currentRolling = useMemo<RollingPoint[]>(() => computeRolling(current), [current]);
+
+  const copBandOverlayBuilder = useMemo<BandOverlayBuilder | undefined>(
+    () => createBandOverlayBuilder(copRolling),
+    [copRolling],
+  );
+  const currentBandOverlayBuilder = useMemo<BandOverlayBuilder | undefined>(
+    () => createBandOverlayBuilder(currentRolling),
+    [currentRolling],
+  );
 
   const deltaRollingLookup = useMemo(() => {
     const map = new Map<number, RollingPoint>();
@@ -398,6 +449,22 @@ function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range
               { kind: 'crit', label: 'Critical window' },
               {
                 kind: 'ok',
+                label: '90 s measurement window',
+                swatch: (size) => (
+                  <svg className="chart-legend__swatch" width={size} height={size} aria-hidden>
+                    <rect
+                      x={2}
+                      y={2}
+                      width={size - 4}
+                      height={size - 4}
+                      className="gb-window-info"
+                      rx={size / 6}
+                    />
+                  </svg>
+                ),
+              },
+              {
+                kind: 'ok',
                 label: '90 s median (IQR)',
                 swatch: (size) => (
                   <svg className="chart-legend__swatch" width={size} height={size} aria-hidden>
@@ -426,9 +493,27 @@ function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range
       </div>
 
       <div style={{ marginTop: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <strong>ΔT</strong>
-          <MinMaxBadges pts={delta} />
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <strong>ΔT</strong>
+            <MinMaxBadges pts={delta} />
+          </div>
+          <button
+            type="button"
+            className="btn btn-pill"
+            onClick={jumpToMeasurementWindow}
+            disabled={!hasMeasurementWindow}
+          >
+            Jump to 90 s check
+          </button>
         </div>
         <SeriesChart
           ref={deltaChartRef}
@@ -436,12 +521,18 @@ function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range
           width={chartWidth}
           height={chartHeight}
           overlays={overlays}
+          timeWindows={measurementWindows}
           stroke="var(--gb-chart-ok)"
           areaKind="ok"
           ariaLabel="Delta T trend with alert overlays"
           bandOverlayBuilder={deltaBandOverlayBuilder}
           tooltipExtras={deltaTooltipExtrasFn}
         />
+        {measurementCaption ? (
+          <p className="muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
+            {measurementCaption}
+          </p>
+        ) : null}
       </div>
 
       <div style={{ marginTop: 8 }}>
@@ -455,9 +546,11 @@ function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range
           width={chartWidth}
           height={chartHeight}
           overlays={overlays}
+          timeWindows={measurementWindows}
           stroke="var(--gb-chart-warn)"
           areaKind="warn"
           ariaLabel="COP trend with alert overlays"
+          bandOverlayBuilder={copBandOverlayBuilder}
         />
       </div>
 
@@ -472,9 +565,11 @@ function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range
           width={chartWidth}
           height={chartHeight}
           overlays={overlays}
+          timeWindows={measurementWindows}
           stroke="var(--gb-chart-warn)"
           areaKind="warn"
           ariaLabel="Compressor current trend with alert overlays"
+          bandOverlayBuilder={currentBandOverlayBuilder}
         />
       </div>
 
@@ -483,4 +578,47 @@ function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range
       </small>
     </div>
   );
+}
+
+function computeRolling(series: SeriesPoint[]): RollingPoint[] {
+  if (!series.length) {
+    return [];
+  }
+  return rollingStats(
+    series.map((point) => ({ t: point.ts, y: point.v })),
+    90_000,
+  );
+}
+
+function createBandOverlayBuilder(samples: RollingPoint[]): BandOverlayBuilder | undefined {
+  if (!samples.length) {
+    return undefined;
+  }
+  return (xScale, yScale) => buildBandFromRolling(samples, xScale, yScale);
+}
+
+function buildBandFromRolling(
+  samples: RollingPoint[],
+  xScale: (value: number) => number,
+  yScale: (value: number) => number,
+): ReturnType<BandOverlayBuilder> {
+  const upper: Array<[number, number]> = [];
+  const lower: Array<[number, number]> = [];
+  for (const sample of samples) {
+    if (sample.median == null) {
+      continue;
+    }
+    const upperValue = sample.p75 ?? sample.median;
+    const lowerValue = sample.p25 ?? sample.median;
+    if (!Number.isFinite(upperValue) || !Number.isFinite(lowerValue)) {
+      continue;
+    }
+    const xCoord = xScale(sample.t);
+    upper.push([xCoord, yScale(upperValue)]);
+    lower.push([xCoord, yScale(lowerValue)]);
+  }
+  if (!upper.length || !lower.length) {
+    return null;
+  }
+  return { upper, lower, className: 'gb-chart-median-band' };
 }
