@@ -11,6 +11,21 @@ export async function renderDeviceLabels(
   const green = rgb(0.13, 0.82, 0.41);
   let y = 720;
 
+  let logoImg: any = null;
+  try {
+    const logo = await fetch(new URL('/brand/logo-white.svg', 'http://internal'));
+    if (logo.ok) {
+      const svgBuffer = await logo.arrayBuffer();
+      try {
+        logoImg = await pdf.embedSvg(svgBuffer);
+      } catch (error) {
+        console.warn('label logo embed failed', error);
+      }
+    }
+  } catch (error) {
+    console.warn('label logo fetch failed', error);
+  }
+
   for (let i = 0; i < 4; i++) {
     page.drawRectangle({ x: 40, y, width: 515, height: 120, borderColor: green, borderWidth: 1 });
     page.drawText('Greenbro Heat Pump', { x: 52, y: y + 96, size: 14, font, color: green });
@@ -24,6 +39,16 @@ export async function renderDeviceLabels(
       font,
       color: rgb(0.62, 0.69, 0.75),
     });
+    page.drawText(`View: https://app.greenbro.example/devices/${opts.device_id}`, {
+      x: 52,
+      y: y + 12,
+      size: 9,
+      font,
+      color: rgb(0.62, 0.69, 0.75),
+    });
+    if (logoImg) {
+      page.drawImage(logoImg, { x: 430, y: y + 78, width: 100, height: 26 });
+    }
     y -= 160;
   }
 

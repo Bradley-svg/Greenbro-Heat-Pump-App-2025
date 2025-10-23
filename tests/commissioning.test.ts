@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker from '../src/app';
+import { pruneR2Prefix } from '../src/lib/prune';
 import type { Env, ExecutionContext } from '../src/types/env';
 
 type ChecklistRow = {
@@ -10,6 +11,7 @@ type ChecklistRow = {
   version: number;
   steps_json: string;
   created_at: string;
+  required_steps_json?: string | null;
 };
 
 type SessionRow = {
@@ -21,6 +23,7 @@ type SessionRow = {
   finished_at: string | null;
   status: string;
   notes: string | null;
+  checklist_id: string | null;
 };
 
 type StepRow = {
@@ -152,6 +155,7 @@ class MockD1Database {
           finished_at: row.finished_at,
           notes: row.notes,
           last_update: this.#lastUpdated(row.session_id),
+          checklist_id: row.checklist_id,
           ...(includeOperator ? { operator_sub: row.operator_sub } : {}),
         }));
       return { results: rows as unknown as T[] };
@@ -180,24 +184,44 @@ class MockD1Database {
       return { results: results as unknown as T[] };
     }
 
+    if (sql.startsWith('SELECT coalesce(required_steps_json, steps_json) AS steps FROM commissioning_checklists')) {
+      const session_id = String(args[0] ?? '');
+      const session = this.#sessions.get(session_id);
+      const checklist = session?.checklist_id ? this.#checklists.get(session.checklist_id) : undefined;
+      if (!checklist) {
+        return mode === 'first' ? (null as T | null) : { results: [] };
+      }
+      const steps = checklist.required_steps_json ?? checklist.steps_json;
+      const row = { steps } as unknown as T;
+      return mode === 'first' ? (row as T) : { results: [row] as unknown as T[] };
+    }
+
     switch (sql) {
       case 'SELECT value FROM settings WHERE key=?': {
         const key = String(args[0]);
         const value = this.#settings.get(key) ?? null;
         return mode === 'first' ? ({ value } as unknown as T) : { results: [{ value }] };
       }
-      case 'SELECT checklist_id,name,version FROM commissioning_checklists ORDER BY created_at DESC': {
+      case 'SELECT checklist_id,name,version,steps_json,required_steps_json FROM commissioning_checklists ORDER BY created_at DESC': {
         const rows = [...this.#checklists.values()]
           .sort((a, b) => b.created_at.localeCompare(a.created_at))
-          .map(({ checklist_id, name, version }) => ({ checklist_id, name, version } as T));
+          .map(({ checklist_id, name, version, steps_json, required_steps_json }) => ({
+            checklist_id,
+            name,
+            version,
+            steps_json,
+            required_steps_json: required_steps_json ?? null,
+          } as T));
         return { results: rows };
       }
-      case 'SELECT checklist_id,name,version,steps_json FROM commissioning_checklists WHERE checklist_id=?': {
+      case 'SELECT checklist_id,name,version,steps_json,required_steps_json FROM commissioning_checklists WHERE checklist_id=?': {
         const id = String(args[0] ?? '');
         const row = this.#checklists.get(id) ?? null;
-        return mode === 'first'
-          ? ((row ? ({ ...row } as unknown as T) : null) as T | null)
-          : { results: row ? ([{ ...row }] as unknown as T[]) : [] };
+        if (!row) {
+          return mode === 'first' ? (null as T | null) : { results: [] };
+        }
+        const value = { ...row, required_steps_json: row.required_steps_json ?? null } as unknown as T;
+        return mode === 'first' ? (value as T) : { results: [value] as unknown as T[] };
       }
       case 'SELECT steps_json FROM commissioning_checklists WHERE checklist_id=?': {
         const id = String(args[0] ?? '');
@@ -206,12 +230,24 @@ class MockD1Database {
           ? ((row ? ({ steps_json: row.steps_json } as unknown as T) : null) as T | null)
           : { results: row ? ([{ steps_json: row.steps_json }] as unknown as T[]) : [] };
       }
-      case 'INSERT INTO commissioning_sessions(session_id,device_id,site_id,operator_sub,notes) VALUES (?,?,?,?,?)': {
-        const [session_id, device_id, site_id, operator_sub, notes] = args as [
+      case 'SELECT coalesce(required_steps_json, steps_json) AS steps FROM commissioning_checklists\n       WHERE checklist_id = (SELECT checklist_id FROM commissioning_sessions WHERE session_id=?)': {
+        const session_id = String(args[0] ?? '');
+        const session = this.#sessions.get(session_id);
+        const checklist = session?.checklist_id ? this.#checklists.get(session.checklist_id) : undefined;
+        if (!checklist) {
+          return mode === 'first' ? (null as T | null) : { results: [] };
+        }
+        const steps = checklist.required_steps_json ?? checklist.steps_json;
+        const row = { steps } as unknown as T;
+        return mode === 'first' ? (row as T) : { results: [row] as unknown as T[] };
+      }
+      case 'INSERT INTO commissioning_sessions(session_id,device_id,site_id,operator_sub,notes,checklist_id) VALUES (?,?,?,?,?,?)': {
+        const [session_id, device_id, site_id, operator_sub, notes, checklist_id] = args as [
           string,
           string,
           string | null,
           string,
+          string | null,
           string | null,
         ];
         const now = new Date().toISOString();
@@ -224,6 +260,7 @@ class MockD1Database {
           finished_at: null,
           status: 'in_progress',
           notes: notes ?? null,
+          checklist_id: checklist_id ?? null,
         });
         return { success: true };
       }
@@ -300,6 +337,11 @@ class MockD1Database {
         const artifact = this.#artifacts.get(`${id}|pdf`) ?? null;
         return artifact ? ({ r2_key: artifact.r2_key } as unknown as T) : null;
       }
+      case "SELECT r2_key FROM commissioning_artifacts WHERE session_id=? AND kind='zip'": {
+        const id = String(args[0] ?? '');
+        const artifact = this.#artifacts.get(`${id}|zip`) ?? null;
+        return artifact ? ({ r2_key: artifact.r2_key } as unknown as T) : null;
+      }
       case 'INSERT OR REPLACE INTO commissioning_artifacts(session_id,kind,r2_key,size_bytes) VALUES (?,?,?,?)':
       case 'INSERT OR REPLACE INTO commissioning_artifacts (session_id, kind, r2_key, size_bytes) VALUES (?,?,?,?)': {
         const [session_id, kind, r2_key, size_bytes] = args as [string, string, string, number];
@@ -313,7 +355,7 @@ class MockD1Database {
         });
         return { success: true };
       }
-      case 'SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes FROM commissioning_sessions WHERE session_id=?': {
+      case 'SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes, checklist_id FROM commissioning_sessions WHERE session_id=?': {
         const id = String(args[0] ?? '');
         const row = this.#sessions.get(id) ?? null;
         return row
@@ -326,6 +368,7 @@ class MockD1Database {
               finished_at: row.finished_at,
               status: row.status,
               notes: row.notes,
+              checklist_id: row.checklist_id,
             } as unknown as T) as T)
           : null;
       }
@@ -341,6 +384,13 @@ class MockD1Database {
         const rows = [...this.#steps.values()]
           .filter((row) => row.session_id === id)
           .sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+        return { results: rows as unknown as T[] };
+      }
+      case 'SELECT step_id, state FROM commissioning_steps WHERE session_id=?': {
+        const id = String(args[0] ?? '');
+        const rows = [...this.#steps.values()]
+          .filter((row) => row.session_id === id)
+          .map((row) => ({ step_id: row.step_id, state: row.state }));
         return { results: rows as unknown as T[] };
       }
       case 'SELECT kind,r2_key,size_bytes,created_at FROM commissioning_artifacts WHERE session_id=?': {
@@ -376,15 +426,42 @@ class MockD1Database {
 }
 
 class MockR2Bucket {
-  #objects = new Map<string, { body: Uint8Array; httpMetadata?: { contentType?: string } }>();
+  #objects = new Map<
+    string,
+    { body: Uint8Array; uploaded: Date; httpMetadata?: { contentType?: string } }
+  >();
 
   async put(key: string, value: ArrayBuffer | Uint8Array, options?: { httpMetadata?: { contentType?: string } }) {
     const body = value instanceof Uint8Array ? value : new Uint8Array(value);
-    this.#objects.set(key, { body, httpMetadata: options?.httpMetadata });
+    this.#objects.set(key, { body, uploaded: new Date(), httpMetadata: options?.httpMetadata });
   }
 
   getObject(key: string) {
     return this.#objects.get(key) ?? null;
+  }
+
+  async list({ prefix = '', cursor, limit = 1000 }: { prefix?: string; cursor?: string; limit?: number }) {
+    const keys = [...this.#objects.keys()].filter((key) => key.startsWith(prefix));
+    let start = 0;
+    if (cursor) {
+      start = Number(cursor);
+    }
+    const slice = keys.slice(start, start + limit);
+    const objects = slice.map((key) => ({ key, uploaded: this.#objects.get(key)!.uploaded }));
+    const next = start + slice.length < keys.length ? String(start + slice.length) : undefined;
+    return { objects, cursor: next, truncated: next !== undefined };
+  }
+
+  async delete(key: string) {
+    this.#objects.delete(key);
+  }
+
+  setUploaded(key: string, date: Date) {
+    const entry = this.#objects.get(key);
+    if (entry) {
+      entry.uploaded = date;
+      this.#objects.set(key, entry);
+    }
   }
 
   async createSignedUrl({ key }: { key: string; expiration: Date }) {
@@ -408,6 +485,14 @@ function createEnv(): Env & { REPORTS: MockR2Bucket; DB: MockD1Database } {
       { id: 'handover_complete', title: 'Handover complete' },
     ]),
     created_at: new Date().toISOString(),
+    required_steps_json: JSON.stringify([
+      'sensors_sane',
+      'deltaT_under_load',
+      'flow_detected',
+      'heartbeat_seen',
+      'alert_fires_and_clears',
+      'handover_complete',
+    ]),
   });
   db.setSetting('commissioning_delta_t_min', '5');
   db.setSetting('commissioning_flow_min_lpm', '6');
@@ -556,6 +641,78 @@ test('commissioning flow stores step updates and generates PDF artifact', async 
   assert.equal(stored?.httpMetadata?.contentType, 'application/pdf');
 });
 
+test('finalise enforces required steps before passing session', async () => {
+  const env = createEnv();
+  const ctx = createCtx();
+
+  const startRes = await worker.fetch(
+    new Request('http://test/api/commissioning/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: 'device-gate', checklist_id: 'greenbro-standard-v1' }),
+    }),
+    env,
+    ctx,
+  );
+  const { session_id: sessionId } = (await startRes.json()) as { session_id: string };
+
+  const passStep = async (step_id: string) => {
+    await worker.fetch(
+      new Request('http://test/api/commissioning/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, step_id, state: 'pass' }),
+      }),
+      env,
+      ctx,
+    );
+  };
+
+  await passStep('sensors_sane');
+  await passStep('deltaT_under_load');
+  await passStep('flow_detected');
+  await passStep('heartbeat_seen');
+  await passStep('alert_fires_and_clears');
+  await worker.fetch(
+    new Request('http://test/api/commissioning/step', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, step_id: 'labels_printed', state: 'skip' }),
+    }),
+    env,
+    ctx,
+  );
+
+  const firstFinalise = await worker.fetch(
+    new Request('http://test/api/commissioning/finalise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, outcome: 'passed' }),
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(firstFinalise.status, 409);
+  const firstBody = (await firstFinalise.json()) as { error: string; missing: string[] };
+  assert.equal(firstBody.error, 'required_steps_not_passed');
+  assert.ok(firstBody.missing.includes('handover_complete'));
+
+  await passStep('handover_complete');
+
+  const secondFinalise = await worker.fetch(
+    new Request('http://test/api/commissioning/finalise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, outcome: 'passed' }),
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(secondFinalise.status, 200);
+  const secondBody = (await secondFinalise.json()) as { ok: boolean };
+  assert.equal(secondBody.ok, true);
+});
+
 test('measure-now updates step with latest telemetry', async () => {
   const env = createEnv();
   const ctx = createCtx();
@@ -639,7 +796,7 @@ test('labels endpoint stores artifact in R2', async () => {
   assert.equal(dbArtifact?.r2_key, body.r2_key);
 });
 
-test('email-report posts to ops webhook with signed URL', async () => {
+test('email-bundle posts to ops webhook with PDF and ZIP links', async () => {
   const env = createEnv();
   const ctx = createCtx();
 
@@ -657,9 +814,13 @@ test('email-report posts to ops webhook with signed URL', async () => {
   await env.DB.prepare('INSERT OR REPLACE INTO commissioning_artifacts(session_id,kind,r2_key,size_bytes) VALUES (?,?,?,?)')
     .bind(sessionId, 'pdf', 'reports/session.pdf', 2048)
     .run();
+  await env.DB.prepare('INSERT OR REPLACE INTO commissioning_artifacts(session_id,kind,r2_key,size_bytes) VALUES (?,?,?,?)')
+    .bind(sessionId, 'zip', 'provisioning/session.zip', 1024)
+    .run();
   await env.REPORTS.put('reports/session.pdf', new Uint8Array([1, 2, 3]), {
     httpMetadata: { contentType: 'application/pdf' },
   });
+  await env.REPORTS.put('provisioning/session.zip', new Uint8Array([9, 9, 9]));
 
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; body: string }> = [];
@@ -672,7 +833,7 @@ test('email-report posts to ops webhook with signed URL', async () => {
 
   try {
     const res = await worker.fetch(
-      new Request('http://test/api/commissioning/email-report', {
+      new Request('http://test/api/commissioning/email-bundle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
@@ -686,8 +847,22 @@ test('email-report posts to ops webhook with signed URL', async () => {
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'https://hooks.example/ops');
     assert.ok(calls[0].body.includes(`Session ${sessionId}`));
-    assert.ok(calls[0].body.includes('https://example.com/'));
+    assert.ok(calls[0].body.includes('Report: https://example.com/'));
+    assert.ok(calls[0].body.includes('Provisioning ZIP: https://example.com/'));
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('pruneR2Prefix removes old provisioning zips', async () => {
+  const env = createEnv();
+  await env.REPORTS.put('provisioning/old.zip', new Uint8Array([1]));
+  await env.REPORTS.put('provisioning/new.zip', new Uint8Array([2]));
+  env.REPORTS.setUploaded('provisioning/old.zip', new Date(Date.now() - 200 * 86400_000));
+  env.REPORTS.setUploaded('provisioning/new.zip', new Date());
+
+  await pruneR2Prefix(env.REPORTS as any, 'provisioning/', 180);
+
+  assert.equal(env.REPORTS.getObject('provisioning/old.zip'), null);
+  assert.ok(env.REPORTS.getObject('provisioning/new.zip'));
 });

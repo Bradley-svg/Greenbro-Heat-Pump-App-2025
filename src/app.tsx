@@ -53,7 +53,9 @@ import { preflight } from './utils/preflight';
 import { getVersion } from './utils/version';
 import { validateHeartbeat, validateIngest } from './lib/schemas';
 import { getLatestTelemetry, computeDeltaT, getWindowSample } from './lib/commissioning';
-import { emailCommissioning } from './lib/email';
+import { emailCommissioning, emailCommissioningWithZip } from './lib/email';
+import { audit } from './lib/audit';
+import { pruneR2Prefix } from './lib/prune';
 import { getSetting, setSetting } from './lib/settings';
 
 let pdfModulePromise: Promise<typeof import('./pdf')> | undefined;
@@ -1667,7 +1669,7 @@ app.get('/api/commissioning/settings', async (c) => {
 
 app.get('/api/commissioning/checklists', async (c) => {
   const rows = await c.env.DB.prepare(
-    'SELECT checklist_id,name,version FROM commissioning_checklists ORDER BY created_at DESC',
+    'SELECT checklist_id,name,version,steps_json,required_steps_json FROM commissioning_checklists ORDER BY created_at DESC',
   ).all();
   return c.json(rows.results ?? []);
 });
@@ -1675,7 +1677,7 @@ app.get('/api/commissioning/checklists', async (c) => {
 app.get('/api/commissioning/checklist/:id', async (c) => {
   const id = c.req.param('id');
   const row = await c.env.DB.prepare(
-    'SELECT checklist_id,name,version,steps_json FROM commissioning_checklists WHERE checklist_id=?',
+    'SELECT checklist_id,name,version,steps_json,required_steps_json FROM commissioning_checklists WHERE checklist_id=?',
   )
     .bind(id)
     .first();
@@ -1684,7 +1686,7 @@ app.get('/api/commissioning/checklist/:id', async (c) => {
 
 app.get('/api/commissioning/sessions', async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes,
+    `SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes, checklist_id,
             (SELECT MAX(updated_at) FROM commissioning_steps WHERE session_id = cs.session_id) AS last_update
        FROM commissioning_sessions cs
        ORDER BY started_at DESC
@@ -1699,6 +1701,7 @@ app.get('/api/commissioning/sessions', async (c) => {
     status: string;
     notes: string | null;
     last_update: string | null;
+    checklist_id: string | null;
   }>();
 
   const sessions = (rows.results ?? []).map((row) => ({
@@ -1711,6 +1714,7 @@ app.get('/api/commissioning/sessions', async (c) => {
     status: row.status,
     notes: row.notes ?? null,
     last_update: row.last_update ?? null,
+    checklist_id: row.checklist_id ?? null,
   }));
 
   return c.json(sessions);
@@ -1719,7 +1723,7 @@ app.get('/api/commissioning/sessions', async (c) => {
 app.get('/api/commissioning/session/:id', async (c) => {
   const id = c.req.param('id');
   const session = await c.env.DB.prepare(
-    'SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes FROM commissioning_sessions WHERE session_id=?',
+    'SELECT session_id, device_id, site_id, operator_sub, started_at, finished_at, status, notes, checklist_id FROM commissioning_sessions WHERE session_id=?',
   )
     .bind(id)
     .first<{
@@ -1731,6 +1735,7 @@ app.get('/api/commissioning/session/:id', async (c) => {
       finished_at: string | null;
       status: string;
       notes: string | null;
+      checklist_id: string | null;
     }>();
 
   if (!session) {
@@ -1802,6 +1807,7 @@ app.get('/api/commissioning/session/:id', async (c) => {
       finished_at: session.finished_at ?? null,
       status: session.status,
       notes: session.notes ?? null,
+      checklist_id: session.checklist_id ?? null,
     },
     steps: parsedSteps,
     artifacts: Object.fromEntries(artifactMap.entries()),
@@ -1823,9 +1829,16 @@ app.post('/api/commissioning/start', async (c) => {
   }
   const sessionId = crypto.randomUUID();
   await c.env.DB.prepare(
-    'INSERT INTO commissioning_sessions(session_id,device_id,site_id,operator_sub,notes) VALUES (?,?,?,?,?)',
+    'INSERT INTO commissioning_sessions(session_id,device_id,site_id,operator_sub,notes,checklist_id) VALUES (?,?,?,?,?,?)',
   )
-    .bind(sessionId, body.device_id, body.site_id ?? null, auth.sub, body.notes ?? null)
+    .bind(
+      sessionId,
+      body.device_id,
+      body.site_id ?? null,
+      auth.sub,
+      body.notes ?? null,
+      body.checklist_id ?? null,
+    )
     .run();
 
   const cl = await c.env.DB.prepare('SELECT steps_json FROM commissioning_checklists WHERE checklist_id=?')
@@ -1843,6 +1856,11 @@ app.post('/api/commissioning/start', async (c) => {
   for (const step of steps) {
     await stmt.bind(sessionId, step.id, step.title, 'pending').run();
   }
+
+  await audit(c.env as any, auth, 'commissioning.start', body.device_id, {
+    site_id: body.site_id ?? null,
+    checklist_id: body.checklist_id ?? null,
+  });
 
   return c.json({ ok: true, session_id: sessionId });
 });
@@ -1877,6 +1895,11 @@ app.post('/api/commissioning/step', async (c) => {
       body.step_id,
     )
     .run();
+  await audit(c.env as any, auth, 'commissioning.step', `${body.session_id}:${body.step_id}`, {
+    state: body.state,
+    readings: body.readings ?? null,
+    comment: body.comment ?? null,
+  });
   return c.json({ ok: true });
 });
 
@@ -1893,10 +1916,42 @@ app.post('/api/commissioning/finalise', async (c) => {
   if (!body?.session_id) {
     return c.text('Bad Request', 400);
   }
+  const outcome = body.outcome ?? 'passed';
+  if (outcome === 'passed') {
+    const req = await c.env.DB.prepare(
+      `SELECT coalesce(required_steps_json, steps_json) AS steps FROM commissioning_checklists
+       WHERE checklist_id = (SELECT checklist_id FROM commissioning_sessions WHERE session_id=?)`,
+    )
+      .bind(body.session_id)
+      .first<{ steps: string } | null>();
+    let required: string[] = [];
+    if (req?.steps) {
+      try {
+        const parsed = JSON.parse(req.steps) as Array<{ id?: string } | string>;
+        required = parsed
+          .map((item) => (typeof item === 'string' ? item : item.id ?? null))
+          .filter((id): id is string => !!id);
+      } catch (error) {
+        console.warn('Invalid commissioning required steps JSON', error);
+      }
+    }
+    if (required.length) {
+      const rows = await c.env.DB.prepare(
+        'SELECT step_id, state FROM commissioning_steps WHERE session_id=?',
+      )
+        .bind(body.session_id)
+        .all<{ step_id: string; state: string }>();
+      const states = Object.fromEntries((rows.results ?? []).map((r) => [r.step_id, r.state]));
+      const missing = required.filter((id) => states[id] !== 'pass');
+      if (missing.length) {
+        return c.json({ ok: false, error: 'required_steps_not_passed', missing }, 409);
+      }
+    }
+  }
   await c.env.DB.prepare(
     "UPDATE commissioning_sessions SET status=?, finished_at=datetime('now'), notes=COALESCE(?,notes) WHERE session_id=?",
   )
-    .bind(body.outcome ?? 'passed', body.notes ?? null, body.session_id)
+    .bind(outcome, body.notes ?? null, body.session_id)
     .run();
 
   const { renderCommissioningPdf } = await import('./reports/commissioning-pdf');
@@ -1906,6 +1961,11 @@ app.post('/api/commissioning/finalise', async (c) => {
   )
     .bind(body.session_id, 'pdf', key, size)
     .run();
+
+  await audit(c.env as any, auth, 'commissioning.finalise', body.session_id, {
+    outcome,
+    notes: body.notes ?? null,
+  });
 
   return c.json({ ok: true, r2_key: key });
 });
@@ -1973,6 +2033,14 @@ app.post('/api/commissioning/measure-now', async (c) => {
     .bind(pass ? 'pass' : 'fail', JSON.stringify(readings), body.session_id, body.step_id)
     .run();
 
+  await audit(c.env as any, auth, 'commissioning.measure-now', `${body.session_id}:${body.step_id}`, {
+    result: {
+      delta_t: deltaT,
+      flow_lpm: flowValue,
+      cop: copValue,
+    },
+  });
+
   return c.json({
     ok: true,
     pass,
@@ -2032,17 +2100,25 @@ app.post('/api/commissioning/measure-window', async (c) => {
   )
     .bind(
       pass ? 'pass' : 'fail',
-      JSON.stringify({ ...sample, thresholds: { dtMin, flMin: flowMin, copMin } }),
+      JSON.stringify({
+        ...sample,
+        thresholds: { delta_t_min: dtMin, flow_min_lpm: flowMin, cop_min: copMin },
+      }),
       body.session_id,
       body.step_id,
     )
     .run();
 
+  await audit(c.env as any, auth, 'commissioning.measure-window', `${body.session_id}:${body.step_id}`, {
+    sample,
+    thresholds: { delta_t_min: dtMin, flow_min_lpm: flowMin, cop_min: copMin },
+  });
+
   return c.json({
     ok: true,
     pass,
     sample,
-    thresholds: { dtMin, flMin: flowMin, copMin },
+    thresholds: { delta_t_min: dtMin, flow_min_lpm: flowMin, cop_min: copMin },
   });
 });
 
@@ -2077,6 +2153,8 @@ app.post('/api/commissioning/labels', async (c) => {
   )
     .bind(body.session_id, 'labels', key, size)
     .run();
+
+  await audit(c.env as any, auth, 'commissioning.labels', body.session_id, { r2_key: key });
 
   return c.json({ ok: true, r2_key: key, size });
 });
@@ -2113,7 +2191,23 @@ app.post('/api/commissioning/provisioning-zip', async (c) => {
     .bind(body.session_id, 'zip', key, size)
     .run();
 
+  await audit(c.env as any, auth, 'commissioning.provisioning-zip', body.session_id, { r2_key: key });
+
   return c.json({ ok: true, r2_key: key, size });
+});
+
+app.post('/api/commissioning/email-bundle', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const body = await c.req.json<{ session_id: string }>().catch(() => null);
+  if (!body?.session_id) {
+    return c.text('Bad Request', 400);
+  }
+
+  const to = (await getSetting(c.env.DB, 'commissioning_report_recipients')) ?? '';
+  const res = await emailCommissioningWithZip(c.env as any, to, body.session_id);
+  await audit(c.env as any, auth, 'commissioning.email-bundle', body.session_id, res);
+  return c.json(res);
 });
 
 app.post('/api/commissioning/email-report', async (c) => {
@@ -4213,7 +4307,7 @@ app.get('/admin/commissioning', async (c) => {
   await attachVersionInfo(c, auth);
 
   const sessions = await c.env.DB.prepare(
-    `SELECT session_id, device_id, site_id, status, started_at, finished_at, notes,
+    `SELECT session_id, device_id, site_id, status, started_at, finished_at, notes, checklist_id,
             (SELECT MAX(updated_at) FROM commissioning_steps WHERE session_id = cs.session_id) AS last_update
        FROM commissioning_sessions cs
        ORDER BY started_at DESC
@@ -4226,10 +4320,64 @@ app.get('/admin/commissioning', async (c) => {
     started_at: string;
     finished_at: string | null;
     notes: string | null;
+    checklist_id: string | null;
     last_update: string | null;
   }>();
 
   const sessionRows = sessions.results ?? [];
+  const checklistIds = [...new Set(sessionRows.map((row) => row.checklist_id).filter((id): id is string => !!id))];
+  const checklistRequired = new Map<string, Set<string>>();
+  if (checklistIds.length) {
+    const placeholders = checklistIds.map(() => '?').join(',');
+    const rows = await c.env.DB.prepare(
+      `SELECT checklist_id, coalesce(required_steps_json, steps_json) AS required
+         FROM commissioning_checklists
+        WHERE checklist_id IN (${placeholders})`,
+    )
+      .bind(...checklistIds)
+      .all<{ checklist_id: string; required: string | null }>();
+    for (const row of rows.results ?? []) {
+      if (!row.required) continue;
+      try {
+        const parsed = JSON.parse(row.required);
+        if (Array.isArray(parsed)) {
+          const ids = parsed
+            .map((value) => {
+              if (typeof value === 'string') return value;
+              if (value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string') {
+                return (value as { id: string }).id;
+              }
+              return null;
+            })
+            .filter((id): id is string => Boolean(id));
+          checklistRequired.set(row.checklist_id, new Set(ids));
+        }
+      } catch (error) {
+        console.warn('Failed to parse checklist required steps', error);
+      }
+    }
+  }
+
+  const stepMap = new Map<string, Array<{ step_id: string; title: string; state: string }>>();
+  if (sessionRows.length) {
+    const placeholders = sessionRows.map(() => '?').join(',');
+    const steps = await c.env.DB.prepare(
+      `SELECT session_id, step_id, title, state
+         FROM commissioning_steps
+        WHERE session_id IN (${placeholders})`,
+    )
+      .bind(...sessionRows.map((row) => row.session_id))
+      .all<{ session_id: string; step_id: string; title: string; state: string }>();
+    for (const row of steps.results ?? []) {
+      let list = stepMap.get(row.session_id);
+      if (!list) {
+        list = [];
+        stepMap.set(row.session_id, list);
+      }
+      list.push({ step_id: row.step_id, title: row.title, state: row.state });
+    }
+  }
+
   const artifactMap = new Map<string, Map<string, { r2_key: string; size_bytes: number | null; created_at: string }>>();
   if (sessionRows.length > 0) {
     const placeholders = sessionRows.map(() => '?').join(',');
@@ -4263,6 +4411,23 @@ app.get('/admin/commissioning', async (c) => {
 
   const toRow = (row: (typeof sessionRows)[number]): AdminCommissioningRow => {
     const artifacts = artifactMap.get(row.session_id) ?? new Map();
+    const steps = stepMap.get(row.session_id) ?? [];
+    const requiredIds = row.checklist_id && checklistRequired.has(row.checklist_id)
+      ? checklistRequired.get(row.checklist_id)!
+      : new Set(steps.map((step) => step.step_id));
+    const requiredTotal = requiredIds.size;
+    let requiredPassed = 0;
+    const missingNames: string[] = [];
+    if (requiredTotal > 0) {
+      for (const step of steps) {
+        if (!requiredIds.has(step.step_id)) continue;
+        if (step.state === 'pass') {
+          requiredPassed += 1;
+        } else {
+          missingNames.push(step.title);
+        }
+      }
+    }
     return {
       session_id: row.session_id,
       device_id: row.device_id,
@@ -4276,6 +4441,9 @@ app.get('/admin/commissioning', async (c) => {
         string,
         { r2_key: string; size_bytes: number | null; created_at: string } | undefined
       >,
+      required_total: requiredTotal,
+      required_passed: requiredPassed,
+      required_missing: missingNames,
     };
   };
 
@@ -5536,6 +5704,9 @@ export default {
 
     try {
       await pruneStaged(env, 14);
+    } catch {}
+    try {
+      await pruneR2Prefix(env.REPORTS, 'provisioning/', 180);
     } catch {}
   },
 };

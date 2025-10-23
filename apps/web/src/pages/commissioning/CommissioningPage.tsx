@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { api } from '@/api/http';
@@ -19,6 +19,8 @@ type ChecklistSummary = {
   checklist_id: string;
   name: string;
   version: number;
+  steps_json: string;
+  required_steps_json?: string | null;
 };
 
 type SessionSummary = {
@@ -30,6 +32,7 @@ type SessionSummary = {
   finished_at: string | null;
   last_update: string | null;
   notes: string | null;
+  checklist_id: string | null;
 };
 
 type ArtifactInfo = { r2_key: string; size_bytes: number | null; created_at: string };
@@ -68,6 +71,7 @@ export default function CommissioningPage(): JSX.Element {
   const [notes, setNotes] = useState('');
   const [checklistId, setChecklistId] = useState('');
   const [noteDraft, setNoteDraft] = useState('');
+  const [missingSteps, setMissingSteps] = useState<string[]>([]);
 
   const { data: checklists } = useQuery<ChecklistSummary[]>({
     queryKey: ['comm:lists'],
@@ -111,6 +115,38 @@ export default function CommissioningPage(): JSX.Element {
     enabled: Boolean(selectedSessionId),
   });
 
+  const requiredMap = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const cl of checklists ?? []) {
+      const parseIds = (raw: string | null | undefined): string[] => {
+        if (!raw) return [];
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            return parsed
+              .map((value) => {
+                if (typeof value === 'string') return value;
+                if (value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string') {
+                  return (value as { id: string }).id;
+                }
+                return null;
+              })
+              .filter((id): id is string => Boolean(id));
+          }
+        } catch (error) {
+          console.warn('Failed to parse checklist required steps', error);
+        }
+        return [];
+      };
+
+      const required = parseIds(cl.required_steps_json ?? undefined);
+      const fallback = parseIds(cl.steps_json);
+      const ids = required.length > 0 ? required : fallback;
+      map.set(cl.checklist_id, new Set(ids));
+    }
+    return map;
+  }, [checklists]);
+
   const thresholds = settingsQuery.data ?? { delta_t_min: 0, flow_min_lpm: 0, cop_min: 0 };
 
   useEffect(() => {
@@ -150,12 +186,40 @@ export default function CommissioningPage(): JSX.Element {
   });
 
   const finalise = useMutation({
-    mutationFn: (payload: { session_id: string; outcome: 'passed' | 'failed'; notes?: string }) =>
-      api.post('/api/commissioning/finalise', payload).then((r) => r.json()),
-    onSuccess: (_data, variables) => {
-      toast.success(`Session ${variables.outcome === 'passed' ? 'finalised' : 'marked as failed'}`);
-      void qc.invalidateQueries({ queryKey: ['comm:session', variables.session_id] });
-      void qc.invalidateQueries({ queryKey: ['comm:sessions'] });
+    mutationFn: async (payload: { session_id: string; outcome: 'passed' | 'failed'; notes?: string }) => {
+      const response = await api.post('/api/commissioning/finalise', payload);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok && response.status !== 409) {
+        throw Object.assign(new Error('finalise_failed'), { status: response.status, body });
+      }
+      return { status: response.status, body } as {
+        status: number;
+        body: { ok?: boolean; error?: string; missing?: string[] };
+      };
+    },
+    onSuccess: (result, variables) => {
+      if (result.status === 409 && result.body?.error === 'required_steps_not_passed') {
+        const missingList = Array.isArray(result.body.missing)
+          ? (result.body.missing as string[])
+          : [];
+        setMissingSteps(missingList);
+        const detailData = qc.getQueryData<SessionDetail>(['comm:session', variables.session_id]);
+        const missingNames = missingList.map((id) => {
+          const match = detailData?.steps.find((step) => step.step_id === id);
+          return match?.title ?? id;
+        });
+        const label = missingNames.length > 0 ? missingNames.join(', ') : 'Check checklist';
+        toast.warning(`Required steps outstanding: ${label}`);
+        return;
+      }
+      if (result.body?.ok) {
+        toast.success(`Session ${variables.outcome === 'passed' ? 'finalised' : 'marked as failed'}`);
+        setMissingSteps([]);
+        void qc.invalidateQueries({ queryKey: ['comm:session', variables.session_id] });
+        void qc.invalidateQueries({ queryKey: ['comm:sessions'] });
+        return;
+      }
+      toast.error('Failed to finalise session');
     },
     onError: () => toast.error('Failed to finalise session'),
   });
@@ -189,8 +253,8 @@ export default function CommissioningPage(): JSX.Element {
       void qc.invalidateQueries({ queryKey: ['comm:session', variables.session_id] });
       if (data?.ok) {
         const dt = typeof data.sample?.delta_t_med === 'number' ? data.sample.delta_t_med : null;
-        const thresholdRaw = typeof data.thresholds?.dtMin === 'number'
-          ? data.thresholds.dtMin
+        const thresholdRaw = typeof data.thresholds?.delta_t_min === 'number'
+          ? data.thresholds.delta_t_min
           : thresholds.delta_t_min;
         const threshold = Number.isFinite(thresholdRaw) ? thresholdRaw : 0;
         const dtText = dt != null ? `${dt.toFixed(1)}°C` : '—';
@@ -230,22 +294,91 @@ export default function CommissioningPage(): JSX.Element {
     onError: () => toast.error('Failed to create provisioning ZIP'),
   });
 
-  const email = useMutation({
-    mutationFn: (session_id: string) =>
-      api.post('/api/commissioning/email-report', { session_id }).then((r) => r.json()),
+  const emailBundle = useMutation({
+    mutationFn: async (session_id: string) => {
+      const response = await api.post('/api/commissioning/email-bundle', { session_id });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw Object.assign(new Error('email_bundle_failed'), { status: response.status, body });
+      }
+      return body as { ok?: boolean; reason?: string };
+    },
     onSuccess: (data) => {
       if (data?.ok) {
-        toast.success('Commissioning report emailed');
-      } else {
+        toast.success('Bundle email triggered');
+      } else if (data?.reason === 'no_pdf') {
+        toast.warning('Commissioning PDF not available yet');
+      } else if (data?.reason === 'no_webhook') {
         toast.warning('No webhook configured for commissioning reports');
+      } else {
+        toast.warning('Unable to send commissioning bundle');
       }
     },
-    onError: () => toast.error('Failed to send commissioning email'),
+    onError: () => toast.error('Failed to send commissioning bundle'),
   });
 
   const detail = detailQuery.data;
   const currentSession = detail?.session ?? null;
   const artifacts = detail?.artifacts ?? {};
+
+  const currentRequired = useMemo(() => {
+    if (!currentSession?.checklist_id) {
+      return new Set<string>();
+    }
+    return requiredMap.get(currentSession.checklist_id) ?? new Set<string>();
+  }, [currentSession?.checklist_id, requiredMap]);
+
+  const requiredStats = useMemo(() => {
+    const total = currentRequired.size;
+    if (!detail?.steps || total === 0) {
+      return { total, passed: 0, missing: [] as string[] };
+    }
+    let passed = 0;
+    const missing: string[] = [];
+    for (const step of detail.steps) {
+      if (!currentRequired.has(step.step_id)) continue;
+      if (step.state === 'pass') {
+        passed += 1;
+      } else {
+        missing.push(step.step_id);
+      }
+    }
+    return { total, passed, missing };
+  }, [currentRequired, detail?.steps]);
+
+  const outstandingRequiredLabels = useMemo(() => {
+    if (!detail?.steps || requiredStats.missing.length === 0) {
+      return [] as string[];
+    }
+    return requiredStats.missing.map((id) => {
+      const match = detail.steps.find((step) => step.step_id === id);
+      return match?.title ?? id;
+    });
+  }, [detail?.steps, requiredStats.missing]);
+
+  useEffect(() => {
+    if (!missingSteps.length) return;
+    if (!detail?.steps) return;
+    const stillMissing = missingSteps.filter((id) => {
+      const match = detail.steps.find((step) => step.step_id === id);
+      return match ? match.state !== 'pass' : false;
+    });
+    if (stillMissing.length !== missingSteps.length) {
+      setMissingSteps(stillMissing);
+    }
+  }, [detail?.steps, missingSteps]);
+
+  useEffect(() => {
+    setMissingSteps([]);
+  }, [selectedSessionId]);
+
+  const missingHighlight = useMemo(() => {
+    const set = new Set<string>(requiredStats.missing);
+    for (const id of missingSteps) {
+      set.add(id);
+    }
+    return set;
+  }, [missingSteps, requiredStats.missing]);
 
   const handleCreate = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -305,9 +438,17 @@ export default function CommissioningPage(): JSX.Element {
     provisioningZip.mutate(currentSession.session_id);
   };
 
-  const handleEmail = () => {
+  const handleEmailBundle = () => {
     if (!currentSession) return;
-    email.mutate(currentSession.session_id);
+    if (!artifacts.pdf) {
+      toast.warning('Finalise the session to generate the PDF first');
+      return;
+    }
+    if (!artifacts.zip) {
+      toast.warning('Generate the provisioning ZIP before emailing');
+      return;
+    }
+    emailBundle.mutate(currentSession.session_id);
   };
 
   const actionDisabled = ro;
@@ -393,6 +534,9 @@ export default function CommissioningPage(): JSX.Element {
             <ul className="commissioning-list" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '8px' }}>
               {sessions.map((session) => {
                 const active = session.session_id === selectedSessionId;
+                const requiredCount = session.checklist_id
+                  ? requiredMap.get(session.checklist_id)?.size ?? 0
+                  : 0;
                 return (
                   <li key={session.session_id}>
                     <button
@@ -417,6 +561,21 @@ export default function CommissioningPage(): JSX.Element {
                         <span style={{ display: 'block', fontSize: '0.85em', color: 'rgba(71, 85, 105, 0.85)' }}>
                           {session.site_id ?? 'No site'}
                         </span>
+                        {requiredCount > 0 ? (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              marginTop: '4px',
+                              fontSize: '0.75em',
+                              padding: '2px 6px',
+                              borderRadius: '999px',
+                              background: 'rgba(14, 165, 233, 0.15)',
+                              color: 'rgba(14, 165, 233, 0.9)',
+                            }}
+                          >
+                            Required: {requiredCount}
+                          </span>
+                        ) : null}
                       </span>
                       <span className={statePillClass(session.status)}>{statusLabel(session.status)}</span>
                     </button>
@@ -456,6 +615,30 @@ export default function CommissioningPage(): JSX.Element {
                 <div>
                   <strong>Finished</strong>: {formatDate(currentSession?.finished_at)}
                 </div>
+                {requiredStats.total > 0 ? (
+                  <div>
+                    <strong>Required</strong>:{' '}
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontSize: '0.85em',
+                        padding: '2px 8px',
+                        borderRadius: '999px',
+                        background: 'rgba(59, 130, 246, 0.12)',
+                        color: 'rgba(37, 99, 235, 0.95)',
+                      }}
+                    >
+                      {requiredStats.passed}/{requiredStats.total} passed
+                    </span>
+                  </div>
+                ) : null}
+                {outstandingRequiredLabels.length > 0 ? (
+                  <div style={{ fontSize: '0.85em', color: 'rgba(239, 68, 68, 0.9)' }}>
+                    Outstanding required: {outstandingRequiredLabels.join(', ')}
+                  </div>
+                ) : null}
               </div>
 
               <label className="form-field">
@@ -501,14 +684,16 @@ export default function CommissioningPage(): JSX.Element {
                 >
                   {provisioningZip.isPending ? 'Generating…' : 'Provisioning ZIP'}
                 </button>
-                <button
-                  className="app-button"
-                  type="button"
-                  onClick={handleEmail}
-                  disabled={actionDisabled || email.isPending || !artifacts.pdf}
-                >
-                  {email.isPending ? 'Emailing…' : 'Email report'}
-                </button>
+                {currentSession?.status !== 'in_progress' ? (
+                  <button
+                    className="app-button"
+                    type="button"
+                    onClick={handleEmailBundle}
+                    disabled={actionDisabled || emailBundle.isPending}
+                  >
+                    {emailBundle.isPending ? 'Emailing…' : 'Email bundle'}
+                  </button>
+                ) : null}
               </div>
 
               <div className="commissioning-artifacts" style={{ display: 'grid', gap: '4px', fontSize: '0.9em' }}>
@@ -544,6 +729,8 @@ export default function CommissioningPage(): JSX.Element {
                       measuringWindow={
                         measureWindow.isPending && measureWindow.variables?.step_id === step.step_id
                       }
+                      required={currentRequired.has(step.step_id)}
+                      missing={missingHighlight.has(step.step_id)}
                     />
                   ))
                 )}
@@ -567,6 +754,8 @@ type StepCardProps = {
   updating: boolean;
   measuring: boolean;
   measuringWindow: boolean;
+  required: boolean;
+  missing: boolean;
 };
 
 function StepCard({
@@ -580,6 +769,8 @@ function StepCard({
   updating,
   measuring,
   measuringWindow,
+  required,
+  missing,
 }: StepCardProps) {
   const [comment, setComment] = useState(step.comment ?? '');
 
@@ -599,10 +790,36 @@ function StepCard({
 
   const showMeasurements = Boolean(onMeasure || onMeasureWindow);
 
+  const cardStyle: CSSProperties = {
+    border: missing ? '2px solid rgba(244, 63, 94, 0.6)' : '1px solid rgba(0,0,0,0.1)',
+    borderRadius: '12px',
+    padding: '12px',
+    boxShadow: missing ? '0 0 0 2px rgba(244,63,94,0.25), 0 0 14px rgba(244,63,94,0.35)' : 'none',
+    background: missing ? 'rgba(255, 241, 242, 0.75)' : 'transparent',
+    transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+  };
+
   return (
-    <div className="commissioning-step" style={{ border: '1px solid rgba(0,0,0,0.1)', borderRadius: '12px', padding: '12px' }}>
+    <div className="commissioning-step" style={cardStyle}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-        <h4 style={{ margin: 0 }}>{step.title}</h4>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <h4 style={{ margin: 0 }}>{step.title}</h4>
+          {required ? (
+            <span
+              style={{
+                fontSize: '0.75em',
+                padding: '2px 6px',
+                borderRadius: '999px',
+                background: 'rgba(251, 191, 36, 0.25)',
+                color: 'rgba(217, 119, 6, 0.95)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+              }}
+            >
+              Required
+            </span>
+          ) : null}
+        </div>
         <span className={statePillClass(step.state)}>{statusLabel(step.state)}</span>
       </div>
       <div style={{ fontSize: '0.85em', color: 'rgba(71, 85, 105, 0.85)' }}>Updated {formatDate(step.updated_at)}</div>

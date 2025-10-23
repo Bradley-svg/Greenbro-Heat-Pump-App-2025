@@ -39,3 +39,42 @@ export async function emailCommissioning(
   });
   return { ok: true as const };
 }
+
+export async function emailCommissioningWithZip(env: Env, toCsv: string, session_id: string) {
+  const pdf = await env.DB.prepare(
+    "SELECT r2_key FROM commissioning_artifacts WHERE session_id=? AND kind='pdf'",
+  )
+    .bind(session_id)
+    .first<{ r2_key: string }>();
+  const zip = await env.DB.prepare(
+    "SELECT r2_key FROM commissioning_artifacts WHERE session_id=? AND kind='zip'",
+  )
+    .bind(session_id)
+    .first<{ r2_key: string }>();
+
+  if (!pdf) {
+    return { ok: false as const, reason: 'no_pdf' };
+  }
+
+  const pdfUrl = await getSignedR2Url(env.REPORTS, pdf.r2_key);
+  const zipUrl = zip ? await getSignedR2Url(env.REPORTS, zip.r2_key) : null;
+
+  const hook = await getSetting(env.DB, 'ops_webhook_url');
+  if (!hook) {
+    return { ok: false as const, reason: 'no_webhook' };
+  }
+
+  const text = [
+    `Commissioning Report (Session ${session_id})`,
+    `Report: ${pdfUrl}`,
+    zipUrl ? `Provisioning ZIP: ${zipUrl}` : '(No provisioning ZIP generated)',
+    `Recipients: ${toCsv || '(none configured)'}`,
+  ].join('\n');
+
+  await fetch(hook, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  return { ok: true as const };
+}

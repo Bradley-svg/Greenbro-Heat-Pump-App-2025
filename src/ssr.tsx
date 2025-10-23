@@ -2760,6 +2760,9 @@ export type AdminCommissioningRow = {
   last_update: string | null;
   notes: string | null;
   artifacts: Record<string, CommissioningArtifactInfo | undefined>;
+  required_total: number;
+  required_passed: number;
+  required_missing: string[];
 };
 
 type AdminCommissioningPageProps = {
@@ -2784,6 +2787,10 @@ const adminCommissioningScript = `
     const action = target.getAttribute('data-action');
     const sessionId = target.getAttribute('data-session');
     if(!action || !sessionId) return;
+    if(document.body && document.body.hasAttribute('data-ro')){
+      alert('Read-only mode — actions are disabled.');
+      return;
+    }
     target.setAttribute('disabled', 'true');
     try {
       if(action === 'labels'){
@@ -2795,6 +2802,17 @@ const adminCommissioningScript = `
           alert('Commissioning report email posted.');
         } else {
           alert('No webhook configured for commissioning emails.');
+        }
+      } else if(action === 'bundle'){
+        const res = await post('/api/commissioning/email-bundle', {session_id: sessionId});
+        if(res && res.ok){
+          alert('Commissioning bundle email posted.');
+        } else if(res && res.reason === 'no_pdf'){
+          alert('Commissioning PDF not available yet.');
+        } else if(res && res.reason === 'no_webhook'){
+          alert('No webhook configured for commissioning emails.');
+        } else {
+          alert('Unable to send commissioning bundle.');
         }
       } else if(action === 'zip'){
         const res = await post('/api/commissioning/provisioning-zip', {session_id: sessionId});
@@ -2819,10 +2837,31 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
     return artifact ? <code>{artifact.r2_key}</code> : '—';
   };
 
+  const renderRequired = (row: AdminCommissioningRow) => {
+    if (!row.required_total) {
+      return '—';
+    }
+    const ratio = `${row.required_passed}/${row.required_total}`;
+    return (
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <span
+          style="display:inline-flex;align-items:center;gap:4px;font-size:0.85em;padding:2px 8px;border-radius:999px;background:rgba(59,130,246,0.15);color:rgba(37,99,235,0.95)"
+        >
+          {ratio} passed
+        </span>
+        {row.required_missing.length > 0 ? (
+          <span style="font-size:0.8em;color:rgba(239,68,68,0.9)">
+            Outstanding: {row.required_missing.join(', ')}
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
   const openBody =
     props.open.length === 0 ? (
       <tr>
-        <td colSpan={6} class="table-empty">
+        <td colSpan={7} class="table-empty">
           No sessions in progress.
         </td>
       </tr>
@@ -2836,10 +2875,19 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
           <td>{row.site_id ?? '—'}</td>
           <td>{row.started_at}</td>
           <td>{row.last_update ?? '—'}</td>
+          <td>{renderRequired(row)}</td>
           <td>
             <button class="btn" type="button" data-action="labels" data-session={row.session_id}>
               Emit labels
             </button>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+              <button class="btn" type="button" data-action="zip" data-session={row.session_id}>
+                Provisioning ZIP
+              </button>
+              <button class="btn" type="button" data-action="bundle" data-session={row.session_id}>
+                Email bundle
+              </button>
+            </div>
           </td>
         </tr>
       ))
@@ -2848,7 +2896,7 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
   const completedBody =
     props.completed.length === 0 ? (
       <tr>
-        <td colSpan={9} class="table-empty">
+        <td colSpan={10} class="table-empty">
           No completed sessions yet.
         </td>
       </tr>
@@ -2861,6 +2909,7 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
           <td>{row.device_id}</td>
           <td>{row.site_id ?? '—'}</td>
           <td>{row.status}</td>
+          <td>{renderRequired(row)}</td>
           <td>{row.finished_at ?? '—'}</td>
           <td>{renderArtifact(row, 'pdf')}</td>
           <td>{renderArtifact(row, 'labels')}</td>
@@ -2870,11 +2919,11 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
               <button class="btn" type="button" data-action="labels" data-session={row.session_id}>
                 Emit labels
               </button>
-              <button class="btn" type="button" data-action="email" data-session={row.session_id}>
-                Email report
-              </button>
               <button class="btn" type="button" data-action="zip" data-session={row.session_id}>
                 Provisioning ZIP
+              </button>
+              <button class="btn" type="button" data-action="bundle" data-session={row.session_id}>
+                Email bundle
               </button>
             </div>
           </td>
@@ -2894,6 +2943,7 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
             <th>Site</th>
             <th>Started</th>
             <th>Last update</th>
+            <th>Required</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -2907,6 +2957,7 @@ export function AdminCommissioningPage(props: AdminCommissioningPageProps) {
             <th>Device</th>
             <th>Site</th>
             <th>Status</th>
+            <th>Required</th>
             <th>Finished</th>
             <th>PDF</th>
             <th>Labels</th>
