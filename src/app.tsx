@@ -49,6 +49,7 @@ import {
 import { handleQueueBatch as baseQueueHandler } from './queue';
 import { sweepIncidents } from './incidents';
 import { withSecurityHeaders } from './security';
+import { preflight } from './utils/preflight';
 
 void DeviceStateDO;
 void DeviceDO;
@@ -3133,6 +3134,75 @@ app.get('/api/ops/burn-series', async (c) => {
   return c.json({ series });
 });
 
+async function tryDB(DB: D1Database) {
+  try {
+    await DB.prepare('SELECT 1').first();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+async function tryR2(bucket: R2Bucket, key: string) {
+  try {
+    const head = await bucket.head(key);
+    return { ok: Boolean(head) };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+async function schemaSnapshot(DB: D1Database) {
+  try {
+    const tables = await DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all<{ name: string }>();
+    const names = (tables.results ?? []).map((row) => row.name).filter(Boolean).sort();
+    return { ok: true, tables: names };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+app.get('/api/ops/readiness', async (c) => {
+  const bypass = c.env.DEV_AUTH_BYPASS === '1';
+  if (!bypass) {
+    const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+    if (!jwt) {
+      return c.text('Unauthorized', 401);
+    }
+    const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+    if (!auth) {
+      return c.text('Unauthorized', 401);
+    }
+    requireRole(auth, ['admin', 'ops']);
+  }
+
+  const [db, brand, reports, schema, readOnly] = await Promise.all([
+    tryDB(c.env.DB),
+    tryR2(c.env.BRAND, 'logo.svg'),
+    tryR2(c.env.REPORTS, ''),
+    schemaSnapshot(c.env.DB),
+    getSetting(c.env.DB, 'read_only').then((value) => value === '1'),
+  ]);
+
+  const ok = db.ok && brand.ok && schema.ok;
+  const body = {
+    ok,
+    read_only: readOnly,
+    checks: {
+      db,
+      schema,
+      r2_brand: brand,
+      r2_reports: reports,
+    },
+    meta: {
+      access_aud: Boolean(c.env.ACCESS_AUD),
+      jwks: Boolean(c.env.ACCESS_JWKS ?? c.env.ACCESS_JWKS_URL),
+    },
+  };
+
+  return withSecurityHeaders(c.json(body));
+});
+
 app.get('/api/ops/health', async (c) => {
   const auth = c.get('auth');
   if (!auth) {
@@ -4563,7 +4633,10 @@ export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: E
 }
 
 export default {
-  fetch: app.fetch,
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
+    preflight(env);
+    return app.fetch(req, env, ctx);
+  },
   queue,
   scheduled: async (evt: ScheduledEvent, env: Env) => {
     const cron = evt.cron ?? '';

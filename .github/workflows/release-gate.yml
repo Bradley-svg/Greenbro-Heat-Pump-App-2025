@@ -1,0 +1,35 @@
+name: Release Gate
+on: [pull_request]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm ci
+
+      - run: npm --prefix apps/web run build
+      - run: npm --prefix apps/web run preview &
+      - run: npx wait-on http://127.0.0.1:4173
+
+      - run: npm run lint --if-present
+      - run: npm run typecheck --if-present
+      - run: npm run copy-guard --if-present
+      - run: npm run contrast:budget --if-present
+
+      - name: Start Worker
+        env:
+          DEV_AUTH_BYPASS: '1'
+        run: npx wrangler dev --local --port=8788 &
+      - run: npx wait-on http://127.0.0.1:8788
+
+      - run: npm run axe:pdf
+
+      - uses: microsoft/playwright-github-action@v1
+      - run: npm run test:smoke:ci
+
+      - run: npm run lh:ci

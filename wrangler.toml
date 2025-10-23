@@ -1,53 +1,37 @@
-name = "greenbro-app"
-main = "src/app.tsx"
+name = "greenbro-worker"
+main = "dist/app.mjs"
 compatibility_date = "2025-10-01"
-compatibility_flags = ["nodejs_compat"] # Hono + jose comfort
+compatibility_flags = ["nodejs_compat"]
+minify = true
 
-# Custom domains / routes (adjust to your zones)
 routes = [
   { pattern = "api.greenbro.co.za/*", custom_domain = true },
   { pattern = "dash.greenbro.co.za/*", custom_domain = true }
 ]
 
-# ---- D1 (hot relational) ----
-[[d1_databases]]
-binding = "DB"
-database_name = "GREENBRO_DB"
-database_id = "REPLACE_WITH_D1_ID"
+[build]
+command = "npm run build"
 
-# ---- KV (configs, flags, RBAC masks) ----
-[[kv_namespaces]]
-binding = "CONFIG"
-id = "REPLACE_WITH_KV_ID"
+[vars]
+# Place default dev/test vars here (do not store secrets).
 
-# ---- R2 (reports, cold artifacts) ----
-[[r2_buckets]]
-binding = "REPORTS"
-bucket_name = "greenbro-reports"
+[triggers]
+crons = ["0 2 * * *", "*/5 * * * *"]
 
-[[r2_buckets]]
-binding = "BRAND"
-bucket_name = "greenbro-brand"
-
-# ---- Queues (ingest fan-in → batch processing) ----
-# Producer (HTTP ingest → Queue)
 [[queues.producers]]
 queue = "ingest-q"
 binding = "INGEST_Q"
 
-# Consumer (same worker handles queue batches via `export default { queue }`)
 [[queues.consumers]]
 queue = "ingest-q"
-max_batch_size = 100
+max_batch_size = 50
+max_batch_timeout = 30
 
-# ---- Durable Object (per-device coordinator) ----
-[[durable_objects.bindings]]
-name = "DeviceState"
-class_name = "DeviceStateDO"
-
-[[durable_objects.bindings]]
-name = "DEVICE_DO"
-class_name = "DeviceDO"
+[durable_objects]
+bindings = [
+  { name = "DeviceState", class_name = "DeviceStateDO" },
+  { name = "DEVICE_DO", class_name = "DeviceDO" }
+]
 
 [[migrations]]
 tag = "v1-device-state"
@@ -57,16 +41,52 @@ new_classes = ["DeviceStateDO"]
 tag = "v2-device"
 new_classes = ["DeviceDO"]
 
-# ---- Cron jobs ----
-[triggers]
-crons = ["0 2 * * *", "15 2 1 * *", "*/5 * * * *"]  # 02:00 nightly, monthly reports, 5 min burn monitor
+[[d1_databases]]
+binding = "DB"
+database_name = "GREENBRO_DB"
+database_id = "REPLACE_WITH_D1_ID"
 
-# ---- Environment secrets you set via `wrangler secret put ...` ----
-# ACCESS_JWKS_URL : Cloudflare Access JWKS endpoint
-# ACCESS_AUD      : Access policy AUD expected by the dashboard
-# WRITE_MIN_C     : min allowed setpoint (e.g., "40")
-# WRITE_MAX_C     : max allowed setpoint (e.g., "60")
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "greenbro-reports"
 
-# ---- Node-style deploy (bundled by wrangler) ----
-[build]
-command = "npm run build"
+[[r2_buckets]]
+binding = "BRAND"
+bucket_name = "greenbro-brand"
+
+[[r2_buckets]]
+binding = "ARCHIVE"
+bucket_name = "greenbro-archive"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "REPLACE_WITH_KV_ID"
+
+[env.production]
+vars = {
+  ACCESS_AUD = "https://access.greenbro.co.za",
+  ACCESS_ISS = "https://…",
+  ACCESS_JWKS = "https://…/cdn-cgi/access/certs",
+  JWT_SECRET = "***"
+}
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_id = "prod-…"
+database_name = "greenbro-db-prod"
+
+[[env.production.r2_buckets]]
+binding = "REPORTS"
+bucket_name = "greenbro-reports-prod"
+
+[[env.production.r2_buckets]]
+binding = "BRAND"
+bucket_name = "greenbro-brand-prod"
+
+[[env.production.r2_buckets]]
+binding = "ARCHIVE"
+bucket_name = "greenbro-archive-prod"
+
+[[env.production.kv_namespaces]]
+binding = "CONFIG"
+id = "kv_settings_prod_…"

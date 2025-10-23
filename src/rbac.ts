@@ -23,6 +23,7 @@ export async function verifyAccessJWT(env: Env, jwt: string): Promise<AccessCont
 
   const { payload } = await jwtVerify(jwt, jwks, {
     audience: env.ACCESS_AUD,
+    issuer: env.ACCESS_ISS,
   });
 
   const roles = normalizeRoles(payload);
@@ -33,11 +34,16 @@ export async function verifyAccessJWT(env: Env, jwt: string): Promise<AccessCont
 
 function getCachedJwks(env: Env): ReturnType<typeof createRemoteJWKSet> {
   const now = Date.now();
-  if (!jwksCache || jwksCache.url !== env.ACCESS_JWKS_URL || jwksCache.expiresAt <= now) {
+  const jwksUrl = env.ACCESS_JWKS ?? env.ACCESS_JWKS_URL;
+  if (!jwksUrl) {
+    throw new Error('ACCESS_JWKS binding missing');
+  }
+
+  if (!jwksCache || jwksCache.url !== jwksUrl || jwksCache.expiresAt <= now) {
     jwksCache = {
-      url: env.ACCESS_JWKS_URL,
+      url: jwksUrl,
       expiresAt: now + JWKS_CACHE_TTL_MS,
-      set: createRemoteJWKSet(new URL(env.ACCESS_JWKS_URL)),
+      set: createRemoteJWKSet(new URL(jwksUrl)),
     };
   } else {
     jwksCache.expiresAt = now + JWKS_CACHE_TTL_MS;
