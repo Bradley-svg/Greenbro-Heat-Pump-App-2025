@@ -1,9 +1,28 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { api } from '@/api/http';
 import { useToast } from '@app/providers/ToastProvider';
 import { useReadOnly } from '@hooks/useReadOnly';
+import { assertDefined } from '@/utils/invariant';
+
+type CommState = 'in_progress' | 'passed' | 'failed' | 'aborted';
+type StepState = 'pending' | 'pass' | 'fail' | 'skip';
+
+interface CommSession {
+  session_id: string;
+  device_id: string;
+  site_id?: string | null;
+  status: CommState;
+}
+
+interface CommStep {
+  step_id: string;
+  title: string;
+  state: StepState;
+  readings_json?: unknown;
+  comment?: string | null;
+}
 
 const StepUpdateSchema = z.object({
   session_id: z.string(),
@@ -23,11 +42,8 @@ type ChecklistSummary = {
   required_steps_json?: string | null;
 };
 
-type SessionSummary = {
-  session_id: string;
-  device_id: string;
+type SessionSummary = CommSession & {
   site_id: string | null;
-  status: string;
   started_at: string;
   finished_at: string | null;
   last_update: string | null;
@@ -37,17 +53,14 @@ type SessionSummary = {
 
 type ArtifactInfo = { r2_key: string; size_bytes: number | null; created_at: string };
 
-type StepResult = {
-  step_id: string;
-  title: string;
-  state: 'pending' | 'pass' | 'fail' | 'skip';
+type StepResult = CommStep & {
   readings?: Record<string, unknown> | null;
   comment: string | null;
   updated_at: string;
 };
 
 type SessionDetail = {
-  session: SessionSummary;
+  session: SessionSummary | null;
   steps: StepResult[];
   artifacts: Record<string, ArtifactInfo | undefined>;
 };
@@ -104,8 +117,9 @@ export default function CommissioningPage(): JSX.Element {
   }, [sessionsQuery.data]);
 
   useEffect(() => {
-    if (!selectedSessionId && sessions.length > 0) {
-      setSelectedSessionId(sessions[0].session_id);
+    const firstSession = sessions[0];
+    if (!selectedSessionId && firstSession) {
+      setSelectedSessionId(firstSession.session_id);
     }
   }, [selectedSessionId, sessions]);
 
@@ -114,6 +128,14 @@ export default function CommissioningPage(): JSX.Element {
     queryFn: () => api.get(`/api/commissioning/session/${selectedSessionId}`).then((r) => r.json()),
     enabled: Boolean(selectedSessionId),
   });
+
+  const detail = detailQuery.data;
+  const session = detail?.session ?? null;
+  const stepsData = detail?.steps;
+  const artifacts = detail?.artifacts ?? {};
+  const sid = session?.session_id ?? null;
+  const did = session?.device_id ?? null;
+  const steps = stepsData ?? [];
 
   const requiredMap = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -150,11 +172,10 @@ export default function CommissioningPage(): JSX.Element {
   const thresholds = settingsQuery.data ?? { delta_t_min: 0, flow_min_lpm: 0, cop_min: 0 };
 
   useEffect(() => {
-    const detail = detailQuery.data;
-    if (detail?.session) {
-      setNoteDraft(detail.session.notes ?? '');
+    if (session) {
+      setNoteDraft(session.notes ?? '');
     }
-  }, [detailQuery.data?.session?.session_id, detailQuery.data?.session?.notes]);
+  }, [session?.session_id, session?.notes]);
 
   const create = useMutation({
     mutationFn: (payload: any) => api.post('/api/commissioning/start', payload).then((r) => r.json()),
@@ -317,25 +338,21 @@ export default function CommissioningPage(): JSX.Element {
     onError: () => toast.error('Failed to send commissioning bundle'),
   });
 
-  const detail = detailQuery.data;
-  const currentSession = detail?.session ?? null;
-  const artifacts = detail?.artifacts ?? {};
-
   const currentRequired = useMemo(() => {
-    if (!currentSession?.checklist_id) {
+    if (!session?.checklist_id) {
       return new Set<string>();
     }
-    return requiredMap.get(currentSession.checklist_id) ?? new Set<string>();
-  }, [currentSession?.checklist_id, requiredMap]);
+    return requiredMap.get(session.checklist_id) ?? new Set<string>();
+  }, [session?.checklist_id, requiredMap]);
 
   const requiredStats = useMemo(() => {
     const total = currentRequired.size;
-    if (!detail?.steps || total === 0) {
+    if (!stepsData || total === 0) {
       return { total, passed: 0, missing: [] as string[] };
     }
     let passed = 0;
     const missing: string[] = [];
-    for (const step of detail.steps) {
+    for (const step of steps) {
       if (!currentRequired.has(step.step_id)) continue;
       if (step.state === 'pass') {
         passed += 1;
@@ -344,29 +361,29 @@ export default function CommissioningPage(): JSX.Element {
       }
     }
     return { total, passed, missing };
-  }, [currentRequired, detail?.steps]);
+  }, [currentRequired, stepsData, steps]);
 
   const outstandingRequiredLabels = useMemo(() => {
-    if (!detail?.steps || requiredStats.missing.length === 0) {
+    if (!stepsData || requiredStats.missing.length === 0) {
       return [] as string[];
     }
     return requiredStats.missing.map((id) => {
-      const match = detail.steps.find((step) => step.step_id === id);
+      const match = steps.find((step) => step.step_id === id);
       return match?.title ?? id;
     });
-  }, [detail?.steps, requiredStats.missing]);
+  }, [stepsData, requiredStats.missing, steps]);
 
   useEffect(() => {
     if (!missingSteps.length) return;
-    if (!detail?.steps) return;
+    if (!stepsData) return;
     const stillMissing = missingSteps.filter((id) => {
-      const match = detail.steps.find((step) => step.step_id === id);
+      const match = steps.find((step) => step.step_id === id);
       return match ? match.state !== 'pass' : false;
     });
     if (stillMissing.length !== missingSteps.length) {
       setMissingSteps(stillMissing);
     }
-  }, [detail?.steps, missingSteps]);
+  }, [stepsData, steps, missingSteps]);
 
   useEffect(() => {
     setMissingSteps([]);
@@ -395,14 +412,14 @@ export default function CommissioningPage(): JSX.Element {
   };
 
   const handleStateChange = (step: StepResult, nextState: StepResult['state']) => {
-    if (!currentSession) return;
-    updateStep.mutate({ session_id: currentSession.session_id, step_id: step.step_id, state: nextState });
+    assertDefined(sid, 'No session id');
+    updateStep.mutate({ session_id: sid, step_id: step.step_id, state: nextState });
   };
 
   const handleSaveComment = (step: StepResult, comment: string) => {
-    if (!currentSession) return;
+    assertDefined(sid, 'No session id');
     updateStep.mutate({
-      session_id: currentSession.session_id,
+      session_id: sid,
       step_id: step.step_id,
       state: step.state,
       comment: comment.trim() ? comment : undefined,
@@ -410,36 +427,36 @@ export default function CommissioningPage(): JSX.Element {
   };
 
   const handleMeasure = (step: StepResult) => {
-    if (!currentSession) return;
-    measure.mutate({ session_id: currentSession.session_id, step_id: step.step_id });
+    assertDefined(sid, 'No session id');
+    measure.mutate({ session_id: sid, step_id: step.step_id });
   };
 
   const handleMeasureWindow = (step: StepResult) => {
-    if (!currentSession) return;
-    measureWindow.mutate({ session_id: currentSession.session_id, step_id: step.step_id, window_s: 90 });
+    assertDefined(sid, 'No session id');
+    measureWindow.mutate({ session_id: sid, step_id: step.step_id, window_s: 90 });
   };
 
   const handleFinalize = (outcome: 'passed' | 'failed') => {
-    if (!currentSession) return;
+    assertDefined(sid, 'No session id');
     finalise.mutate({
-      session_id: currentSession.session_id,
+      session_id: sid,
       outcome,
       notes: noteDraft.trim() || undefined,
     });
   };
 
   const handleGenerateLabels = () => {
-    if (!currentSession) return;
-    labels.mutate(currentSession.session_id);
+    assertDefined(sid, 'No session id');
+    labels.mutate(sid);
   };
 
   const handleProvisioningZip = () => {
-    if (!currentSession) return;
-    provisioningZip.mutate(currentSession.session_id);
+    assertDefined(sid, 'No session id');
+    provisioningZip.mutate(sid);
   };
 
   const handleEmailBundle = () => {
-    if (!currentSession) return;
+    assertDefined(sid, 'No session id');
     if (!artifacts.pdf) {
       toast.warning('Finalise the session to generate the PDF first');
       return;
@@ -448,13 +465,128 @@ export default function CommissioningPage(): JSX.Element {
       toast.warning('Generate the provisioning ZIP before emailing');
       return;
     }
-    emailBundle.mutate(currentSession.session_id);
+    emailBundle.mutate(sid);
   };
 
   const actionDisabled = ro;
   const waiting = create.isPending || updateStep.isPending || finalise.isPending;
 
-  return (
+  const startSection = (
+    <section className="card" aria-labelledby="commissioning-start">
+      <h3 id="commissioning-start">Start a new session</h3>
+      <form onSubmit={handleCreate} className="commissioning-form" style={{ display: 'grid', gap: '10px' }}>
+        <label className="form-field">
+          Device ID
+          <input
+            type="text"
+            value={deviceId}
+            onChange={(event) => setDeviceId(event.target.value)}
+            required
+            placeholder="DEVICE-123"
+            disabled={actionDisabled || create.isPending}
+          />
+        </label>
+        <label className="form-field">
+          Site ID (optional)
+          <input
+            type="text"
+            value={siteId}
+            onChange={(event) => setSiteId(event.target.value)}
+            placeholder="SITE-CT-001"
+            disabled={actionDisabled || create.isPending}
+          />
+        </label>
+        <label className="form-field">
+          Checklist
+          <select
+            value={checklistId}
+            onChange={(event) => setChecklistId(event.target.value)}
+            disabled={actionDisabled || create.isPending}
+          >
+            <option value="">Default</option>
+            {(checklists ?? []).map((cl) => (
+              <option key={cl.checklist_id} value={cl.checklist_id}>
+                {cl.name} v{cl.version}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="form-field">
+          Notes
+          <textarea
+            rows={3}
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Install notes"
+            disabled={actionDisabled || create.isPending}
+          />
+        </label>
+        <button className="app-button" type="submit" disabled={actionDisabled || create.isPending}>
+          {create.isPending ? 'Starting…' : 'Start session'}
+        </button>
+      </form>
+
+      <h3 style={{ marginTop: '24px' }}>Sessions</h3>
+      {sessionsQuery.isLoading ? (
+        <p>Loading sessions…</p>
+      ) : sessions.length === 0 ? (
+        <p>No commissioning sessions yet.</p>
+      ) : (
+        <ul className="commissioning-list" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '8px' }}>
+          {sessions.map((item) => {
+            const active = item.session_id === selectedSessionId;
+            const requiredCount = item.checklist_id ? requiredMap.get(item.checklist_id)?.size ?? 0 : 0;
+            return (
+              <li key={item.session_id}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSessionId(item.session_id)}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '10px 12px',
+                    borderRadius: '12px',
+                    border: active ? '2px solid rgba(57, 181, 74, 0.5)' : '1px solid rgba(0,0,0,0.1)',
+                    background: active ? 'rgba(57, 181, 74, 0.1)' : 'transparent',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span>
+                    <strong>{item.device_id}</strong>
+                    <span style={{ display: 'block', fontSize: '0.85em', color: 'rgba(71, 85, 105, 0.85)' }}>
+                      {item.site_id ?? 'No site'}
+                    </span>
+                    {requiredCount > 0 ? (
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          marginTop: '4px',
+                          fontSize: '0.75em',
+                          padding: '2px 6px',
+                          borderRadius: '999px',
+                          background: 'rgba(14, 165, 233, 0.15)',
+                          color: 'rgba(14, 165, 233, 0.9)',
+                        }}
+                      >
+                        Required: {requiredCount}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className={statePillClass(item.status)}>{statusLabel(item.status)}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+
+  const renderPage = (detailContent: ReactNode) => (
     <div className="page">
       <header className="page__header">
         <div>
@@ -471,276 +603,166 @@ export default function CommissioningPage(): JSX.Element {
           alignItems: 'start',
         }}
       >
-        <section className="card" aria-labelledby="commissioning-start">
-          <h3 id="commissioning-start">Start a new session</h3>
-          <form onSubmit={handleCreate} className="commissioning-form" style={{ display: 'grid', gap: '10px' }}>
-            <label className="form-field">
-              Device ID
-              <input
-                type="text"
-                value={deviceId}
-                onChange={(event) => setDeviceId(event.target.value)}
-                required
-                placeholder="DEVICE-123"
-                disabled={actionDisabled || create.isPending}
-              />
-            </label>
-            <label className="form-field">
-              Site ID (optional)
-              <input
-                type="text"
-                value={siteId}
-                onChange={(event) => setSiteId(event.target.value)}
-                placeholder="SITE-CT-001"
-                disabled={actionDisabled || create.isPending}
-              />
-            </label>
-            <label className="form-field">
-              Checklist
-              <select
-                value={checklistId}
-                onChange={(event) => setChecklistId(event.target.value)}
-                disabled={actionDisabled || create.isPending}
-              >
-                <option value="">Default</option>
-                {(checklists ?? []).map((cl) => (
-                  <option key={cl.checklist_id} value={cl.checklist_id}>
-                    {cl.name} v{cl.version}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="form-field">
-              Notes
-              <textarea
-                rows={3}
-                value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-                placeholder="Install notes"
-                disabled={actionDisabled || create.isPending}
-              />
-            </label>
-            <button className="app-button" type="submit" disabled={actionDisabled || create.isPending}>
-              {create.isPending ? 'Starting…' : 'Start session'}
-            </button>
-          </form>
-
-          <h3 style={{ marginTop: '24px' }}>Sessions</h3>
-          {sessionsQuery.isLoading ? (
-            <p>Loading sessions…</p>
-          ) : sessions.length === 0 ? (
-            <p>No commissioning sessions yet.</p>
-          ) : (
-            <ul className="commissioning-list" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '8px' }}>
-              {sessions.map((session) => {
-                const active = session.session_id === selectedSessionId;
-                const requiredCount = session.checklist_id
-                  ? requiredMap.get(session.checklist_id)?.size ?? 0
-                  : 0;
-                return (
-                  <li key={session.session_id}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedSessionId(session.session_id)}
-                      style={{
-                        width: '100%',
-                        textAlign: 'left',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        gap: '8px',
-                        padding: '10px 12px',
-                        borderRadius: '12px',
-                        border: active ? '2px solid rgba(57, 181, 74, 0.5)' : '1px solid rgba(0,0,0,0.1)',
-                        background: active ? 'rgba(57, 181, 74, 0.1)' : 'transparent',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <span>
-                        <strong>{session.device_id}</strong>
-                        <span style={{ display: 'block', fontSize: '0.85em', color: 'rgba(71, 85, 105, 0.85)' }}>
-                          {session.site_id ?? 'No site'}
-                        </span>
-                        {requiredCount > 0 ? (
-                          <span
-                            style={{
-                              display: 'inline-flex',
-                              marginTop: '4px',
-                              fontSize: '0.75em',
-                              padding: '2px 6px',
-                              borderRadius: '999px',
-                              background: 'rgba(14, 165, 233, 0.15)',
-                              color: 'rgba(14, 165, 233, 0.9)',
-                            }}
-                          >
-                            Required: {requiredCount}
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className={statePillClass(session.status)}>{statusLabel(session.status)}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
+        {startSection}
         <section className="card" aria-labelledby="commissioning-detail">
           <h3 id="commissioning-detail">Session detail</h3>
-          {!selectedSessionId ? (
-            <p>Select a session to review progress.</p>
-          ) : detailQuery.isLoading ? (
-            <p>Loading session…</p>
-          ) : detailQuery.isError || !detail ? (
-            <p>Failed to load session detail.</p>
-          ) : (
-            <div className="commissioning-detail" style={{ display: 'grid', gap: '16px' }}>
-              <div className="commissioning-summary" style={{ display: 'grid', gap: '6px' }}>
-                <div>
-                  <strong>Device</strong>: {currentSession?.device_id}
-                </div>
-                <div>
-                  <strong>Site</strong>: {currentSession?.site_id ?? '—'}
-                </div>
-                <div>
-                  <strong>Status</strong>:{' '}
-                  <span className={statePillClass(currentSession?.status ?? 'pending')}>
-                    {statusLabel(currentSession?.status ?? 'pending')}
-                  </span>
-                </div>
-                <div>
-                  <strong>Started</strong>: {formatDate(currentSession?.started_at)}
-                </div>
-                <div>
-                  <strong>Finished</strong>: {formatDate(currentSession?.finished_at)}
-                </div>
-                {requiredStats.total > 0 ? (
-                  <div>
-                    <strong>Required</strong>:{' '}
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        fontSize: '0.85em',
-                        padding: '2px 8px',
-                        borderRadius: '999px',
-                        background: 'rgba(59, 130, 246, 0.12)',
-                        color: 'rgba(37, 99, 235, 0.95)',
-                      }}
-                    >
-                      {requiredStats.passed}/{requiredStats.total} passed
-                    </span>
-                  </div>
-                ) : null}
-                {outstandingRequiredLabels.length > 0 ? (
-                  <div style={{ fontSize: '0.85em', color: 'rgba(239, 68, 68, 0.9)' }}>
-                    Outstanding required: {outstandingRequiredLabels.join(', ')}
-                  </div>
-                ) : null}
-              </div>
-
-              <label className="form-field">
-                Session notes
-                <textarea
-                  rows={3}
-                  value={noteDraft}
-                  onChange={(event) => setNoteDraft(event.target.value)}
-                  disabled={actionDisabled || finalise.isPending}
-                />
-              </label>
-
-              <div className="commissioning-actions" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                <button
-                  className="app-button"
-                  type="button"
-                  onClick={() => handleFinalize('passed')}
-                  disabled={actionDisabled || waiting || currentSession?.status !== 'in_progress'}
-                >
-                  {finalise.isPending ? 'Finalising…' : 'Finalise – Passed'}
-                </button>
-                <button
-                  className="app-button"
-                  type="button"
-                  onClick={() => handleFinalize('failed')}
-                  disabled={actionDisabled || waiting || currentSession?.status !== 'in_progress'}
-                >
-                  {finalise.isPending ? 'Finalising…' : 'Finalise – Failed'}
-                </button>
-                <button
-                  className="app-button"
-                  type="button"
-                  onClick={handleGenerateLabels}
-                  disabled={actionDisabled || labels.isPending}
-                >
-                  {labels.isPending ? 'Generating…' : 'Generate labels'}
-                </button>
-                <button
-                  className="app-button"
-                  type="button"
-                  onClick={handleProvisioningZip}
-                  disabled={actionDisabled || provisioningZip.isPending}
-                >
-                  {provisioningZip.isPending ? 'Generating…' : 'Provisioning ZIP'}
-                </button>
-                {currentSession?.status !== 'in_progress' ? (
-                  <button
-                    className="app-button"
-                    type="button"
-                    onClick={handleEmailBundle}
-                    disabled={actionDisabled || emailBundle.isPending}
-                  >
-                    {emailBundle.isPending ? 'Emailing…' : 'Email bundle'}
-                  </button>
-                ) : null}
-              </div>
-
-              <div className="commissioning-artifacts" style={{ display: 'grid', gap: '4px', fontSize: '0.9em' }}>
-                <div>
-                  <strong>PDF</strong>: {artifacts.pdf ? <code>{artifacts.pdf.r2_key}</code> : '—'}
-                </div>
-                <div>
-                  <strong>Labels</strong>: {artifacts.labels ? <code>{artifacts.labels.r2_key}</code> : '—'}
-                </div>
-                <div>
-                  <strong>Provisioning ZIP</strong>: {artifacts.zip ? <code>{artifacts.zip.r2_key}</code> : '—'}
-                </div>
-              </div>
-
-              <div className="commissioning-steps" style={{ display: 'grid', gap: '12px' }}>
-                {detail.steps.length === 0 ? (
-                  <p>No steps configured for this session.</p>
-                ) : (
-                  detail.steps.map((step) => (
-                    <StepCard
-                      key={step.step_id}
-                      step={step}
-                      thresholds={thresholds}
-                      onChange={(state) => handleStateChange(step, state)}
-                      onSaveComment={(comment) => handleSaveComment(step, comment)}
-                      onMeasure={MEASURE_STEPS.has(step.step_id) ? () => handleMeasure(step) : undefined}
-                      onMeasureWindow={
-                        step.step_id === WINDOW_MEASURE_STEP ? () => handleMeasureWindow(step) : undefined
-                      }
-                      disabled={actionDisabled}
-                      updating={updateStep.isPending}
-                      measuring={measure.isPending && measure.variables?.step_id === step.step_id}
-                      measuringWindow={
-                        measureWindow.isPending && measureWindow.variables?.step_id === step.step_id
-                      }
-                      required={currentRequired.has(step.step_id)}
-                      missing={missingHighlight.has(step.step_id)}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
-          )}
+          {detailContent}
         </section>
       </div>
     </div>
   );
+
+  if (!selectedSessionId) {
+    return renderPage(<p>Select a session to review progress.</p>);
+  }
+
+  if (detailQuery.isLoading) {
+    return renderPage(<p>Loading session…</p>);
+  }
+
+  if (detailQuery.isError || !session) {
+    return renderPage(<p>Failed to load session detail.</p>);
+  }
+
+  const detailContent = (
+    <div className="commissioning-detail" style={{ display: 'grid', gap: '16px' }}>
+      <div className="commissioning-summary" style={{ display: 'grid', gap: '6px' }}>
+        <div>
+          <strong>Device</strong>: {did}
+        </div>
+        <div>
+          <strong>Site</strong>: {session.site_id ?? '—'}
+        </div>
+        <div>
+          <strong>Status</strong>:{' '}
+          <span className={statePillClass(session.status)}>{statusLabel(session.status)}</span>
+        </div>
+        <div>
+          <strong>Started</strong>: {formatDate(session.started_at)}
+        </div>
+        <div>
+          <strong>Finished</strong>: {formatDate(session.finished_at)}
+        </div>
+        {requiredStats.total > 0 ? (
+          <div>
+            <strong>Required</strong>:{' '}
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '0.85em',
+                padding: '2px 8px',
+                borderRadius: '999px',
+                background: 'rgba(59, 130, 246, 0.12)',
+                color: 'rgba(37, 99, 235, 0.95)',
+              }}
+            >
+              {requiredStats.passed}/{requiredStats.total} passed
+            </span>
+          </div>
+        ) : null}
+        {outstandingRequiredLabels.length > 0 ? (
+          <div style={{ fontSize: '0.85em', color: 'rgba(239, 68, 68, 0.9)' }}>
+            Outstanding required: {outstandingRequiredLabels.join(', ')}
+          </div>
+        ) : null}
+      </div>
+
+      <label className="form-field">
+        Session notes
+        <textarea
+          rows={3}
+          value={noteDraft}
+          onChange={(event) => setNoteDraft(event.target.value)}
+          disabled={actionDisabled || finalise.isPending}
+        />
+      </label>
+
+      <div className="commissioning-actions" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+        <button
+          className="app-button"
+          type="button"
+          onClick={() => handleFinalize('passed')}
+          disabled={actionDisabled || waiting || session.status !== 'in_progress'}
+        >
+          {finalise.isPending ? 'Finalising…' : 'Finalise – Passed'}
+        </button>
+        <button
+          className="app-button"
+          type="button"
+          onClick={() => handleFinalize('failed')}
+          disabled={actionDisabled || waiting || session.status !== 'in_progress'}
+        >
+          {finalise.isPending ? 'Finalising…' : 'Finalise – Failed'}
+        </button>
+        <button
+          className="app-button"
+          type="button"
+          onClick={handleGenerateLabels}
+          disabled={actionDisabled || labels.isPending}
+        >
+          {labels.isPending ? 'Generating…' : 'Generate labels'}
+        </button>
+        <button
+          className="app-button"
+          type="button"
+          onClick={handleProvisioningZip}
+          disabled={actionDisabled || provisioningZip.isPending}
+        >
+          {provisioningZip.isPending ? 'Generating…' : 'Provisioning ZIP'}
+        </button>
+        {session.status !== 'in_progress' ? (
+          <button
+            className="app-button"
+            type="button"
+            onClick={handleEmailBundle}
+            disabled={actionDisabled || emailBundle.isPending}
+          >
+            {emailBundle.isPending ? 'Emailing…' : 'Email bundle'}
+          </button>
+        ) : null}
+      </div>
+
+      <div className="commissioning-artifacts" style={{ display: 'grid', gap: '4px', fontSize: '0.9em' }}>
+        <div>
+          <strong>PDF</strong>: {artifacts.pdf ? <code>{artifacts.pdf.r2_key}</code> : '—'}
+        </div>
+        <div>
+          <strong>Labels</strong>: {artifacts.labels ? <code>{artifacts.labels.r2_key}</code> : '—'}
+        </div>
+        <div>
+          <strong>Provisioning ZIP</strong>: {artifacts.zip ? <code>{artifacts.zip.r2_key}</code> : '—'}
+        </div>
+      </div>
+
+      <div className="commissioning-steps" style={{ display: 'grid', gap: '12px' }}>
+        {steps.length === 0 ? (
+          <p>No steps configured for this session.</p>
+        ) : (
+          steps.map((step) => (
+            <StepCard
+              key={step.step_id}
+              step={step}
+              thresholds={thresholds}
+              onChange={(state) => handleStateChange(step, state)}
+              onSaveComment={(comment) => handleSaveComment(step, comment)}
+              onMeasure={MEASURE_STEPS.has(step.step_id) ? () => handleMeasure(step) : undefined}
+              onMeasureWindow={step.step_id === WINDOW_MEASURE_STEP ? () => handleMeasureWindow(step) : undefined}
+              disabled={actionDisabled}
+              updating={updateStep.isPending}
+              measuring={measure.isPending && measure.variables?.step_id === step.step_id}
+              measuringWindow={measureWindow.isPending && measureWindow.variables?.step_id === step.step_id}
+              required={currentRequired.has(step.step_id)}
+              missing={missingHighlight.has(step.step_id)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+
+  return renderPage(detailContent);
 }
 
 type StepCardProps = {
@@ -940,7 +962,7 @@ function toNumber(value: unknown): number | null {
   return null;
 }
 
-function statusLabel(status: string): string {
+function statusLabel(status: StepState | CommState | string): string {
   switch (status) {
     case 'pass':
     case 'passed':
@@ -957,7 +979,7 @@ function statusLabel(status: string): string {
   }
 }
 
-function statePillClass(state: string): string {
+function statePillClass(state: StepState | CommState | string): string {
   switch (state) {
     case 'pass':
     case 'passed':
