@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
       - name: Install root
         run: npm ci
@@ -23,20 +24,18 @@ jobs:
       - name: Build web
         run: npm run -w apps/web build
 
-      - name: Preview (background)
-        run: npm run -w apps/web preview &
-
-      - name: Wait for preview
-        run: npx wait-on http://127.0.0.1:4173
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/web/package-lock.json') }}
 
       - name: Install Playwright browsers
         working-directory: apps/web
         run: npx playwright install --with-deps
 
-      - name: Smoke E2E
-        env:
-          BASE_URL: http://127.0.0.1:4173
-        run: npm run -w apps/web test:smoke
+      - name: Run smoke tests
+        run: npx playwright test tests/mute-toast.spec.ts --config=tests/playwright.config.ts --reporter=line
 
   a11y:
     runs-on: ubuntu-22.04
@@ -45,6 +44,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
       - name: Install root
         run: npm ci
@@ -55,20 +55,18 @@ jobs:
       - name: Build web
         run: npm run -w apps/web build
 
-      - name: Preview (background)
-        run: npm run -w apps/web preview &
-
-      - name: Wait for preview
-        run: npx wait-on http://127.0.0.1:4173
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/web/package-lock.json') }}
 
       - name: Install Playwright browsers
         working-directory: apps/web
         run: npx playwright install --with-deps
 
       - name: Run Axe checks
-        env:
-          BASE_URL: http://127.0.0.1:4173
-        run: npx playwright test --config=tests/playwright.config.ts tests/a11y.spec.ts
+        run: npx playwright test tests/a11y.spec.ts --config=tests/playwright.config.ts --reporter=line
 
       - name: Start Worker (dev)
         env:
