@@ -4,6 +4,7 @@ export const ALL_ROLES: Role[] = ['admin', 'ops', 'client', 'contractor'];
 
 export const ROUTE_ROLES = {
   overview: ALL_ROLES,
+  compactOverview: ['admin', 'ops', 'contractor'] satisfies Role[],
   devices: ['admin', 'ops', 'client'] satisfies Role[],
   deviceDetail: ['admin', 'ops', 'client'] satisfies Role[],
   alerts: ['admin', 'ops'] satisfies Role[],

@@ -1,7 +1,33 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '@api/client';
 import type { AcknowledgeAlertResponse, Alert } from '@api/types';
 import { useAuthFetch } from '@hooks/useAuthFetch';
+
+function FocusIncidentsPill(): JSX.Element {
+  const [params, setParams] = useSearchParams();
+  const active = params.get('severity') === 'critical' && params.get('state') === 'open';
+
+  return (
+    <button
+      className={`pill${active ? ' is-active' : ''}`}
+      type="button"
+      onClick={() => {
+        const next = new URLSearchParams(params);
+        if (active) {
+          next.delete('severity');
+          next.delete('state');
+        } else {
+          next.set('severity', 'critical');
+          next.set('state', 'open');
+        }
+        setParams(next, { replace: true });
+      }}
+    >
+      Focus active incidents
+    </button>
+  );
+}
 
 export function AlertsPage(): JSX.Element {
   const authFetch = useAuthFetch();
@@ -46,6 +72,7 @@ export function AlertsPage(): JSX.Element {
           <h2>Alerts</h2>
           <p className="page__subtitle">Acknowledge incidents as you work the queue</p>
         </div>
+        <FocusIncidentsPill />
       </header>
       {alertsQuery.isLoading ? (
         <div className="card">Loading alerts…</div>

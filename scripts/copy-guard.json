@@ -1,0 +1,7 @@
+{
+  "banned": [
+    { "pattern": "\\\bCenter\\\b", "hint": "Use ‘Centre’." },
+    { "pattern": "\\\bFleet\\\b", "hint": "Use ‘devices’." }
+  ],
+  "ignorePaths": ["**/node_modules/**", "**/dist/**", "**/*.png", "**/*.svg"]
+}

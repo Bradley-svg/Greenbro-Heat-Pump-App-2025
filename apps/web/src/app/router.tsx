@@ -7,6 +7,7 @@ import { ROUTE_ROLES } from '@utils/rbac';
 import type { Role } from '@utils/types';
 import { LoginPage } from '@pages/LoginPage';
 import OverviewPage from '@pages/overview/OverviewPage';
+import CompactDashboard from '@pages/overview/CompactDashboard';
 import { DevicesPage } from '@pages/DevicesPage';
 import { DeviceDetailPage } from '@pages/DeviceDetailPage';
 import { AlertsPage } from '@pages/AlertsPage';
@@ -29,6 +30,14 @@ export function AppRouter(): JSX.Element {
             element={
               <RoleGuard roles={ROUTE_ROLES.overview}>
                 <OverviewPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="m"
+            element={
+              <RoleGuard roles={ROUTE_ROLES.compactOverview}>
+                <CompactDashboard />
               </RoleGuard>
             }
           />

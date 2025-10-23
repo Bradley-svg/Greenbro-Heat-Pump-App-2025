@@ -7,7 +7,7 @@
     "deploy": "wrangler deploy",
     "migrate": "wrangler d1 migrations apply GREENBRO_DB",
     "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
-    "copy-guard": "node scripts/guard-words.cjs",
+    "copy-guard": "node scripts/copy-guard.mjs",
     "lint": "eslint src apps/web/src apps/web/vite.config.ts",
     "typecheck": "npm run typecheck --prefix apps/web"
   },
