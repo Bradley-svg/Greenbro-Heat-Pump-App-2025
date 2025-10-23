@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
-const PRECACHE = ['/_app/brand.css', '/brand/logo.svg', '/brand/logo-mono.svg'];
+const PRECACHE = ['/_app/brand.css', '/brand/logo.svg', '/brand/logo-white.svg', '/brand/logo-mono.svg'];
 
 sw.addEventListener('install', (event) => {
   event.waitUntil(

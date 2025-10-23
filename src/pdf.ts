@@ -1,6 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import type { Env } from './types';
-import { drawBrandPdfHeader } from './brand';
+import { BRAND, drawBrandPdfHeader } from './brand';
 
 export type CommissioningPayload = {
   deviceId: string;
@@ -83,7 +83,7 @@ export async function generateCommissioningPDF(
   };
 
   let y = drawBrandPdfHeader(page, font, 'Commissioning Report', { includeSlogan: true });
-  drawText('GreenBro Commissioning Report', 40, y, 18);
+  drawText(`${BRAND.product} — Commissioning Report`, 40, y, 18);
   y -= 24;
   drawText(`Device: ${payload.deviceId}`, 40, y);
   y -= 16;
@@ -155,7 +155,7 @@ export async function generateClientMonthlyReport(
   };
 
   let y = drawBrandPdfHeader(page, font, 'Monthly Report', { includeSlogan: true });
-  drawText('GreenBro Monthly Report', 40, y, 18);
+  drawText(`${BRAND.product} — Monthly Report`, 40, y, 18);
   y -= 24;
   drawText(`Client: ${payload.clientName} (${payload.clientId})`, 40, y);
   y -= 16;
@@ -356,7 +356,7 @@ export async function generateIncidentReportV2(
 
   let y = drawBrandPdfHeader(page, font, 'Incident Report', { includeSlogan: true });
   const siteLabel = payload.siteName ? `${payload.siteName} (${payload.siteId})` : payload.siteId;
-  drawText('GreenBro Incident Report', 40, 18);
+  drawText(`${BRAND.product} — Incident Report`, 40, 18);
   drawText(`Site: ${siteLabel}`);
   drawText(`Region: ${payload.region ?? '—'}`);
   drawText(`Window: ${payload.windowLabel}`);

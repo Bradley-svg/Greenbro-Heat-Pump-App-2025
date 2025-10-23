@@ -17,7 +17,7 @@ import {
   type CommissioningPayload,
   type IncidentReportV2Payload,
 } from './pdf';
-import { brandCss, brandEmail, brandLogoSvg, brandLogoMonoSvg } from './brand';
+import { BRAND, brandCss, brandEmail, brandLogoSvg, brandLogoWhiteSvg, brandLogoMonoSvg } from './brand';
 import {
   renderer,
   OverviewPage,
@@ -812,6 +812,30 @@ app.get('/brand/logo.svg', async (c) => {
   }
 
   return new Response(brandLogoSvg, { headers: baseHeaders });
+});
+
+app.get('/brand/logo-white.svg', async (c) => {
+  const baseHeaders = new Headers({
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Cache-Control': 'public, max-age=86400, s-maxage=604800',
+    'CDN-Cache-Control': 'public, max-age=86400, s-maxage=604800',
+  });
+
+  try {
+    const logo = await c.env.BRAND.get('logo-white.svg');
+    if (logo) {
+      const headers = new Headers(baseHeaders);
+      logo.writeHttpMetadata(headers);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'image/svg+xml; charset=utf-8');
+      }
+      return new Response(logo.body, { headers });
+    }
+  } catch (error) {
+    console.warn('Failed to load white brand logo from R2', error);
+  }
+
+  return new Response(brandLogoWhiteSvg, { headers: baseHeaders });
 });
 
 app.get('/brand/logo-mono.svg', async (c) => {
@@ -2561,7 +2585,7 @@ app.get('/api/reports/preview-html', async (c) => {
   }
 
   const html = (
-    <Page title="Report Preview — GreenBro Control Centre">
+    <Page title={`Report Preview — ${BRAND.product}`}>
       <div class="report-preview" dangerouslySetInnerHTML={{ __html: innerHtml }} />
     </Page>
   );
@@ -2701,10 +2725,10 @@ app.post('/api/reports/email-existing', async (c) => {
   const uniqueRecipients = dedupeRecipients(recipients);
   const defaultSubject = (() => {
     if (normalizedType === 'monthly') {
-      return `Monthly report link — ${clientName ?? resolvedClientId ?? 'GreenBro'}`;
+      return `Monthly report link — ${clientName ?? resolvedClientId ?? BRAND.name}`;
     }
     if (normalizedType === 'incident') {
-      const scope = siteName ?? clientName ?? resolvedClientId ?? 'GreenBro';
+      const scope = siteName ?? clientName ?? resolvedClientId ?? BRAND.name;
       return `Incident report link — ${scope}`;
     }
     return 'Report link';
@@ -2757,7 +2781,7 @@ app.post('/api/reports/email-existing', async (c) => {
   const footerLines = lines.filter((line) => line.startsWith('R2 path') || line.startsWith('Requested by'));
   const html = brandEmail({
     title: subject,
-    introLines: [`Here's the latest ${normalizedType} report link from GreenBro Control Centre.`],
+    introLines: [`Here's the latest ${normalizedType} report link from ${BRAND.product}.`],
     detailLines,
     footerLines,
     cta: { href: downloadUrl, label: 'Open report' },

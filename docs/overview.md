@@ -1,4 +1,4 @@
-# GreenBro Control Centre
+# Greenbro Control Centre
 
 The Control Centre offers live devices visibility so operators can spot outages, triage incidents, and dispatch field teams quickly. Each module reflects the same datasets exposed in the SPA, matching the real-time API responses.
 

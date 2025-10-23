@@ -2,6 +2,7 @@
 /** @jsxImportSource hono/jsx */
 /** @jsxRuntime automatic */
 import { jsxRenderer, useRequestContext } from 'hono/jsx-renderer';
+import { BRAND } from './brand';
 
 export type DeployRibbon = { color: 'blue' | 'green'; text?: string };
 
@@ -1784,7 +1785,7 @@ ${readOnlySnippet}
 `;
 
 export function Page({
-  title = 'GreenBro Control Centre',
+  title = BRAND.product,
   metaRefreshSec,
   head,
   ribbon,
@@ -1875,7 +1876,7 @@ export const renderer = jsxRenderer(({ children }) => {
     return path === href || path.startsWith(`${href}/`);
   };
 
-  const baseTitle = 'GreenBro Control Centre';
+  const baseTitle = BRAND.product;
   const pageTitle = (() => {
     if (path === '/' || path.startsWith('/overview')) return `${baseTitle} — Overview`;
     if (path.startsWith('/ops')) return `${baseTitle} — Ops`;
@@ -2003,7 +2004,10 @@ export const renderer = jsxRenderer(({ children }) => {
       }
     >
       <header>
-        <span class="brand-mark"><img src="/brand/logo.svg" alt="GreenBro" height="24" width="24" /><span>GreenBro Control Centre</span></span>
+        <span class="brand-mark">
+          <span class="gb-logo"><img src="/brand/logo-white.svg" alt={BRAND.name} height="24" width="24" /></span>
+          <span>{BRAND.product}</span>
+        </span>
         <nav>
           <a href="/" class={isActive('/') ? 'active' : undefined}>
             Overview

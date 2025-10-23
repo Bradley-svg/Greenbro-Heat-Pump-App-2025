@@ -1,5 +1,6 @@
 import type { Env } from './types';
 import type { ClientMonthlyReportPayload, IncidentReportV2Payload } from './pdf';
+import { BRAND } from './brand';
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -163,8 +164,8 @@ export function renderIncidentHtmlV2(_env: Env, payload: IncidentReportV2Payload
         background: var(--gb-report-footer-bg);
         color: var(--gb-report-footer-fg);
       ">
-        <p><strong style="color: var(--gb-report-header-accent);">GreenBro Control Centre</strong> · Automated incident summary</p>
-        <p>Questions? Contact your GreenBro operations team.</p>
+        <p><strong style="color: var(--gb-report-header-accent);">${BRAND.product}</strong> · Automated incident summary</p>
+        <p>Questions? Contact your ${BRAND.name} operations team.</p>
       </footer>
     </main>
   `;
@@ -229,8 +230,8 @@ export function renderClientMonthlyHtmlV2(_env: Env, payload: ClientMonthlyRepor
         background: var(--gb-report-footer-bg);
         color: var(--gb-report-footer-fg);
       ">
-        <p><strong style="color: var(--gb-report-header-accent);">GreenBro Control Centre</strong> · Monthly performance insights</p>
-        <p>Questions? Contact your GreenBro operations team.</p>
+        <p><strong style="color: var(--gb-report-header-accent);">${BRAND.product}</strong> · Monthly performance insights</p>
+        <p>Questions? Contact your ${BRAND.name} operations team.</p>
       </footer>
     </main>
   `;

@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Navigate, useNavigate } from 'react-router-dom';
+import { brand } from '../brand';
 import { useAuth } from '@app/providers/AuthProvider';
 
 const loginSchema = z.object({
@@ -45,18 +46,28 @@ export function LoginPage(): JSX.Element {
   }
 
   return (
-    <div style={{ maxWidth: 380, margin: '80px auto', textAlign: 'center' }}>
+    <div style={{ maxWidth: 420, margin: '80px auto', textAlign: 'center' }}>
       <img
-        src="/brand/logo.svg"
-        alt="GreenBro"
+        src={brand.logoWhite}
+        alt={brand.name}
+        className="logo"
         width={160}
         height={42}
         style={{ marginBottom: 12 }}
       />
-      <h2 style={{ margin: '6px 0 16px' }}>Control Centre</h2>
-      <p className="muted" style={{ margin: '0 0 16px' }}>
-        Sign in to monitor devices and diagnostics.
-      </p>
+      <h2 style={{ margin: '6px 0 16px' }}>Sign in to {brand.product}</h2>
+      <h1>Industrial IoT Device Management</h1>
+      <ul style={{ textAlign: 'left', margin: '18px 0', padding: 0, listStyle: 'none' }}>
+        <li>
+          <strong>Secure Device Access</strong> — role-based permissions and audit trails
+        </li>
+        <li>
+          <strong>Live Vitals</strong> — real-time telemetry with instant alerts
+        </li>
+        <li>
+          <strong>Role-Scoped Visibility</strong> — dashboards for administrators, clients, and contractors
+        </li>
+      </ul>
       <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column' }}>
         <input
           aria-label="Email"

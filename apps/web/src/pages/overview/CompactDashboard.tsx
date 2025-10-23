@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { brand } from '../../brand';
 import { Sparkline } from '@components/charts/Sparkline';
 import { bandHigh, bandLow, type Band } from '@utils/bands';
 import { useOverviewData } from './useOverviewData';
@@ -85,7 +86,7 @@ export default function CompactDashboard(): JSX.Element {
     <div className="compact-dashboard">
       <header className="compact-dashboard__header">
         <div>
-          <p className="compact-dashboard__eyebrow">GreenBro Control Centre</p>
+          <p className="compact-dashboard__eyebrow">{brand.product}</p>
           <h1 className="compact-dashboard__title">Mobile overview</h1>
         </div>
         <Link to="/overview" className="pill">

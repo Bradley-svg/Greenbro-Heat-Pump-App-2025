@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
+import { brand } from '../brand';
 import { useAuth } from './providers/AuthProvider';
 import { useToast } from './providers/ToastProvider';
 import { ROUTE_ROLES } from '@utils/rbac';
@@ -37,8 +38,8 @@ export function AppLayout(): JSX.Element {
     <div className="app-shell">
       <aside className="app-sidebar">
         <div className="app-brand">
-          <img className="logo" src="/brand/logo.svg" alt="GreenBro" width={40} height={40} />
-          <span className="brand">GreenBro</span>
+          <img className="logo" src={brand.logoWhite} alt={brand.name} width={40} height={40} />
+          <span className="brand">{brand.nameCaps}</span>
         </div>
         <nav className="app-nav">
           {permittedNav.map((item) => (
@@ -54,7 +55,7 @@ export function AppLayout(): JSX.Element {
       </aside>
       <div className="app-main">
         <header className="app-topbar">
-          <div className="app-topbar__title">{status === 'authenticated' ? 'Control Centre' : 'Loading…'}</div>
+          <div className="app-topbar__title">{status === 'authenticated' ? brand.product : 'Loading…'}</div>
           <div className="app-topbar__actions">
             <ReadOnlyPill readOnly={ro} onToggle={allowToggle ? toggle : undefined} />
             <label className="app-topbar__mute">

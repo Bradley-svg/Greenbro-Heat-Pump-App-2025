@@ -1,5 +1,13 @@
 import { rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 
+export const BRAND = {
+  name: 'Greenbro',
+  nameCaps: 'GREENBRO',
+  logo: '/brand/logo.svg',
+  logoWhite: '/brand/logo-white.svg',
+  product: 'Greenbro Control Centre',
+};
+
 export const brandCss = String.raw`
 :root {
   --gb-bg: #0b0e12;
@@ -8,7 +16,7 @@ export const brandCss = String.raw`
   --gb-panel-border: var(--gb-border);
 
   /* Official brand colours */
-  --gb-primary-500: #39b54a; /* GreenBro green */
+  --gb-primary-500: #39b54a; /* Greenbro green */
   --gb-primary-700: #2e9e3f; /* darker on hover */
   --gb-primary-300: #6fdb7f; /* lighter gradient */
   --gb-ink: #414042; /* graphite text */
@@ -478,6 +486,12 @@ export const brandLogoSvg = `<?xml version="1.0" encoding="UTF-8"?>
   <path d="M18 46c-2-3-3-7-3-14 0-11 6-20 17-20 9 0 14 6 14 14 0 7-4 12-10 12-4 0-7-2-8-5h-3c1 7 6 12 14 12 9 0 16-7 16-17 0-10-7-19-19-19-14 0-23 11-23 25 0 7 2 12 5 15z" fill="url(#gb-gradient)" />
 </svg>`;
 
+export const brandLogoWhiteSvg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="none" />
+  <path d="M18 46c-2-3-3-7-3-14 0-11 6-20 17-20 9 0 14 6 14 14 0 7-4 12-10 12-4 0-7-2-8-5h-3c1 7 6 12 14 12 9 0 16-7 16-17 0-10-7-19-19-19-14 0-23 11-23 25 0 7 2 12 5 15z" fill="#ffffff" />
+</svg>`;
+
 export const brandLogoMonoSvg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="14" fill="#04090d" />
@@ -504,12 +518,8 @@ function escapeHtml(value: string): string {
 
 export function brandEmail(options: BrandEmailOptions): string {
   const { title, introLines = [], detailLines = [], footerLines = [], cta, previewText } = options;
-  const logoPictureMarkup = [
-    '<picture>',
-    '<source media="(prefers-color-scheme: dark)" srcset="/brand/logo-mono.svg" />',
-    '<img src="/brand/logo.svg" alt="GreenBro" width="48" height="48" style="display:block;margin:0 auto;border-radius:16px;" />',
-    '</picture>',
-  ].join('');
+  const logoSrc = BRAND.logoWhite;
+  const logoPictureMarkup = `<img src="${logoSrc}" alt="${BRAND.name}" width="48" height="48" style="display:block;margin:0 auto;border-radius:16px;" />`;
   const sloganMarkup =
     '<div style="font-family:Century Gothic,URW Gothic,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.18em;color:#B9C3CF;font-size:12px;margin-top:8px;">ENDORSED BY NATURE®</div>';
   const introMarkup = introLines
@@ -605,7 +615,7 @@ export function drawBrandPdfHeader(
   const accent = rgb(185 / 255, 195 / 255, 207 / 255);
   const { includeSlogan = false } = options;
   const headingY = height - 34;
-  page.drawText('GreenBro Control Centre', {
+  page.drawText(BRAND.product, {
     x: 40,
     y: headingY,
     size: 14,

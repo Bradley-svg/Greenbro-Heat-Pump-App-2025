@@ -1,16 +1,20 @@
 :root {
+  --gb-logo: url('/brand/logo.svg');
+  --gb-logo-white: url('/brand/logo-white.svg');
+  --gb-logo-auto: var(--gb-logo);
+
   --gb-bg: #0b0e12;
   --gb-panel: #111822;
   --gb-border: #1e2632;
   --gb-panel-border: var(--gb-border);
 
-  /* Neon accents derived from GreenBro palette */
+  /* Neon accents derived from Greenbro palette */
   --gb-neon-1: color-mix(in srgb, var(--gb-primary-500) 80%, transparent);
   --gb-neon-2: color-mix(in srgb, var(--gb-primary-300) 60%, transparent);
   --gb-glow: 0 0 0 1px var(--gb-border), 0 0 10px var(--gb-neon-1), 0 0 26px var(--gb-neon-2);
 
   /* Official brand colours */
-  --gb-primary-500: #39b54a; /* GreenBro green */
+  --gb-primary-500: #39b54a; /* Greenbro green */
   --gb-primary-700: #2e9e3f; /* darker on hover */
   --gb-primary-300: #6fdb7f; /* lighter gradient */
   --gb-ink: #414042; /* graphite text */
@@ -42,6 +46,26 @@
   --gb-heading: "Myanmar Text", "Segoe UI", system-ui, sans-serif;
   --gb-slogan: "Century Gothic", "URW Gothic", "Avant Garde", system-ui, sans-serif;
   --gb-body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+:root[data-theme='dark'] {
+  --gb-logo-auto: var(--gb-logo-white);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gb-logo-auto: var(--gb-logo-white);
+  }
+}
+
+.gb-logo {
+  display: inline-block;
+  height: 28px;
+}
+
+.gb-logo img {
+  display: block;
+  height: 28px;
 }
 
 /* worker/brand.css (SSR+PDF styles) — report-specific palette */
