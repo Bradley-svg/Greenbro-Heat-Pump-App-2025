@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react';
+import { useId, useMemo, type ReactNode } from 'react';
 import { ChartDefs, critPatternId, warnPatternId } from './ChartDefs';
 import { chartPalette, type ChartKind } from './palette';
 
@@ -6,6 +6,7 @@ export interface LegendItem {
   kind: ChartKind;
   label: string;
   hint?: string;
+  swatch?: (size: number) => ReactNode;
 }
 
 interface LegendProps {
@@ -34,6 +35,7 @@ export function Legend({ items = DEFAULT_ITEMS, className = '', ariaLabel }: Leg
     <div className={`chart-legend${className ? ` ${className}` : ''}`} role="list" aria-label={ariaLabel}>
       <ChartDefs id={baseId} />
       {legendItems.map((item) => {
+        const swatchSize = 18;
         const fill = (() => {
           if (item.kind === 'warn') {
             return `url(#${warnPatternId(baseId)})`;
@@ -43,14 +45,18 @@ export function Legend({ items = DEFAULT_ITEMS, className = '', ariaLabel }: Leg
           }
           return palette.pick(item.kind);
         })();
-
         const stroke = palette.pick(item.kind);
+        const swatchNode = item.swatch
+          ? item.swatch(swatchSize)
+          : (
+              <svg className="chart-legend__swatch" width={swatchSize} height={swatchSize} aria-hidden>
+                <rect width={swatchSize} height={swatchSize} fill={fill} stroke={stroke} strokeWidth={1} rx={6} ry={6} />
+              </svg>
+            );
 
         return (
           <div key={item.label} className="chart-legend__item" role="listitem">
-            <svg className="chart-legend__swatch" width={18} height={18} aria-hidden>
-              <rect width={18} height={18} fill={fill} stroke={stroke} strokeWidth={1} rx={6} ry={6} />
-            </svg>
+            {swatchNode}
             <span className="chart-legend__label">{item.label}</span>
             {item.hint ? <span className="chart-legend__hint">{item.hint}</span> : null}
           </div>

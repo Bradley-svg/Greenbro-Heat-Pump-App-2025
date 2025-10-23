@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Navigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@api/client';
@@ -8,9 +8,11 @@ import { Legend } from '@components/charts/Legend';
 import {
   SeriesChart,
   type AlertWindow,
+  type BandOverlayBuilder,
   type SeriesChartHandle,
   type SeriesPoint,
 } from '@components/charts/SeriesChart';
+import { rollingStats, type RollingPoint } from '@utils/rolling';
 
 const TELEMETRY_RANGES: Array<'24h' | '7d'> = ['24h', '7d'];
 
@@ -60,6 +62,16 @@ export function DeviceDetailPage(): JSX.Element {
       ]),
     [telemetryPoints],
   );
+
+  const deltaRolling = useMemo<RollingPoint[]>(() => {
+    if (deltaSeries.length === 0) {
+      return [];
+    }
+    return rollingStats(
+      deltaSeries.map((point) => ({ t: point.ts, y: point.v })),
+      90_000,
+    );
+  }, [deltaSeries]);
 
   const alertWindows = useMemo<AlertWindow[]>(() => {
     const now = Date.now();
@@ -197,6 +209,7 @@ export function DeviceDetailPage(): JSX.Element {
           <>
             <DeviceDetailCharts
               delta={deltaSeries}
+              deltaRolling={deltaRolling}
               cop={copSeries}
               current={currentSeries}
               overlays={alertWindows}
@@ -291,13 +304,14 @@ function MinMaxBadges({ pts }: { pts: SeriesPoint[] }) {
 
 interface DeviceDetailChartsProps {
   delta: SeriesPoint[];
+  deltaRolling: RollingPoint[];
   cop: SeriesPoint[];
   current: SeriesPoint[];
   overlays: AlertWindow[];
   range: '24h' | '7d';
 }
 
-function DeviceDetailCharts({ delta, cop, current, overlays, range }: DeviceDetailChartsProps) {
+function DeviceDetailCharts({ delta, deltaRolling, cop, current, overlays, range }: DeviceDetailChartsProps) {
   const deltaChartRef = useRef<SeriesChartHandle>(null);
   const copChartRef = useRef<SeriesChartHandle>(null);
   const currentChartRef = useRef<SeriesChartHandle>(null);
@@ -322,6 +336,53 @@ function DeviceDetailCharts({ delta, cop, current, overlays, range }: DeviceDeta
   const chartHeight = 160;
   const hasOverlays = overlays.length > 0;
 
+  const deltaBandOverlayBuilder = useMemo<BandOverlayBuilder | undefined>(() => {
+    if (!deltaRolling.length) {
+      return undefined;
+    }
+    return (xScale, yScale) => {
+      const upper: Array<[number, number]> = [];
+      const lower: Array<[number, number]> = [];
+      for (const sample of deltaRolling) {
+        if (sample.median == null) {
+          continue;
+        }
+        const xCoord = xScale(sample.t);
+        const upperValue = sample.p75 ?? sample.median;
+        const lowerValue = sample.p25 ?? sample.median;
+        if (!Number.isFinite(upperValue) || !Number.isFinite(lowerValue)) {
+          continue;
+        }
+        upper.push([xCoord, yScale(upperValue)]);
+        lower.push([xCoord, yScale(lowerValue)]);
+      }
+      if (!upper.length || !lower.length) {
+        return null;
+      }
+      return { upper, lower, className: 'gb-chart-median-band' };
+    };
+  }, [deltaRolling]);
+
+  const deltaRollingLookup = useMemo(() => {
+    const map = new Map<number, RollingPoint>();
+    for (const sample of deltaRolling) {
+      map.set(sample.t, sample);
+    }
+    return map;
+  }, [deltaRolling]);
+
+  const deltaTooltipExtras = useCallback(
+    (ts: number): string[] => {
+      const sample = deltaRollingLookup.get(ts);
+      if (!sample || sample.median == null) {
+        return [];
+      }
+      return [`Median ΔT (90 s): ${sample.median.toFixed(1)}°C`];
+    },
+    [deltaRollingLookup],
+  );
+  const deltaTooltipExtrasFn = deltaRollingLookup.size ? deltaTooltipExtras : undefined;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
       <div
@@ -335,6 +396,22 @@ function DeviceDetailCharts({ delta, cop, current, overlays, range }: DeviceDeta
               { kind: 'ok', label: 'Normal trend' },
               { kind: 'warn', label: 'Warning window' },
               { kind: 'crit', label: 'Critical window' },
+              {
+                kind: 'ok',
+                label: '90 s median (IQR)',
+                swatch: (size) => (
+                  <svg className="chart-legend__swatch" width={size} height={size} aria-hidden>
+                    <rect
+                      x={2}
+                      y={size / 4}
+                      width={size - 4}
+                      height={size / 2}
+                      className="gb-chart-median-band"
+                      rx={size / 6}
+                    />
+                  </svg>
+                ),
+              },
             ]}
           />
           <button
@@ -362,6 +439,8 @@ function DeviceDetailCharts({ delta, cop, current, overlays, range }: DeviceDeta
           stroke="var(--gb-chart-ok)"
           areaKind="ok"
           ariaLabel="Delta T trend with alert overlays"
+          bandOverlayBuilder={deltaBandOverlayBuilder}
+          tooltipExtras={deltaTooltipExtrasFn}
         />
       </div>
 
@@ -399,7 +478,9 @@ function DeviceDetailCharts({ delta, cop, current, overlays, range }: DeviceDeta
         />
       </div>
 
-      <small className="muted">Shaded bands represent periods where alerts were active.</small>
+      <small className="muted">
+        Alert overlays remain shaded; the green band tracks the 90 s rolling median and interquartile range.
+      </small>
     </div>
   );
 }

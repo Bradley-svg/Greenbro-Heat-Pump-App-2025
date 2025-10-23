@@ -50,6 +50,25 @@ export const brandCss = String.raw`
   --gb-body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
 }
 
+/* Rolling-median band (faint, accessible) */
+.gb-chart-median-band {
+  fill: color-mix(in oklab, var(--gb-chart-ok) 16%, transparent);
+  stroke: none;
+}
+
+@media (forced-colors: active) {
+  .gb-chart-median-band {
+    outline: 1px solid CanvasText;
+    fill: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gb-chart-median-band {
+    transition: none;
+  }
+}
+
 /* worker/brand.css (SSR+PDF styles) — report-specific palette */
 :root {
   /* base tokens already exist; these alias to our graphite/green palette */

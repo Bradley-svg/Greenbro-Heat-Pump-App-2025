@@ -15,6 +15,17 @@ export interface AlertWindow {
   kind: OverlayKind;
 }
 
+type PathPt = [number, number];
+
+export interface BandOverlay {
+  lower: PathPt[];
+  upper: PathPt[];
+  className?: string;
+}
+
+type ScaleFn = (value: number) => number;
+export type BandOverlayBuilder = (x: ScaleFn, y: ScaleFn) => BandOverlay | null | undefined;
+
 export interface SeriesChartHandle {
   focusTs: (ts: number) => void;
   focusLatestOverlay: (windows: AlertWindow[]) => void;
@@ -40,6 +51,30 @@ export function nearestIndex(xs: number[], x: number): number {
   return Math.abs(x - loValue) <= Math.abs(hiValue - x) ? lo : hi;
 }
 
+function pathFromPoints(points: PathPt[]) {
+  if (points.length === 0) {
+    return '';
+  }
+  const [firstX, firstY] = points[0]!;
+  const tail = points
+    .slice(1)
+    .map(([px, py]) => `L${px},${py}`)
+    .join(' ');
+  return `M${firstX},${firstY}${tail ? ` ${tail}` : ''}`;
+}
+
+function bandPath(upper: PathPt[], lower: PathPt[]) {
+  if (!upper.length || !lower.length) {
+    return '';
+  }
+  const upperPath = pathFromPoints(upper);
+  const lowerPath = pathFromPoints([...lower].reverse());
+  if (!upperPath || !lowerPath) {
+    return '';
+  }
+  return `${upperPath} ${lowerPath} Z`;
+}
+
 interface SeriesChartProps {
   data: SeriesPoint[];
   overlays?: AlertWindow[];
@@ -51,6 +86,9 @@ interface SeriesChartProps {
   grid?: boolean;
   yDomain?: [number, number];
   ariaLabel?: string;
+  bandOverlay?: BandOverlay | null;
+  bandOverlayBuilder?: BandOverlayBuilder;
+  tooltipExtras?: (ts: number) => string[];
 }
 
 export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(function SeriesChart(
@@ -65,6 +103,9 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
     grid = true,
     yDomain,
     ariaLabel,
+    bandOverlay: bandOverlayProp = null,
+    bandOverlayBuilder,
+    tooltipExtras,
   }: SeriesChartProps,
   ref,
 ) {
@@ -86,18 +127,28 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
 
   const ts = useMemo(() => sorted.map((point) => point.ts), [sorted]);
 
-  const x = (t: number) => pad + ((t - minTs) / spanTs) * widthInner;
-  const y = (value: number) =>
-    pad + (flatSeries ? heightInner / 2 : heightInner - ((value - minV) / spanV) * heightInner);
+  const xScale = useCallback(
+    (t: number) => pad + ((t - minTs) / spanTs) * widthInner,
+    [pad, minTs, spanTs, widthInner],
+  );
+  const yScale = useCallback(
+    (value: number) =>
+      pad + (flatSeries ? heightInner / 2 : heightInner - ((value - minV) / spanV) * heightInner),
+    [flatSeries, heightInner, minV, pad, spanV],
+  );
 
   const pathData = hasData
-    ? sorted.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(point.ts).toFixed(2)},${y(point.v).toFixed(2)}`).join(' ')
+    ? sorted
+        .map((point, index) =>
+          `${index === 0 ? 'M' : 'L'}${xScale(point.ts).toFixed(2)},${yScale(point.v).toFixed(2)}`,
+        )
+        .join(' ')
     : '';
 
   const areaPath = hasData
-    ? `M${x(minTs).toFixed(2)},${(pad + heightInner).toFixed(2)} ` +
-      sorted.map((point) => `L${x(point.ts).toFixed(2)},${y(point.v).toFixed(2)}`).join(' ') +
-      ` L${x(maxTs).toFixed(2)},${(pad + heightInner).toFixed(2)} Z`
+    ? `M${xScale(minTs).toFixed(2)},${(pad + heightInner).toFixed(2)} ` +
+      sorted.map((point) => `L${xScale(point.ts).toFixed(2)},${yScale(point.v).toFixed(2)}`).join(' ') +
+      ` L${xScale(maxTs).toFixed(2)},${(pad + heightInner).toFixed(2)} Z`
     : '';
 
   const ticks = useMemo(() => {
@@ -163,6 +214,32 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
 
   const strokeColor = stroke ?? palette.pick(areaKind);
 
+  const bandOverlayFromBuilder = useMemo(() => {
+    if (!hasData || !bandOverlayBuilder) {
+      return null;
+    }
+    return bandOverlayBuilder(xScale, yScale) ?? null;
+  }, [bandOverlayBuilder, hasData, xScale, yScale]);
+
+  const bandOverlay = bandOverlayProp ?? bandOverlayFromBuilder;
+
+  const tooltipLines = activePoint
+    ? (() => {
+        const lines = [`Value: ${activePoint.v.toFixed(2)}`];
+        if (activeOverlay) {
+          lines.push(activeOverlay.kind === 'crit' ? 'Critical window' : 'Warning window');
+        }
+        if (tooltipExtras) {
+          const extras = tooltipExtras(activePoint.ts) ?? [];
+          if (Array.isArray(extras) && extras.length > 0) {
+            lines.push(...extras);
+          }
+        }
+        return lines;
+      })()
+    : [];
+  const tooltipHeight = tooltipLines.length ? 12 + tooltipLines.length * 16 : 0;
+
   const handleMove = (event: React.MouseEvent<SVGRectElement>) => {
     if (!hasData) {
       return;
@@ -224,8 +301,8 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
 
       <g>
         {overlaysToRender.map((overlay, index) => {
-          const startX = x(overlay.start);
-          const endX = x(overlay.end);
+          const startX = xScale(overlay.start);
+          const endX = xScale(overlay.end);
           const fill = overlay.kind === 'crit' ? `url(#${critPatternId(baseId)})` : `url(#${warnPatternId(baseId)})`;
           const strokeColorOverlay = palette.pick(overlay.kind);
           return (
@@ -246,24 +323,27 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
       {hasData ? (
         <g>
           <path d={areaPath} fill={areaFill} stroke="none" />
+          {bandOverlay && bandOverlay.upper.length && bandOverlay.lower.length ? (
+            <path
+              d={bandPath(bandOverlay.upper, bandOverlay.lower)}
+              className={bandOverlay.className || 'gb-chart-median-band'}
+            />
+          ) : null}
           <path d={pathData} fill="none" stroke={strokeColor} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         </g>
       ) : null}
 
       {activePoint ? (
         <g>
-          <line x1={x(activePoint.ts)} y1={pad} x2={x(activePoint.ts)} y2={pad + heightInner} stroke="#9fb2c6" strokeDasharray="3 3" />
-          <circle cx={x(activePoint.ts)} cy={y(activePoint.v)} r={3} fill="#ffffff" stroke="#0b0e12" strokeWidth={1} />
-          <g transform={`translate(${Math.min(x(activePoint.ts) + 8, width - 140)}, ${pad + 8})`}>
-            <rect className="chart-tip" width={132} height={activeOverlay ? 44 : 28} rx={6} />
-            <text className="chart-tip-text" x={8} y={18}>
-              Value: {activePoint.v.toFixed(2)}
-            </text>
-            {activeOverlay ? (
-              <text className="chart-tip-text" x={8} y={34}>
-                {activeOverlay.kind === 'crit' ? 'Critical window' : 'Warning window'}
+          <line x1={xScale(activePoint.ts)} y1={pad} x2={xScale(activePoint.ts)} y2={pad + heightInner} stroke="#9fb2c6" strokeDasharray="3 3" />
+          <circle cx={xScale(activePoint.ts)} cy={yScale(activePoint.v)} r={3} fill="#ffffff" stroke="#0b0e12" strokeWidth={1} />
+          <g transform={`translate(${Math.min(xScale(activePoint.ts) + 8, width - 140)}, ${pad + 8})`}>
+            <rect className="chart-tip" width={132} height={tooltipHeight || 28} rx={6} />
+            {tooltipLines.map((line, index) => (
+              <text key={index} className="chart-tip-text" x={8} y={18 + index * 16}>
+                {line}
               </text>
-            ) : null}
+            ))}
           </g>
         </g>
       ) : null}
