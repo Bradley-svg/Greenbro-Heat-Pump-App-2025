@@ -131,13 +131,17 @@ export function renderIncidentHtmlV2(_env: Env, payload: IncidentReportV2Payload
 
   return `
     <main class="report incident-report" aria-labelledby="incident-report-title">
-      <header class="report-header">
+      <header class="report-header" style="
+        background: var(--gb-report-header-bg);
+        color: var(--gb-report-header-fg);
+        border-bottom: 1px solid rgba(255,255,255,.06);
+      ">
         <h1 id="incident-report-title">Incident report</h1>
-        <p class="report-meta"><strong>Site:</strong> ${escapeHtml(siteLabel)}</p>
-        <p class="report-meta"><strong>Region:</strong> ${escapeHtml(payload.region ?? '—')}</p>
-        <p class="report-meta"><strong>Window:</strong> ${escapeHtml(payload.windowLabel)}</p>
-        <p class="report-meta"><strong>Range:</strong> ${formatDate(payload.windowStart)} → ${formatDate(payload.windowEnd)}</p>
-        <p class="report-meta"><strong>Generated at:</strong> ${formatDate(payload.generatedAt)}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Site:</strong> ${escapeHtml(siteLabel)}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Region:</strong> ${escapeHtml(payload.region ?? '—')}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Window:</strong> ${escapeHtml(payload.windowLabel)}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Range:</strong> ${formatDate(payload.windowStart)} → ${formatDate(payload.windowEnd)}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Generated at:</strong> ${formatDate(payload.generatedAt)}</p>
       </header>
       <section aria-labelledby="incident-summary-heading">
         <h2 id="incident-summary-heading">Alert snapshot</h2>
@@ -155,6 +159,13 @@ export function renderIncidentHtmlV2(_env: Env, payload: IncidentReportV2Payload
         <h2 id="incident-maintenance-heading">Maintenance windows</h2>
         ${maintenance}
       </section>
+      <footer class="report-footer" style="
+        background: var(--gb-report-footer-bg);
+        color: var(--gb-report-footer-fg);
+      ">
+        <p><strong style="color: var(--gb-report-header-accent);">GreenBro Control Centre</strong> · Automated incident summary</p>
+        <p>Questions? Contact your GreenBro operations team.</p>
+      </footer>
     </main>
   `;
 }
@@ -181,12 +192,16 @@ export function renderClientMonthlyHtmlV2(_env: Env, payload: ClientMonthlyRepor
 
   return `
     <main class="report monthly-report" aria-labelledby="monthly-report-title">
-      <header class="report-header">
+      <header class="report-header" style="
+        background: var(--gb-report-header-bg);
+        color: var(--gb-report-header-fg);
+        border-bottom: 1px solid rgba(255,255,255,.06);
+      ">
         <h1 id="monthly-report-title">Monthly performance report</h1>
-        <p class="report-meta"><strong>Client:</strong> ${escapeHtml(payload.clientName)} (${escapeHtml(payload.clientId)})</p>
-        <p class="report-meta"><strong>Period:</strong> ${escapeHtml(payload.monthLabel)}</p>
-        <p class="report-meta"><strong>Window:</strong> ${formatDate(payload.periodStart)} → ${formatDate(payload.periodEnd)}</p>
-        <p class="report-meta"><strong>Sites:</strong> ${escapeHtml(payload.siteCount)} · <strong>Devices:</strong> ${escapeHtml(payload.deviceCount)}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Client:</strong> ${escapeHtml(payload.clientName)} (${escapeHtml(payload.clientId)})</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Period:</strong> ${escapeHtml(payload.monthLabel)}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Window:</strong> ${formatDate(payload.periodStart)} → ${formatDate(payload.periodEnd)}</p>
+        <p class="report-meta"><strong style="color: var(--gb-report-header-accent);">Sites:</strong> ${escapeHtml(payload.siteCount)} · <strong style="color: var(--gb-report-header-accent);">Devices:</strong> ${escapeHtml(payload.deviceCount)}</p>
       </header>
       <section aria-labelledby="monthly-targets-heading">
         <h2 id="monthly-targets-heading">Targets vs actuals</h2>
@@ -210,6 +225,13 @@ export function renderClientMonthlyHtmlV2(_env: Env, payload: ClientMonthlyRepor
           <tbody>${alerts}</tbody>
         </table>
       </section>
+      <footer class="report-footer" style="
+        background: var(--gb-report-footer-bg);
+        color: var(--gb-report-footer-fg);
+      ">
+        <p><strong style="color: var(--gb-report-header-accent);">GreenBro Control Centre</strong> · Monthly performance insights</p>
+        <p>Questions? Contact your GreenBro operations team.</p>
+      </footer>
     </main>
   `;
 }

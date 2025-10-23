@@ -46,3 +46,6 @@ jobs:
 
       - name: Axe gate for PDFs
         run: npm run axe:pdf
+
+      - name: Colour-contrast budget (reports)
+        run: npm run contrast:budget

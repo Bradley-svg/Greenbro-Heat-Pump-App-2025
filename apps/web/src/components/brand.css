@@ -15,6 +15,14 @@
   --gb-primary-300: #6fdb7f; /* lighter gradient */
   --gb-ink: #414042; /* graphite text */
 
+  /* Graphite + accent aliases */
+  --gb-graphite-900: #0b0e12;
+  --gb-graphite-800: #111822;
+  --gb-graphite-100: #eceff3;
+  --gb-graphite-050: #f6f7f9;
+  --gb-green-500: #39b54a;
+  --gb-green-600: #2e9e3f;
+
   --gb-muted: #4b5563;
   --gb-muted-soft: #8f9aa6;
   --gb-card: #ffffff;
@@ -34,6 +42,29 @@
   --gb-heading: "Myanmar Text", "Segoe UI", system-ui, sans-serif;
   --gb-slogan: "Century Gothic", "URW Gothic", "Avant Garde", system-ui, sans-serif;
   --gb-body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
+}
+
+/* worker/brand.css (SSR+PDF styles) — report-specific palette */
+:root {
+  /* base tokens already exist; these alias to our graphite/green palette */
+  --gb-report-header-bg: var(--gb-graphite-900);
+  --gb-report-header-fg: #ffffff;
+  --gb-report-header-accent: var(--gb-green-500);
+
+  --gb-report-footer-bg: var(--gb-graphite-800);
+  --gb-report-footer-fg: #e6edf3;
+}
+
+/* light-mode email/PDF variant (if we ever flip scheme) */
+@media (prefers-color-scheme: light) {
+  :root {
+    --gb-report-header-bg: #f6f7f9;
+    --gb-report-header-fg: #0b0e12;
+    --gb-report-header-accent: var(--gb-green-600);
+
+    --gb-report-footer-bg: #eceff3;
+    --gb-report-footer-fg: #0b0e12;
+  }
 }
 
 @media (max-width: 640px) {
