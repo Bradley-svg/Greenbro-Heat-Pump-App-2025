@@ -1,50 +1,163 @@
-type Listener = () => void;
-let _token: string | null = (typeof localStorage !== 'undefined' && localStorage.getItem('auth_token')) || null;
-const listeners = new Set<Listener>();
+// Single-source auth + fetch, with legacy-compatible exports to unblock TS builds.
+
+export type AuthListener = () => void;
+
+let _token: string | null = null;
+const listeners = new Set<AuthListener>();
+
+// Initialise from storage (best-effort)
+try {
+  _token = localStorage.getItem('auth_token');
+} catch {
+  /* ignore storage access issues (SSR or locked-down env) */
+}
 
 export function setAuthToken(tok: string | null) {
   _token = tok;
   try {
     if (tok) localStorage.setItem('auth_token', tok);
     else localStorage.removeItem('auth_token');
-  } catch (error) {
-    // Ignore storage failures (e.g. private browsing mode).
-    void error;
+  } catch {
+    /* ignore */
   }
+  // notify subscribers
   listeners.forEach((l) => l());
 }
+
 export function getAuthToken() {
   return _token;
 }
-export function onAuthChange(fn: Listener) {
+
+export function onAuthChange(fn: AuthListener) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
 
-async function tryRefresh() {
-  const r = await fetch('/api/auth/refresh', { method: 'POST' });
-  if (!r.ok) return false;
-  const j = await r.json();
-  if (j?.token) setAuthToken(j.token);
-  return !!j?.token;
+function getFetchImpl(fetchImpl?: typeof fetch): typeof fetch {
+  return fetchImpl ?? fetch;
 }
 
-export async function authFetch(input: RequestInfo | URL, init?: RequestInit) {
-  const res = await fetch(input, {
-    ...init,
-    headers: {
-      ...(init?.headers || {}),
-      ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
-    },
-  });
-  if (res.status === 401 && (await tryRefresh())) {
-    return fetch(input, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        Authorization: `Bearer ${getAuthToken()}`,
-      },
-    });
+// ----- refresh helper (used by authFetch retry) -----
+export async function tryRefresh(fetchImpl?: typeof fetch): Promise<boolean> {
+  const runFetch = getFetchImpl(fetchImpl);
+  try {
+    const r = await runFetch('/api/auth/refresh', { method: 'POST' });
+    if (!r.ok) return false;
+    const j = await r
+      .json()
+      .catch(() => ({} as { token?: string | null }));
+    if (j?.token) setAuthToken(j.token);
+    return !!j?.token;
+  } catch {
+    return false;
   }
-  return res;
+}
+
+// Resolve an API URL relative to the configured base (if any)
+export function resolveApiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+
+  const normalised = path.startsWith('/') ? path : `/${path}`;
+
+  const globalBase =
+    typeof globalThis !== 'undefined' &&
+    typeof (globalThis as { __API_BASE_URL__?: unknown }).__API_BASE_URL__ === 'string'
+      ? ((globalThis as { __API_BASE_URL__?: string }).__API_BASE_URL__ as string)
+      : undefined;
+
+  const metaBase =
+    typeof import.meta !== 'undefined' &&
+    typeof (import.meta as unknown as { env?: { VITE_API_BASE_URL?: unknown } }).env?.VITE_API_BASE_URL === 'string'
+      ? ((import.meta as unknown as { env: { VITE_API_BASE_URL: string } }).env.VITE_API_BASE_URL as string)
+      : undefined;
+
+  const windowBase =
+    typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined;
+
+  const base = metaBase || globalBase || windowBase;
+  if (!base) {
+    return normalised;
+  }
+
+  try {
+    return new URL(normalised, base).toString();
+  } catch {
+    return normalised;
+  }
+}
+
+// ----- primary fetch wrapper -----
+export async function authFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  fetchImpl?: typeof fetch,
+): Promise<Response> {
+  const runFetch = getFetchImpl(fetchImpl);
+  const headers = new Headers(init?.headers || {});
+  const tok = getAuthToken();
+  if (tok && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${tok}`);
+
+  const first = await runFetch(input, { ...init, headers });
+  if (first.status !== 401) return first;
+
+  // one retry on 401 after refresh
+  if (await tryRefresh(runFetch)) {
+    const headers2 = new Headers(init?.headers || {});
+    const tok2 = getAuthToken();
+    if (tok2) headers2.set('Authorization', `Bearer ${tok2}`);
+    return runFetch(input, { ...init, headers: headers2 });
+  }
+  return first;
+}
+
+export async function apiFetch<T = unknown>(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  fetchImpl?: typeof fetch,
+): Promise<T> {
+  const response = await authFetch(input, init, fetchImpl);
+  if (!response.ok) {
+    const message = await response
+      .text()
+      .catch(() => '')
+      .then((text) => text || response.statusText || `HTTP ${response.status}`);
+    throw new Error(message);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  const raw = await response
+    .text()
+    .catch(() => '');
+  if (!raw) {
+    return undefined as T;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return raw as unknown as T;
+  }
+}
+
+// ===== Legacy compatibility layer =====
+
+// Some modules might expect a factory that yields an object with a `fetch` method
+export function createClient() {
+  return {
+    fetch: authFetch,
+  };
+}
+
+// Some older snippets import a default `api` or named `api` with a `fetch` method:
+export const api = createClient();
+export default api;
+
+// Very old code paths might import `createAuthedFetch`:
+export function createAuthedFetch() {
+  return authFetch;
 }
