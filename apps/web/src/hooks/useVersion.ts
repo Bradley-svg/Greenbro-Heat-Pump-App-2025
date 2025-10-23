@@ -7,6 +7,7 @@ type Version = { build_sha: string; build_date?: string; schema_ok?: boolean };
 export function useVersion(pollMs = 300_000) {
   const { user } = useAuth();
   const allowed = !!user && (user.roles?.includes('admin') || user.roles?.includes('ops'));
+  const refetchEvery = pollMs > 0 ? pollMs : undefined;
   return useQuery<Version | null>({
     queryKey: ['ops', 'version'],
     queryFn: async () => {
@@ -17,7 +18,7 @@ export function useVersion(pollMs = 300_000) {
       return response.json();
     },
     enabled: allowed,
-    refetchInterval: allowed ? pollMs : undefined,
+    refetchInterval: allowed ? refetchEvery : undefined,
     staleTime: 0,
   });
 }

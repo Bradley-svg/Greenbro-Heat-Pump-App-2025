@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { brand } from '../brand';
 import { useAuth } from './providers/AuthProvider';
@@ -7,6 +8,7 @@ import type { Role } from '@utils/types';
 import { useReadOnly } from '@hooks/useReadOnly';
 import { useDeployRibbon } from '@hooks/useDeployRibbon';
 import { useVersion } from '@hooks/useVersion';
+import { AboutModal } from '@/components/AboutModal';
 
 interface NavItem {
   to: string;
@@ -30,6 +32,7 @@ export function AppLayout(): JSX.Element {
   const toast = useToast();
   const { deploy, dismiss } = useDeployRibbon();
   const { data: version } = useVersion();
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const permittedNav = NAV_ITEMS.filter((item) => hasAnyRole(user?.roles ?? [], ROUTE_ROLES[item.roleKey]));
   const allowToggle = Boolean(user?.roles.includes('admin')) && canToggle;
@@ -94,6 +97,14 @@ export function AppLayout(): JSX.Element {
                 {version.schema_ok === false ? <span className="warn"> · schema?</span> : null}
               </div>
             ) : null}
+            <button
+              className="icon-btn"
+              type="button"
+              aria-label={`About ${brand.product}`}
+              onClick={() => setAboutOpen(true)}
+            >
+              ?
+            </button>
             <div className="app-topbar__account">
               {user ? (
                 <>
@@ -109,6 +120,7 @@ export function AppLayout(): JSX.Element {
             </div>
           </div>
         </header>
+        <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
         <main className="app-content">
           <Outlet />
         </main>

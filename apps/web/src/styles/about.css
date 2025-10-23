@@ -1,0 +1,85 @@
+.modal {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 50;
+}
+
+.modal .card {
+  width: min(520px, 92vw);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.modal .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal .row h3 {
+  margin: 0;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px 12px;
+  margin: 12px 0;
+}
+
+.kv dt {
+  color: var(--gb-muted);
+}
+
+.kv dd {
+  margin: 0;
+}
+
+.kv dd code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.modal footer.row {
+  justify-content: flex-end;
+}
+
+.modal a {
+  color: inherit;
+}
+
+.modal .btn {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.modal .btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}

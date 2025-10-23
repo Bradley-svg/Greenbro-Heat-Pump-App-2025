@@ -795,6 +795,28 @@ app.get('/brand.css', (c) =>
   }),
 );
 
+app.get('/brand/manifest.webmanifest', () =>
+  new Response(
+    JSON.stringify({
+      name: 'Greenbro Control Centre',
+      short_name: 'Greenbro',
+      theme_color: '#0b0e12',
+      background_color: '#0b0e12',
+      display: 'standalone',
+      icons: [
+        { src: '/brand/logo.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+        { src: '/brand/logo-white.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable any' },
+      ],
+    }),
+    {
+      headers: {
+        'Content-Type': 'application/manifest+json',
+        'Cache-Control': 'public, max-age=86400',
+      },
+    },
+  ),
+);
+
 app.get('/brand/logo.svg', async (c) => {
   const baseHeaders = new Headers({
     'Content-Type': 'image/svg+xml; charset=utf-8',
@@ -838,6 +860,54 @@ app.get('/brand/logo-white.svg', async (c) => {
     }
   } catch (error) {
     console.warn('Failed to load white brand logo from R2', error);
+  }
+
+  return new Response(brandLogoWhiteSvg, { headers: baseHeaders });
+});
+
+app.get('/brand/favicon.svg', async (c) => {
+  const baseHeaders = new Headers({
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Cache-Control': 'public, max-age=604800, s-maxage=604800',
+    'CDN-Cache-Control': 'public, max-age=604800, s-maxage=604800',
+  });
+
+  try {
+    const icon = await c.env.BRAND.get('favicon.svg');
+    if (icon) {
+      const headers = new Headers(baseHeaders);
+      icon.writeHttpMetadata(headers);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'image/svg+xml; charset=utf-8');
+      }
+      return new Response(icon.body, { headers });
+    }
+  } catch (error) {
+    console.warn('Failed to load brand favicon from R2', error);
+  }
+
+  return new Response(brandLogoSvg, { headers: baseHeaders });
+});
+
+app.get('/brand/favicon-white.svg', async (c) => {
+  const baseHeaders = new Headers({
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Cache-Control': 'public, max-age=604800, s-maxage=604800',
+    'CDN-Cache-Control': 'public, max-age=604800, s-maxage=604800',
+  });
+
+  try {
+    const icon = await c.env.BRAND.get('favicon-white.svg');
+    if (icon) {
+      const headers = new Headers(baseHeaders);
+      icon.writeHttpMetadata(headers);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'image/svg+xml; charset=utf-8');
+      }
+      return new Response(icon.body, { headers });
+    }
+  } catch (error) {
+    console.warn('Failed to load white brand favicon from R2', error);
   }
 
   return new Response(brandLogoWhiteSvg, { headers: baseHeaders });

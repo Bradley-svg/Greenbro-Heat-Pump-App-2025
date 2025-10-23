@@ -11,6 +11,7 @@
     "migrate": "wrangler d1 migrations apply GREENBRO_DB",
     "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
     "copy-guard": "node scripts/copy-guard.mjs",
+    "brand-audit": "node scripts/brand-audit.mjs",
     "lint": "eslint src apps/web/src apps/web/vite.config.ts",
     "typecheck": "npm run -w apps/web typecheck",
     "axe:pdf": "BASE_URL=http://127.0.0.1:8788 playwright test tests/pdf-a11y.spec.ts -g @pdf",
@@ -18,7 +19,8 @@
     "test:smoke:ci": "BASE_URL=http://127.0.0.1:4173 playwright test --config=tests/playwright.config.ts tests/mute-toast.spec.ts --timeout=45000",
     "contrast:budget": "node tools/contrast-budget.mjs",
     "lh:ci": "npx @lhci/cli autorun --config=./lighthouserc.json",
-    "quality": "npm run axe:pdf && npm run contrast:budget"
+    "quality": "npm run axe:pdf && npm run contrast:budget",
+    "release:gate": "npm run copy-guard && npm run brand-audit && npm run lint && npm run typecheck"
   },
   "dependencies": {
     "hono": "^4.6.5",

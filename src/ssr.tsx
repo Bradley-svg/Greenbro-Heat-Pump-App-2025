@@ -1805,9 +1805,15 @@ export function Page({
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width,initial-scale=1" />
         <title>{title}</title>
-        {/* Brand favicon (keeps light/dark crisp because SVG) */}
-        <link rel="icon" type="image/svg+xml" href="/brand/logo.svg" />
-        {/* Theme colour for PWA-ish surfaces */}
+        {/* Brand favicon + manifest (dark/light aware) */}
+        <link rel="icon" href="/brand/favicon.svg" type="image/svg+xml" />
+        <link
+          rel="alternate icon"
+          href="/brand/favicon-white.svg"
+          media="(prefers-color-scheme: dark)"
+          type="image/svg+xml"
+        />
+        <link rel="manifest" href="/brand/manifest.webmanifest" />
         <meta name="theme-color" content="#0b0e12" />
         {metaRefreshSec != null ? (
           <meta httpEquiv="refresh" content={String(metaRefreshSec)} />
