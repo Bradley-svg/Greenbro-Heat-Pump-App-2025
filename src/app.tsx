@@ -1143,6 +1143,127 @@ app.get('/api/devices/:id/commissioning/window', async (c) => {
   });
 });
 
+app.get('/api/devices/:id/commissioning/windows', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops', 'contractor']);
+  const deviceId = c.req.param('id');
+  const limitRaw = Number(c.req.query('limit') ?? 10);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(50, Math.floor(limitRaw)) : 10;
+
+  const rows = await c.env.DB.prepare(
+    `
+      SELECT cs.session_id, st.step_id, st.updated_at, st.state, st.readings_json
+        FROM commissioning_steps st
+        JOIN commissioning_sessions cs ON cs.session_id = st.session_id
+       WHERE cs.device_id=? AND st.readings_json IS NOT NULL
+       ORDER BY st.updated_at DESC
+       LIMIT ?
+    `,
+  )
+    .bind(deviceId, limit)
+    .all<{ session_id: string; step_id: string; updated_at: string; state: string; readings_json: string }>();
+
+  const results = (rows.results ?? []).map((row) => {
+    let sample: any = null;
+    try {
+      sample = JSON.parse(row.readings_json);
+    } catch (error) {
+      console.warn('Failed to parse commissioning window sample', error);
+    }
+    return {
+      session_id: row.session_id,
+      step_id: row.step_id,
+      updated_at: row.updated_at,
+      pass: row.state === 'pass',
+      start: sample?.t_start ? Date.parse(sample.t_start) : null,
+      end: sample?.t_end ? Date.parse(sample.t_end) : null,
+      thresholds: sample?.thresholds ?? null,
+      sample: {
+        delta_t_med: sample?.delta_t_med ?? null,
+        p25: sample?.p25 ?? null,
+        p75: sample?.p75 ?? null,
+      },
+    };
+  });
+
+  return c.json(results);
+});
+
+app.post('/api/devices/:id/baselines', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+  const deviceId = c.req.param('id');
+  let payload: any;
+  try {
+    payload = await c.req.json<any>();
+  } catch {
+    return c.text('Bad Request', 400);
+  }
+  const { kind, sample, thresholds, source_session_id, step_id } = payload ?? {};
+  if (!kind || !sample) {
+    return c.text('Bad Request', 400);
+  }
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    'INSERT INTO device_baselines (baseline_id, device_id, kind, sample_json, thresholds_json, source_session_id, step_id) VALUES (?,?,?,?,?,?,?)',
+  )
+    .bind(
+      id,
+      deviceId,
+      kind,
+      JSON.stringify(sample),
+      thresholds ? JSON.stringify(thresholds) : null,
+      source_session_id ?? null,
+      step_id ?? null,
+    )
+    .run();
+
+  return c.json({ ok: true, baseline_id: id });
+});
+
+app.get('/api/devices/:id/baselines', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops', 'contractor']);
+  const deviceId = c.req.param('id');
+  const kind = c.req.query('kind') ?? 'delta_t';
+  const rows = await c.env.DB.prepare(
+    'SELECT baseline_id, created_at, sample_json, thresholds_json, source_session_id, step_id FROM device_baselines WHERE device_id=? AND kind=? ORDER BY created_at DESC LIMIT 5',
+  )
+    .bind(deviceId, kind)
+    .all<{ baseline_id: string; created_at: string; sample_json: string; thresholds_json: string | null; source_session_id: string | null; step_id: string | null }>();
+
+  const baselines = (rows.results ?? []).map((row) => {
+    let sample: any = null;
+    try {
+      sample = JSON.parse(row.sample_json);
+    } catch (error) {
+      console.warn('Failed to parse baseline sample', error);
+    }
+    let thresholds: any = null;
+    if (row.thresholds_json) {
+      try {
+        thresholds = JSON.parse(row.thresholds_json);
+      } catch (error) {
+        console.warn('Failed to parse baseline thresholds', error);
+      }
+    }
+    return {
+      baseline_id: row.baseline_id,
+      created_at: row.created_at,
+      sample,
+      thresholds,
+      source_session_id: row.source_session_id,
+      step_id: row.step_id,
+    };
+  });
+
+  return c.json(baselines);
+});
+
 app.post('/api/devices/:id/write', async (c) => {
   const blocked = await guardWrite(c);
   if (blocked) {

@@ -1,5 +1,25 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { WHITE_LOGO_SVG } from '../shared/brand';
 import type { Env } from '../types/env';
+
+export async function embedLogo(pdf: PDFDocument, fetcher: typeof fetch = fetch) {
+  try {
+    const response = await fetcher('/brand/logo-white.svg');
+    if (response?.ok) {
+      const svgBuffer = await response.arrayBuffer();
+      return await pdf.embedSvg(svgBuffer);
+    }
+  } catch {
+    /* ignore network issues */
+  }
+
+  try {
+    const fallback = new TextEncoder().encode(WHITE_LOGO_SVG);
+    return await pdf.embedSvg(fallback);
+  } catch {
+    return null;
+  }
+}
 
 export async function renderDeviceLabels(
   env: Env,
@@ -11,20 +31,7 @@ export async function renderDeviceLabels(
   const green = rgb(0.13, 0.82, 0.41);
   let y = 720;
 
-  let logoImg: any = null;
-  try {
-    const logo = await fetch(new URL('/brand/logo-white.svg', 'http://internal'));
-    if (logo.ok) {
-      const svgBuffer = await logo.arrayBuffer();
-      try {
-        logoImg = await pdf.embedSvg(svgBuffer);
-      } catch (error) {
-        console.warn('label logo embed failed', error);
-      }
-    }
-  } catch (error) {
-    console.warn('label logo fetch failed', error);
-  }
+  const logoImg = await embedLogo(pdf);
 
   for (let i = 0; i < 4; i++) {
     page.drawRectangle({ x: 40, y, width: 515, height: 120, borderColor: green, borderWidth: 1 });

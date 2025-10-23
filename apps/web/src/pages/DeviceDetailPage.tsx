@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { Navigate, useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { Navigate, useParams, useSearchParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@api/client';
 import { useAuthFetch } from '@hooks/useAuthFetch';
 import type { DeviceLatestState, TelemetryPoint } from '@api/types';
@@ -8,6 +8,7 @@ import { Legend } from '@components/charts/Legend';
 import {
   SeriesChart,
   type AlertWindow,
+  type BandOverlay,
   type BandOverlayBuilder,
   type SeriesChartHandle,
   type SeriesPoint,
@@ -18,21 +19,55 @@ import { toast } from '@app/providers/toast';
 
 const TELEMETRY_RANGES: Array<'24h' | '7d'> = ['24h', '7d'];
 
-interface CommissioningWindowResponse {
-  ok: boolean;
-  window: { t_start: string; t_end: string } | null;
-  sample?: Record<string, unknown> | null;
-  updated_at?: string | null;
+interface CommissioningWindowSummary {
+  session_id: string;
+  step_id: string;
+  updated_at: string;
+  pass: boolean;
+  start: number | null;
+  end: number | null;
+  thresholds: Record<string, unknown> | null;
+  sample: {
+    delta_t_med: number | null;
+    p25: number | null;
+    p75: number | null;
+  } | null;
+}
+
+interface DeviceBaselineSummary {
+  baseline_id: string;
+  created_at: string;
+  sample: {
+    median: number | null;
+    p25: number | null;
+    p75: number | null;
+    window_s?: number | null;
+    captured_at?: string | null;
+  };
+  thresholds: Record<string, unknown> | null;
+  source_session_id: string | null;
+  step_id: string | null;
 }
 
 export function DeviceDetailPage(): JSX.Element {
   const { deviceId } = useParams<{ deviceId: string }>();
   const [range, setRange] = useState<'24h' | '7d'>('24h');
+  const [searchParams, setSearchParams] = useSearchParams();
   const authFetch = useAuthFetch();
+  const queryClient = useQueryClient();
+  const [baselineSaving, setBaselineSaving] = useState(false);
+  const focusAppliedRef = useRef(false);
+  const deltaChartRef = useRef<SeriesChartHandle>(null);
+  const copChartRef = useRef<SeriesChartHandle>(null);
+  const currentChartRef = useRef<SeriesChartHandle>(null);
 
   if (!deviceId) {
     return <Navigate to="/devices" replace />;
   }
+
+  useEffect(() => {
+    focusAppliedRef.current = false;
+  }, [deviceId]);
 
   const latestQuery = useQuery({
     queryKey: ['device', deviceId, 'latest'],
@@ -54,17 +89,211 @@ export function DeviceDetailPage(): JSX.Element {
     refetchInterval: range === '24h' ? 10_000 : 30_000,
   });
 
-  const commissioningWindowQuery = useQuery({
-    queryKey: ['device', deviceId, 'commissioning-window'],
+  const windowsQuery = useQuery({
+    queryKey: ['dev:win', deviceId],
     queryFn: () =>
-      apiFetch<CommissioningWindowResponse>(
-        `/api/devices/${deviceId}/commissioning/window`,
+      apiFetch<CommissioningWindowSummary[]>(
+        `/api/devices/${deviceId}/commissioning/windows`,
         undefined,
         authFetch,
       ),
     enabled: !!deviceId,
-    refetchInterval: 60_000,
+    staleTime: 30_000,
   });
+
+  const baselinesQuery = useQuery({
+    queryKey: ['dev:baselines', deviceId],
+    queryFn: () =>
+      apiFetch<DeviceBaselineSummary[]>(
+        `/api/devices/${deviceId}/baselines?kind=delta_t`,
+        undefined,
+        authFetch,
+      ),
+    enabled: !!deviceId,
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (focusAppliedRef.current) {
+      return;
+    }
+    focusAppliedRef.current = true;
+    const fs = searchParams.get('focus_start');
+    const fe = searchParams.get('focus_end');
+    if (!fs || !fe) {
+      return;
+    }
+    const start = Number(fs);
+    const end = Number(fe);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return;
+    }
+    const span = Math.max(1, end - start);
+    const pad = Math.max(span * 0.15, 1_000);
+    const domain: [number, number] = [start - pad, end + pad];
+    deltaChartRef.current?.setXDomain(domain);
+    copChartRef.current?.setXDomain(domain);
+    currentChartRef.current?.setXDomain(domain);
+  }, [searchParams]);
+
+  const windows = useMemo<CommissioningWindowSummary[]>(
+    () => (Array.isArray(windowsQuery.data) ? windowsQuery.data : []),
+    [windowsQuery.data],
+  );
+
+  const baselines = useMemo<DeviceBaselineSummary[]>(
+    () => (Array.isArray(baselinesQuery.data) ? baselinesQuery.data : []),
+    [baselinesQuery.data],
+  );
+
+  const lastWindow = useMemo<CommissioningWindowSummary | null>(() => {
+    for (const window of windows) {
+      if (ensureFiniteRange(window)) {
+        return window;
+      }
+    }
+    return null;
+  }, [windows]);
+
+  const measurementWindow = useMemo(() => ensureFiniteRange(lastWindow), [lastWindow]);
+
+  const updateFocusParams = useCallback(
+    (start: number, end: number) => {
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        return;
+      }
+      const next = new URLSearchParams(searchParams);
+      next.set('focus_start', String(Math.round(start)));
+      next.set('focus_end', String(Math.round(end)));
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const focusWindow = useCallback(
+    (window: CommissioningWindowSummary | null | undefined) => {
+      const range = ensureFiniteRange(window);
+      if (!range) {
+        return;
+      }
+      const span = Math.max(1, range.end - range.start);
+      const pad = Math.max(span * 0.15, 1_000);
+      const domain: [number, number] = [range.start - pad, range.end + pad];
+      deltaChartRef.current?.setXDomain(domain);
+      copChartRef.current?.setXDomain(domain);
+      currentChartRef.current?.setXDomain(domain);
+      updateFocusParams(range.start, range.end);
+    },
+    [updateFocusParams],
+  );
+
+  const handleJumpToWindow = useCallback(() => {
+    if (!lastWindow) {
+      return;
+    }
+    focusWindow(lastWindow);
+    toast.info('Focused 90 s measurement window');
+  }, [focusWindow, lastWindow]);
+
+  const handleCopyFocusLink = useCallback(async () => {
+    if (!lastWindow) {
+      return;
+    }
+    const range = ensureFiniteRange(lastWindow);
+    if (!range) {
+      return;
+    }
+    updateFocusParams(range.start, range.end);
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('focus_start', String(Math.round(range.start)));
+      url.searchParams.set('focus_end', String(Math.round(range.end)));
+      if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        toast.warning('Clipboard not available');
+        return;
+      }
+      await navigator.clipboard.writeText(url.toString());
+      toast.success('Link copied');
+    } catch (error) {
+      console.warn('Failed to copy focus link', error);
+      toast.warning('Could not copy');
+    }
+  }, [lastWindow, updateFocusParams]);
+
+  const handleSelectWindow = useCallback(
+    (window: CommissioningWindowSummary) => {
+      focusWindow(window);
+    },
+    [focusWindow],
+  );
+
+  const handleSetBaseline = useCallback(async () => {
+    if (!lastWindow) {
+      return;
+    }
+    setBaselineSaving(true);
+    try {
+      await apiFetch<{ ok: boolean; baseline_id: string }>(
+        `/api/devices/${deviceId}/baselines`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            kind: 'delta_t',
+            sample: {
+              median: lastWindow.sample?.delta_t_med ?? null,
+              p25: lastWindow.sample?.p25 ?? null,
+              p75: lastWindow.sample?.p75 ?? null,
+              window_s: 90,
+              captured_at: lastWindow.updated_at,
+            },
+            thresholds: lastWindow.thresholds ?? null,
+            source_session_id: lastWindow.session_id,
+            step_id: lastWindow.step_id,
+          }),
+        },
+        authFetch,
+      );
+      toast.success('Baseline saved');
+      await queryClient.invalidateQueries({ queryKey: ['dev:baselines', deviceId] });
+    } catch (error) {
+      console.error('Failed to save baseline', error);
+      toast.error('Could not save baseline');
+    } finally {
+      setBaselineSaving(false);
+    }
+  }, [authFetch, deviceId, lastWindow, queryClient]);
+
+  const baselineBandBuilder = useMemo<BandOverlayBuilder | undefined>(() => {
+    const sample = baselines[0]?.sample;
+    if (!sample || sample.p25 == null || sample.p75 == null) {
+      return undefined;
+    }
+    const lowerBound = sample.p25 as number;
+    const upperBound = sample.p75 as number;
+    return (xScale, yScale) => {
+      const domain = deltaChartRef.current?.getXDomain();
+      if (!domain) {
+        return null;
+      }
+      const [x0, x1] = domain;
+      if (!Number.isFinite(x0) || !Number.isFinite(x1)) {
+        return null;
+      }
+      const upper: BandOverlay['upper'] = [
+        [xScale(x0), yScale(upperBound)],
+        [xScale(x1), yScale(upperBound)],
+      ];
+      const lower: BandOverlay['lower'] = [
+        [xScale(x0), yScale(lowerBound)],
+        [xScale(x1), yScale(lowerBound)],
+      ];
+      return { upper, lower, className: 'gb-chart-baseline-band' } satisfies BandOverlay;
+    };
+  }, [baselines, deltaChartRef]);
 
   const telemetryPoints = useMemo(() => telemetryQuery.data ?? [], [telemetryQuery.data]);
 
@@ -113,19 +342,6 @@ export function DeviceDetailPage(): JSX.Element {
       })
       .filter((window): window is AlertWindow => Boolean(window));
   }, [alertWindowsQuery.data]);
-
-  const measurementWindow = useMemo(() => {
-    const raw = commissioningWindowQuery.data?.window;
-    if (!raw) {
-      return null as { start: number; end: number } | null;
-    }
-    const start = Date.parse(raw.t_start);
-    const end = Date.parse(raw.t_end);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-      return null;
-    }
-    return { start, end };
-  }, [commissioningWindowQuery.data]);
 
   const latest = latestQuery.data;
   const onlineValue = latestQuery.isLoading
@@ -233,15 +449,26 @@ export function DeviceDetailPage(): JSX.Element {
           <p className="card__error">Unable to load telemetry.</p>
         ) : telemetryPoints.length > 0 ? (
           <>
-            <DeviceDetailCharts
-              delta={deltaSeries}
-              deltaRolling={deltaRolling}
-              cop={copSeries}
-              current={currentSeries}
-              overlays={alertWindows}
-              measurementWindow={measurementWindow}
-              range={range}
-            />
+        <DeviceDetailCharts
+          delta={deltaSeries}
+          deltaRolling={deltaRolling}
+          cop={copSeries}
+          current={currentSeries}
+          overlays={alertWindows}
+          measurementWindow={measurementWindow}
+          range={range}
+          windows={windows}
+          lastWindow={lastWindow}
+          onJumpToWindow={handleJumpToWindow}
+          onCopyFocusLink={handleCopyFocusLink}
+          onSelectWindow={handleSelectWindow}
+          onSetBaseline={handleSetBaseline}
+          baselineSaving={baselineSaving}
+          baselineBandBuilder={baselineBandBuilder}
+          deltaChartRef={deltaChartRef}
+          copChartRef={copChartRef}
+          currentChartRef={currentChartRef}
+        />
             <table className="data-table data-table--compact">
               <thead>
                 <tr>
@@ -337,6 +564,17 @@ interface DeviceDetailChartsProps {
   overlays: AlertWindow[];
   measurementWindow: { start: number; end: number } | null;
   range: '24h' | '7d';
+  windows: CommissioningWindowSummary[];
+  lastWindow: CommissioningWindowSummary | null;
+  onJumpToWindow: () => void;
+  onCopyFocusLink: () => void;
+  onSelectWindow: (window: CommissioningWindowSummary) => void;
+  onSetBaseline: () => void;
+  baselineSaving: boolean;
+  baselineBandBuilder?: BandOverlayBuilder;
+  deltaChartRef: RefObject<SeriesChartHandle>;
+  copChartRef: RefObject<SeriesChartHandle>;
+  currentChartRef: RefObject<SeriesChartHandle>;
 }
 
 function DeviceDetailCharts({
@@ -347,11 +585,18 @@ function DeviceDetailCharts({
   overlays,
   measurementWindow,
   range,
+  windows,
+  lastWindow,
+  onJumpToWindow,
+  onCopyFocusLink,
+  onSelectWindow,
+  onSetBaseline,
+  baselineSaving,
+  baselineBandBuilder,
+  deltaChartRef,
+  copChartRef,
+  currentChartRef,
 }: DeviceDetailChartsProps) {
-  const deltaChartRef = useRef<SeriesChartHandle>(null);
-  const copChartRef = useRef<SeriesChartHandle>(null);
-  const currentChartRef = useRef<SeriesChartHandle>(null);
-
   const hasSeries = delta.length > 0 || cop.length > 0 || current.length > 0;
   const measurementWindows: TimeWindow[] = measurementWindow
     ? [{ start: measurementWindow.start, end: measurementWindow.end, kind: 'info' }]
@@ -375,22 +620,6 @@ function DeviceDetailCharts({
     currentChartRef.current?.focusLatestOverlay(overlays);
   };
 
-  const jumpToMeasurementWindow = () => {
-    if (!measurementWindow) {
-      return;
-    }
-    const span = Math.max(1, measurementWindow.end - measurementWindow.start);
-    const pad = Math.max(span * 0.15, 1_000);
-    const domain: [number, number] = [
-      measurementWindow.start - pad,
-      measurementWindow.end + pad,
-    ];
-    deltaChartRef.current?.setXDomain(domain);
-    copChartRef.current?.setXDomain(domain);
-    currentChartRef.current?.setXDomain(domain);
-    toast.info('Focused 90 s measurement window');
-  };
-
   const chartWidth = typeof window === 'undefined'
     ? 720
     : Math.max(320, Math.min(720, window.innerWidth - 120));
@@ -398,8 +627,8 @@ function DeviceDetailCharts({
   const hasOverlays = overlays.length > 0;
 
   const deltaBandOverlayBuilder = useMemo<BandOverlayBuilder | undefined>(
-    () => createBandOverlayBuilder(deltaRolling),
-    [deltaRolling],
+    () => mergeBandBuilders(createBandOverlayBuilder(deltaRolling), baselineBandBuilder),
+    [baselineBandBuilder, deltaRolling],
   );
 
   const copRolling = useMemo<RollingPoint[]>(() => computeRolling(cop), [cop]);
@@ -434,148 +663,209 @@ function DeviceDetailCharts({
   );
   const deltaTooltipExtrasFn = deltaRollingLookup.size ? deltaTooltipExtras : undefined;
 
+  const hasWindows = windows.length > 0;
+  const baselineLabel = baselineSaving ? 'Saving…' : 'Set as baseline';
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
+    <div
+      style={{
+        display: 'flex',
+        gap: 16,
+        alignItems: 'flex-start',
+        flexWrap: 'wrap',
+        marginBottom: 24,
+      }}
+    >
       <div
-        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}
+        style={{
+          flex: '1 1 640px',
+          minWidth: 'min(640px, 100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+        }}
       >
-        <h3 style={{ margin: 0 }}>Trends ({range})</h3>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Legend
-            ariaLabel="Trend severity legend"
-            items={[
-              { kind: 'ok', label: 'Normal trend' },
-              { kind: 'warn', label: 'Warning window' },
-              { kind: 'crit', label: 'Critical window' },
-              {
-                kind: 'ok',
-                label: '90 s measurement window',
-                swatch: (size) => (
-                  <svg className="chart-legend__swatch" width={size} height={size} aria-hidden>
-                    <rect
-                      x={2}
-                      y={2}
-                      width={size - 4}
-                      height={size - 4}
-                      className="gb-window-info"
-                      rx={size / 6}
-                    />
-                  </svg>
-                ),
-              },
-              {
-                kind: 'ok',
-                label: '90 s median (IQR)',
-                swatch: (size) => (
-                  <svg className="chart-legend__swatch" width={size} height={size} aria-hidden>
-                    <rect
-                      x={2}
-                      y={size / 4}
-                      width={size - 4}
-                      height={size / 2}
-                      className="gb-chart-median-band"
-                      rx={size / 6}
-                    />
-                  </svg>
-                ),
-              },
-            ]}
-          />
-          <button
-            type="button"
-            className={`pill${hasOverlays ? ' is-active' : ''}`}
-            onClick={jumpLatest}
-            disabled={!hasOverlays}
-          >
-            Jump to active alert
-          </button>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 8 }}>
         <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: 12,
-            flexWrap: 'wrap',
-          }}
+          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <strong>ΔT</strong>
-            <MinMaxBadges pts={delta} />
+          <h3 style={{ margin: 0 }}>Trends ({range})</h3>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Legend
+              ariaLabel="Trend severity legend"
+              items={[
+                { kind: 'ok', label: 'Normal trend' },
+                { kind: 'warn', label: 'Warning window' },
+                { kind: 'crit', label: 'Critical window' },
+                {
+                  kind: 'ok',
+                  label: '90 s measurement window',
+                  swatch: (size) => (
+                    <svg className="chart-legend__swatch" width={size} height={size} aria-hidden>
+                      <rect
+                        x={2}
+                        y={2}
+                        width={size - 4}
+                        height={size - 4}
+                        className="gb-window-info"
+                        rx={size / 6}
+                      />
+                    </svg>
+                  ),
+                },
+                {
+                  kind: 'ok',
+                  label: '90 s median (IQR)',
+                  swatch: (size) => (
+                    <svg className="chart-legend__swatch" width={size} height={size} aria-hidden>
+                      <rect
+                        x={2}
+                        y={size / 4}
+                        width={size - 4}
+                        height={size / 2}
+                        className="gb-chart-median-band"
+                        rx={size / 6}
+                      />
+                    </svg>
+                  ),
+                },
+              ]}
+            />
+            <button
+              type="button"
+              className={`pill${hasOverlays ? ' is-active' : ''}`}
+              onClick={jumpLatest}
+              disabled={!hasOverlays}
+            >
+              Jump to active alert
+            </button>
           </div>
-          <button
-            type="button"
-            className="btn btn-pill"
-            onClick={jumpToMeasurementWindow}
-            disabled={!hasMeasurementWindow}
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
           >
-            Jump to 90 s check
-          </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <strong>ΔT</strong>
+              <MinMaxBadges pts={delta} />
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-pill"
+                onClick={onJumpToWindow}
+                disabled={!hasMeasurementWindow}
+              >
+                Jump to 90 s check
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={onCopyFocusLink}
+                disabled={!lastWindow}
+              >
+                Copy focus link
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={onSetBaseline}
+                disabled={!lastWindow || baselineSaving}
+                aria-busy={baselineSaving}
+              >
+                {baselineLabel}
+              </button>
+            </div>
+          </div>
+          <SeriesChart
+            ref={deltaChartRef}
+            data={delta}
+            width={chartWidth}
+            height={chartHeight}
+            overlays={overlays}
+            timeWindows={measurementWindows}
+            stroke="var(--gb-chart-ok)"
+            areaKind="ok"
+            ariaLabel="Delta T trend with alert overlays"
+            bandOverlayBuilder={deltaBandOverlayBuilder}
+            tooltipExtras={deltaTooltipExtrasFn}
+          />
+          {measurementCaption ? (
+            <p className="muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
+              {measurementCaption}
+            </p>
+          ) : null}
         </div>
-        <SeriesChart
-          ref={deltaChartRef}
-          data={delta}
-          width={chartWidth}
-          height={chartHeight}
-          overlays={overlays}
-          timeWindows={measurementWindows}
-          stroke="var(--gb-chart-ok)"
-          areaKind="ok"
-          ariaLabel="Delta T trend with alert overlays"
-          bandOverlayBuilder={deltaBandOverlayBuilder}
-          tooltipExtras={deltaTooltipExtrasFn}
-        />
-        {measurementCaption ? (
-          <p className="muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
-            {measurementCaption}
-          </p>
-        ) : null}
+
+        <div style={{ marginTop: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong>COP</strong>
+            <MinMaxBadges pts={cop} />
+          </div>
+          <SeriesChart
+            ref={copChartRef}
+            data={cop}
+            width={chartWidth}
+            height={chartHeight}
+            overlays={overlays}
+            timeWindows={measurementWindows}
+            stroke="var(--gb-chart-warn)"
+            areaKind="warn"
+            ariaLabel="COP trend with alert overlays"
+            bandOverlayBuilder={copBandOverlayBuilder}
+          />
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong>Compressor current</strong>
+            <MinMaxBadges pts={current} />
+          </div>
+          <SeriesChart
+            ref={currentChartRef}
+            data={current}
+            width={chartWidth}
+            height={chartHeight}
+            overlays={overlays}
+            timeWindows={measurementWindows}
+            stroke="var(--gb-chart-warn)"
+            areaKind="warn"
+            ariaLabel="Compressor current trend with alert overlays"
+            bandOverlayBuilder={currentBandOverlayBuilder}
+          />
+        </div>
+
+        <small className="muted">
+          Alert overlays remain shaded; the green band tracks the 90 s rolling median and interquartile range.
+        </small>
       </div>
 
-      <div style={{ marginTop: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <strong>COP</strong>
-          <MinMaxBadges pts={cop} />
-        </div>
-        <SeriesChart
-          ref={copChartRef}
-          data={cop}
-          width={chartWidth}
-          height={chartHeight}
-          overlays={overlays}
-          timeWindows={measurementWindows}
-          stroke="var(--gb-chart-warn)"
-          areaKind="warn"
-          ariaLabel="COP trend with alert overlays"
-          bandOverlayBuilder={copBandOverlayBuilder}
-        />
-      </div>
-
-      <div style={{ marginTop: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <strong>Compressor current</strong>
-          <MinMaxBadges pts={current} />
-        </div>
-        <SeriesChart
-          ref={currentChartRef}
-          data={current}
-          width={chartWidth}
-          height={chartHeight}
-          overlays={overlays}
-          timeWindows={measurementWindows}
-          stroke="var(--gb-chart-warn)"
-          areaKind="warn"
-          ariaLabel="Compressor current trend with alert overlays"
-          bandOverlayBuilder={currentBandOverlayBuilder}
-        />
-      </div>
-
-      <small className="muted">
-        Alert overlays remain shaded; the green band tracks the 90 s rolling median and interquartile range.
-      </small>
+      <aside className="drawer" aria-label="Recent 90 s checks">
+        <h4 className="drawer-title">Recent 90 s checks</h4>
+        <ul className="drawer-list">
+          {hasWindows ? (
+            windows.map((w) => (
+              <li key={`${w.session_id}:${w.step_id}`}>
+                <button
+                  type="button"
+                  onClick={() => onSelectWindow(w)}
+                  className={`chip ${w.pass ? 'ok' : 'crit'}`}
+                >
+                  {new Date(w.updated_at).toLocaleTimeString()} · {w.pass ? 'Pass' : 'Fail'}
+                </button>
+              </li>
+            ))
+          ) : (
+            <li className="drawer-empty muted">No commissioning windows</li>
+          )}
+        </ul>
+      </aside>
     </div>
   );
 }
@@ -621,4 +911,44 @@ function buildBandFromRolling(
     return null;
   }
   return { upper, lower, className: 'gb-chart-median-band' };
+}
+
+function mergeBandBuilders(
+  ...builders: Array<BandOverlayBuilder | null | undefined>
+): BandOverlayBuilder | undefined {
+  const active = builders.filter(Boolean) as BandOverlayBuilder[];
+  if (!active.length) {
+    return undefined;
+  }
+  return (xScale, yScale) => {
+    const overlays: BandOverlay[] = [];
+    for (const builder of active) {
+      const result = builder(xScale, yScale);
+      if (!result) {
+        continue;
+      }
+      if (Array.isArray(result)) {
+        overlays.push(...result.filter(Boolean) as BandOverlay[]);
+      } else {
+        overlays.push(result);
+      }
+    }
+    return overlays.length ? overlays : null;
+  };
+}
+
+function ensureFiniteRange(
+  window: CommissioningWindowSummary | null | undefined,
+): { start: number; end: number } | null {
+  if (!window) {
+    return null;
+  }
+  const { start, end } = window;
+  if (typeof start !== 'number' || typeof end !== 'number') {
+    return null;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return null;
+  }
+  return { start, end };
 }

@@ -54,6 +54,22 @@
   stroke: none;
 }
 
+.gb-chart-baseline-band {
+  fill: paint(gbStripe, 18%);
+  stroke: none;
+  opacity: 0.35;
+}
+
+@supports not (background: paint(gbStripe)) {
+  .gb-chart-baseline-band {
+    fill: repeating-linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--gb-chart-ok) 14%, transparent) 0 6px,
+      transparent 6px 12px
+    );
+  }
+}
+
 .gb-window-info {
   fill: color-mix(in oklab, var(--gb-chart-ok) 10%, transparent);
 }
@@ -171,6 +187,53 @@ body {
   display: grid;
   gap: 14px;
   grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.drawer {
+  flex: 0 0 240px;
+  padding: 16px;
+  border: 1px solid var(--gb-border);
+  border-radius: 16px;
+  background: #0f1622;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drawer-title {
+  margin: 0;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gb-muted-soft);
+}
+
+.drawer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drawer-list li {
+  display: flex;
+}
+
+.drawer-list .chip {
+  width: 100%;
+  justify-content: center;
+}
+
+.drawer-empty {
+  font-size: 0.85rem;
+}
+
+@media (max-width: 900px) {
+  .drawer {
+    flex: 1 1 100%;
+  }
 }
 
 @media (max-width: 1200px) {

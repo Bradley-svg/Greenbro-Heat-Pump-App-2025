@@ -26,7 +26,19 @@ export interface BandOverlay {
 }
 
 type ScaleFn = (value: number) => number;
-export type BandOverlayBuilder = (x: ScaleFn, y: ScaleFn) => BandOverlay | null | undefined;
+export type BandOverlayBuilder = (
+  x: ScaleFn,
+  y: ScaleFn,
+) => BandOverlay | BandOverlay[] | null | undefined;
+
+function normalizeBandOverlay(
+  overlay: BandOverlay | BandOverlay[] | null | undefined,
+): BandOverlay[] {
+  if (!overlay) {
+    return [];
+  }
+  return (Array.isArray(overlay) ? overlay : [overlay]).filter(Boolean) as BandOverlay[];
+}
 
 const WINDOW_CLASS: Record<NonNullable<TimeWindow['kind']>, string> = {
   info: 'gb-window-info',
@@ -38,6 +50,7 @@ export interface SeriesChartHandle {
   focusTs: (ts: number) => void;
   focusLatestOverlay: (windows: AlertWindow[]) => void;
   setXDomain: (domain: [number, number] | null) => void;
+  getXDomain: () => [number, number] | null;
 }
 
 export function nearestIndex(xs: number[], x: number): number {
@@ -96,7 +109,7 @@ interface SeriesChartProps {
   grid?: boolean;
   yDomain?: [number, number];
   ariaLabel?: string;
-  bandOverlay?: BandOverlay | null;
+  bandOverlay?: BandOverlay | BandOverlay[] | null;
   bandOverlayBuilder?: BandOverlayBuilder;
   tooltipExtras?: (ts: number) => string[];
 }
@@ -267,8 +280,9 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
         }
         setXDomainState([start, end]);
       },
+      getXDomain: () => [minTs, maxTs],
     }),
-    [hasData, clampTs],
+    [hasData, clampTs, minTs, maxTs],
   );
 
   const areaFill = useMemo(() => {
@@ -293,7 +307,10 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
     return bandOverlayBuilder(xScale, yScale) ?? null;
   }, [bandOverlayBuilder, hasData, xScale, yScale]);
 
-  const bandOverlay = bandOverlayProp ?? bandOverlayFromBuilder;
+  const bandOverlays = useMemo(
+    () => normalizeBandOverlay(bandOverlayProp ?? bandOverlayFromBuilder),
+    [bandOverlayProp, bandOverlayFromBuilder],
+  );
 
   const tooltipLines = activePoint
     ? (() => {
@@ -417,12 +434,18 @@ export const SeriesChart = forwardRef<SeriesChartHandle, SeriesChartProps>(funct
       {hasData ? (
         <g>
           <path d={areaPath} fill={areaFill} stroke="none" />
-          {bandOverlay && bandOverlay.upper.length && bandOverlay.lower.length ? (
-            <path
-              d={bandPath(bandOverlay.upper, bandOverlay.lower)}
-              className={bandOverlay.className || 'gb-chart-median-band'}
-            />
-          ) : null}
+          {bandOverlays.map((overlay, index) => {
+            if (!overlay.upper.length || !overlay.lower.length) {
+              return null;
+            }
+            return (
+              <path
+                key={`band-${index}`}
+                d={bandPath(overlay.upper, overlay.lower)}
+                className={overlay.className || 'gb-chart-median-band'}
+              />
+            );
+          })}
           <path d={pathData} fill="none" stroke={strokeColor} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         </g>
       ) : null}
