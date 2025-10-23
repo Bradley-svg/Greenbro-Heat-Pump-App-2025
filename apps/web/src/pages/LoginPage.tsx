@@ -45,10 +45,11 @@ export function LoginPage(): JSX.Element {
   }
 
   return (
-    <div className="auth-screen">
-      <div className="auth-card">
-        <h1>GreenBro Control Center</h1>
-        <p className="auth-card__subtitle">Sign in to manage devices and alerts</p>
+    <div className="auth-screen login-wrap">
+      <div className="auth-card login-card">
+        <img src="/brand/logo.svg" alt="GreenBro" className="login-logo" />
+        <h1 className="login-title">GreenBro Control Centre</h1>
+        <p className="auth-card__subtitle login-sub">Sign in to manage devices and alerts</p>
         <form onSubmit={onSubmit} className="auth-form">
           <label className="auth-form__field">
             <span>Email</span>

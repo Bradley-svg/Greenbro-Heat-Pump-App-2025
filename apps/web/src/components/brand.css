@@ -140,6 +140,18 @@ body {
     0 0 14px color-mix(in srgb, var(--gb-chart-crit) 80%, transparent);
 }
 
+.login-logo {
+  width: 128px;
+  height: auto;
+  margin: 8px auto 4px;
+  display: block;
+  filter: drop-shadow(0 2px 12px rgba(0, 0, 0, 0.3));
+}
+
+.login-title {
+  margin-top: 6px;
+}
+
 /* “danger zone” pulse when critical */
 @keyframes gb-pulse {
   0% {

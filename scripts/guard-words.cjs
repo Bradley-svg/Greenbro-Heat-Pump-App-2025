@@ -3,7 +3,10 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const banned = [/\bfleet\b/i];
+const banned = [
+  { re: /\bfleet(s)?\b/i, msg: 'Use “devices”.' },
+  { re: /\bCenter\b/, msg: 'Use British “Centre”.' },
+];
 const roots = ['apps/web/src', 'src', 'emails', 'views', 'templates', 'docs', 'spec', 'handbook'];
 const ignoreDirs = new Set(['node_modules', '.git', 'dist', 'build', '.wrangler', '.turbo']);
 const ignoreExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf', '.woff', '.woff2', '.ttf']);
@@ -27,9 +30,14 @@ function walk(dir) {
     const content = fs.readFileSync(fullPath, 'utf8');
     const lines = content.split(/\r?\n/);
     lines.forEach((line, index) => {
-      for (const pattern of banned) {
-        if (pattern.test(line)) {
-          offenders.push({ file: path.relative(root, fullPath), line: index + 1, text: line.trim() });
+      for (const rule of banned) {
+        if (rule.re.test(line)) {
+          offenders.push({
+            file: path.relative(root, fullPath),
+            line: index + 1,
+            text: line.trim(),
+            msg: rule.msg,
+          });
           break;
         }
       }
@@ -46,7 +54,8 @@ for (const relative of roots) {
 if (offenders.length > 0) {
   console.error('Banned copy detected (GreenBro language guard):');
   offenders.forEach((offender) => {
-    console.error(`  ${offender.file}:${offender.line} → ${offender.text}`);
+    const advice = offender.msg ? ` (${offender.msg})` : '';
+    console.error(`  ${offender.file}:${offender.line} → ${offender.text}${advice}`);
   });
   process.exit(1);
 }

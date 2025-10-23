@@ -2616,7 +2616,7 @@ app.post('/api/reports/email-existing', async (c) => {
   const footerLines = lines.filter((line) => line.startsWith('R2 path') || line.startsWith('Requested by'));
   const html = brandEmail({
     title: subject,
-    introLines: [`Here's the latest ${normalizedType} report link from GreenBro Control Center.`],
+    introLines: [`Here's the latest ${normalizedType} report link from GreenBro Control Centre.`],
     detailLines,
     footerLines,
     cta: { href: downloadUrl, label: 'Open report' },

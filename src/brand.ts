@@ -562,7 +562,7 @@ export function drawBrandPdfHeader(
   const accent = rgb(185 / 255, 195 / 255, 207 / 255);
   const { includeSlogan = false } = options;
   const headingY = height - 34;
-  page.drawText('GreenBro Control Center', {
+  page.drawText('GreenBro Control Centre', {
     x: 40,
     y: headingY,
     size: 14,

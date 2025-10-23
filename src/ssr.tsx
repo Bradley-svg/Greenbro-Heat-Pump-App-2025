@@ -1750,7 +1750,7 @@ export const renderer = jsxRenderer(({ children }) => {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>GreenBro Control Center — Devices</title>
+        <title>GreenBro Control Centre — Devices</title>
         <link rel="icon" href="/brand/logo.svg" type="image/svg+xml" />
         <link rel="stylesheet" href="/brand.css" />
         <style>{`
@@ -1855,7 +1855,7 @@ export const renderer = jsxRenderer(({ children }) => {
       </head>
       <body>
         <header>
-          <span class="brand-mark"><img src="/brand/logo.svg" alt="GreenBro" height="24" width="24" /><span>GreenBro Control Center</span></span>
+          <span class="brand-mark"><img src="/brand/logo.svg" alt="GreenBro" height="24" width="24" /><span>GreenBro Control Centre</span></span>
           <nav>
             <a href="/" class={isActive('/') ? 'active' : undefined}>
               Overview

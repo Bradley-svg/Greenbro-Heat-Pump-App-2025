@@ -48,7 +48,7 @@ export function AppLayout(): JSX.Element {
       </aside>
       <div className="app-main">
         <header className="app-topbar">
-          <div className="app-topbar__title">{status === 'authenticated' ? 'Control Center' : 'Loading…'}</div>
+          <div className="app-topbar__title">{status === 'authenticated' ? 'Control Centre' : 'Loading…'}</div>
           <div className="app-topbar__actions">
             <ReadOnlyPill
               readOnly={ro}
