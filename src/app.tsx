@@ -27,6 +27,7 @@ import {
   AdminEmailPage,
   AdminMaintenancePage,
   AdminArchivePage,
+  AdminPresetsPage,
   AdminSettingsPage,
   AdminReportsPage,
   AdminReportsOutboxPage,
@@ -63,6 +64,24 @@ async function setSetting(DB: D1Database, key: string, value: string) {
     "INSERT INTO settings (key,value,updated_at) VALUES (?,?,datetime('now')) " +
       "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
   ).bind(key, value).run();
+}
+
+const isStr = (x: unknown): x is string => typeof x === 'string' && x.trim().length > 0;
+
+function validatePresets(arr: unknown): string | null {
+  if (!Array.isArray(arr)) return 'Presets must be an array.';
+  for (const [i, p] of arr.entries()) {
+    if (!p || typeof p !== 'object') return `Preset #${i + 1} must be an object.`;
+    const id = (p as any).id;
+    const name = (p as any).name;
+    const cols = (p as any).cols;
+    if (!isStr(id)) return `Preset #${i + 1} missing id.`;
+    if (!isStr(name)) return `Preset #${i + 1} missing name.`;
+    if (!Array.isArray(cols) || !cols.every(isStr)) {
+      return `Preset #${i + 1} cols must be array of strings.`;
+    }
+  }
+  return null;
 }
 
 function dedupeRecipients(values: string[]): string[] {
@@ -849,6 +868,51 @@ app.post('/api/admin/settings', async (c) => {
     return c.text('Bad Request', 400);
   }
   await setSetting(c.env.DB, key, value ?? '');
+  return c.json({ ok: true });
+});
+
+app.get('/api/admin/presets', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const tables = ['telemetry', 'alerts', 'incidents'] as const;
+  const result: Record<string, any[]> = {};
+  for (const table of tables) {
+    const raw = await getSetting(c.env.DB, `export_presets_${table}`);
+    try {
+      result[table] = raw ? JSON.parse(raw) : [];
+    } catch {
+      result[table] = [];
+    }
+  }
+  return c.json(result);
+});
+
+app.post('/api/admin/presets', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  const { table, presets } = await c.req.json().catch(() => ({}));
+  if (!['telemetry', 'alerts', 'incidents'].includes(String(table))) {
+    return c.text('Bad Request', 400);
+  }
+  const err = validatePresets(presets);
+  if (err) {
+    return c.json({ ok: false, error: err }, 400);
+  }
+  await setSetting(c.env.DB, `export_presets_${table}`, JSON.stringify(presets));
   return c.json({ ok: true });
 });
 
@@ -3129,6 +3193,19 @@ app.get('/admin/archive', async (c) => {
   const target = parsed ?? fallback;
   const rows = await listArchiveRows(c.env.DB, target);
   return c.render(<AdminArchivePage date={formatDateKey(target)} rows={rows} />);
+});
+
+app.get('/admin/presets', async (c) => {
+  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+  if (!jwt) {
+    return c.text('Unauthorized', 401);
+  }
+  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  requireRole(auth, ['admin', 'ops']);
+  return c.render(<AdminPresetsPage />);
 });
 
 app.get('/admin/sites', async (c) => {

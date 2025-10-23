@@ -1890,6 +1890,9 @@ export const renderer = jsxRenderer(({ children }) => {
             <a href="/admin/archive" class={isActive('/admin/archive') ? 'active' : undefined}>
               Archive
             </a>
+            <a href="/admin/presets" class={isActive('/admin/presets') ? 'active' : undefined}>
+              Presets
+            </a>
             <a href="/admin/settings" class={isActive('/admin/settings') ? 'active' : undefined}>
               Admin Settings
             </a>
@@ -2302,6 +2305,100 @@ export function AdminArchivePage(props: { date: string; rows: AdminArchiveRow[] 
         <p class="archive-summary">No exports recorded for {selectedDate}.</p>
       )}
       <script dangerouslySetInnerHTML={{ __html: adminArchiveScript }} />
+    </div>
+  );
+}
+
+export function AdminPresetsPage() {
+  return (
+    <div class="card">
+      <h2>Admin — Export Presets</h2>
+      <p class="muted">
+        Define column presets for CSV exports. Stored as <code>export_presets_telemetry</code>,{' '}
+        <code>export_presets_alerts</code>, <code>export_presets_incidents</code> in <code>settings</code>.
+      </p>
+
+      <form
+        id="presets-form"
+        style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"
+      >
+        <fieldset class="card" style="padding:12px">
+          <legend>Telemetry</legend>
+          <textarea
+            name="telemetry"
+            rows="12"
+            style="width:100%;font-family:ui-monospace,monospace"
+          ></textarea>
+        </fieldset>
+        <fieldset class="card" style="padding:12px">
+          <legend>Alerts</legend>
+          <textarea name="alerts" rows="12" style="width:100%;font-family:ui-monospace,monospace"></textarea>
+        </fieldset>
+        <fieldset class="card" style="padding:12px">
+          <legend>Incidents</legend>
+          <textarea
+            name="incidents"
+            rows="12"
+            style="width:100%;font-family:ui-monospace,monospace"
+          ></textarea>
+        </fieldset>
+      </form>
+
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn" id="btn-validate">
+          Validate
+        </button>
+        <button class="btn btn-primary" id="btn-save">
+          Save
+        </button>
+        <button class="btn" id="btn-example">
+          Insert example
+        </button>
+      </div>
+      <pre id="presets-msg" class="muted" style="white-space:pre-wrap;margin-top:8px"></pre>
+
+      <script
+        dangerouslySetInnerHTML={{
+          __html: `
+        (function(){
+          const form = document.getElementById('presets-form');
+          const msg  = document.getElementById('presets-msg');
+          const ex = () => JSON.stringify([{id:'triage',name:'Triage',cols:['ts','device_id']}], null, 2);
+          const ok = t => { msg.textContent=t; msg.style.color='var(--gb-text)'; };
+          const bad= t => { msg.textContent=t; msg.style.color='#ff4d4f'; };
+
+          async function load(){
+            const r = await fetch('/api/admin/presets'); const j = await r.json();
+            ['telemetry','alerts','incidents'].forEach(k => form[k].value = JSON.stringify(j[k]||[], null, 2));
+          }
+          function parse(s){ try{ return JSON.parse(s); }catch(e){ return e; } }
+          function v(arr){ if(!Array.isArray(arr)) return 'must be array';
+            for(let i=0;i<arr.length;i++){ const p=arr[i];
+              if(!p||typeof p!=='object'||!p.id||!p.name||!Array.isArray(p.cols)) return 'id,name,cols[] required';
+            } return null;
+          }
+          document.getElementById('btn-example').onclick = ()=>{ ['telemetry','alerts','incidents'].forEach(k=>{ if(!form[k].value.trim()) form[k].value=ex(); }); ok('Examples inserted.'); };
+          document.getElementById('btn-validate').onclick = ()=> {
+            const errs = ['telemetry','alerts','incidents'].map(k=>{
+              const j = parse(form[k].value); return (j instanceof Error) ? k+': '+j.message : (v(j) ? k+': '+v(j) : null);
+            }).filter(Boolean);
+            errs.length ? bad('Errors:\\n'+errs.join('\\n')) : ok('Looks valid.');
+          };
+          document.getElementById('btn-save').onclick = async ()=>{
+            for (const k of ['telemetry','alerts','incidents']){
+              const j = parse(form[k].value); if (j instanceof Error) return bad('Fix '+k+': '+j.message);
+              const e = v(j); if (e) return bad('Fix '+k+': '+e);
+            }
+            for (const k of ['telemetry','alerts','incidents']){
+              await fetch('/api/admin/presets', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({table:k, presets: JSON.parse(form[k].value) })});
+            }
+            ok('Saved.');
+          };
+          load();
+        })();
+      `,
+        }}
+      />
     </div>
   );
 }
