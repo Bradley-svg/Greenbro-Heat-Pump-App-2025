@@ -1,5 +1,6 @@
-import type { Env, IngestMessage, TelemetryPayload } from './types';
-import { computeDerivedFromTelemetry } from './lib/math';
+import type { Env, ExecutionContext, MessageBatch } from './types/env';
+import type { IngestMessage, TelemetryPayload } from './types';
+import { computeDerived, computeDerivedFromTelemetry } from './lib/math';
 
 export async function handleQueueBatch(
   batch: MessageBatch<IngestMessage>,

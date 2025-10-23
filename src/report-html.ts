@@ -1,4 +1,4 @@
-import type { Env } from './types';
+import type { Env } from './types/env';
 import type { ClientMonthlyReportPayload, IncidentReportV2Payload } from './pdf';
 import { BRAND } from './brand';
 

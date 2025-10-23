@@ -1,4 +1,5 @@
-import type { Env, TelemetryPayload } from './types';
+import type { Env, DurableObjectState } from './types/env';
+import type { TelemetryPayload } from './types';
 
 type AuditPayload = Record<string, unknown>;
 

@@ -2,12 +2,16 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
+    "lib": ["ES2022", "WebWorker"],
+    "types": ["@cloudflare/workers-types/2025-10-01", "hono/jsx"],
+    "skipLibCheck": true,
+    "strict": true,
+    "moduleResolution": "bundler",
+    "target": "ES2022",
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx",
-    "lib": ["ES2022"],
-    "types": ["@cloudflare/workers-types", "hono/jsx"],
-    "skipLibCheck": true,
-    "strict": true
+    "baseUrl": ".",
+    "typeRoots": ["./types", "./node_modules/@types"]
   },
   "include": ["src"]
 }

@@ -1,30 +1,5 @@
 export type Role = 'admin' | 'ops' | 'client' | 'contractor';
 
-export interface Env {
-  DB: D1Database;
-  CONFIG: KVNamespace;
-  REPORTS: R2Bucket;
-  BRAND: R2Bucket;
-  ARCHIVE: R2Bucket;
-  INGEST_Q: Queue<IngestMessage>;
-
-  DeviceState: DurableObjectNamespace;
-  DEVICE_DO: DurableObjectNamespace;
-
-  ACCESS_AUD: string;
-  ACCESS_ISS: string;
-  ACCESS_JWKS?: string;
-  ACCESS_JWKS_URL?: string;
-  JWT_SECRET: string;
-
-  WRITE_MIN_C?: string;
-  WRITE_MAX_C?: string;
-  DEV_AUTH_BYPASS?: string;
-  BUILD_SHA?: string;
-  BUILD_DATE?: string;
-  BUILD_SOURCE?: string;
-}
-
 export type TelemetryPayload = {
   deviceId: string;
   ts: string;

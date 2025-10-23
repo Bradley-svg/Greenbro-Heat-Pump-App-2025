@@ -1,6 +1,7 @@
 
 /** @jsxImportSource hono/jsx */
 /** @jsxRuntime automatic */
+import type { Child, JSX as HonoJSX } from 'hono/jsx';
 import { jsxRenderer, useRequestContext } from 'hono/jsx-renderer';
 import { BRAND } from './brand';
 
@@ -11,9 +12,9 @@ function useCspNonce(): string | undefined {
   return c.get('cspNonce') as string | undefined;
 }
 
-type SecureScriptProps = JSX.IntrinsicElements['script'];
+type SecureScriptProps = HonoJSX.IntrinsicElements['script'];
 
-function SecureScript(props: SecureScriptProps): JSX.Element {
+function SecureScript(props: SecureScriptProps) {
   const nonce = useCspNonce();
   return <script {...props} nonce={nonce} />;
 }
@@ -1794,10 +1795,10 @@ export function Page({
 }: {
   title?: string;
   metaRefreshSec?: number;
-  head?: JSX.Element | JSX.Element[];
+  head?: Child | Child[];
   ribbon?: DeployRibbon;
   version?: { build_sha: string; build_date?: string };
-  children: JSX.Element;
+  children: Child;
 }) {
   return (
     <html lang="en-GB">
@@ -2555,19 +2556,19 @@ export function AdminPresetsPage() {
           <legend>Telemetry</legend>
           <textarea
             name="telemetry"
-            rows="12"
+            rows={12}
             style="width:100%;font-family:ui-monospace,monospace"
           ></textarea>
         </fieldset>
         <fieldset class="card" style="padding:12px">
           <legend>Alerts</legend>
-          <textarea name="alerts" rows="12" style="width:100%;font-family:ui-monospace,monospace"></textarea>
+          <textarea name="alerts" rows={12} style="width:100%;font-family:ui-monospace,monospace"></textarea>
         </fieldset>
         <fieldset class="card" style="padding:12px">
           <legend>Incidents</legend>
           <textarea
             name="incidents"
-            rows="12"
+            rows={12}
             style="width:100%;font-family:ui-monospace,monospace"
           ></textarea>
         </fieldset>

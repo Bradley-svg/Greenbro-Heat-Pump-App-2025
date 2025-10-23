@@ -1,5 +1,5 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import type { Env } from './types';
+import type { Env } from './types/env';
 import { BRAND, drawBrandPdfHeader } from './brand';
 
 export type CommissioningPayload = {
@@ -205,7 +205,7 @@ export async function generateClientMonthlyReport(
     },
   ];
 
-  const colX = [40, 220, 360, 480];
+  const colX = [40, 220, 360, 480] as const;
   drawText('Metric', colX[0], y);
   drawText('Target', colX[1], y);
   drawText('Actual', colX[2], y);

@@ -1,15 +1,15 @@
 /** @jsxImportSource hono/jsx */
 /** @jsxRuntime automatic */
-import type { ExecutionContext, MessageBatch, ScheduledEvent } from '@cloudflare/workers-types';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
+import type { Env, ExecutionContext, MessageBatch, ScheduledEvent } from './types/env';
 import type {
   ClientMonthlyReportPayload,
   CommissioningPayload,
   IncidentReportV2Payload,
 } from './pdf';
-import type { Env, IngestMessage, TelemetryPayload } from './types';
+import type { IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO, DeviceDO } from './do';
 import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
@@ -30,6 +30,7 @@ import {
   AdminReportsHistoryPage,
   ClientSloPage,
   OpsPage,
+  Page,
   type OverviewData,
   type OpsSnapshot,
   type ClientSloSummary,
@@ -68,8 +69,10 @@ const getPdfLib = () => {
 void DeviceStateDO;
 void DeviceDO;
 
-function maskId(id: string) {
-  if (!id) return id as any;
+function maskId(id: unknown): string {
+  if (typeof id !== 'string' || id.length === 0) {
+    return '';
+  }
   return id.length <= 5 ? `•••${id.slice(-2)}` : `${id.slice(0, 3)}…${id.slice(-2)}`;
 }
 
@@ -474,7 +477,12 @@ async function sha256Hex(input: string | ArrayBuffer | Uint8Array): Promise<stri
       : input instanceof ArrayBuffer
         ? new Uint8Array(input)
         : input;
-  const hash = await crypto.subtle.digest('SHA-256', data);
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const buffer =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? (bytes.buffer as ArrayBuffer)
+      : (bytes.slice().buffer as ArrayBuffer);
+  const hash = await crypto.subtle.digest('SHA-256', buffer);
   return Array.from(new Uint8Array(hash))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
@@ -583,7 +591,8 @@ function parseDurationMinutes(input: string | null | undefined): number | null {
   if (!match) return null;
   const value = Number(match[1]);
   if (!Number.isFinite(value)) return null;
-  const unit = match[2].toLowerCase();
+  const unit = match[2]?.toLowerCase();
+  if (!unit) return null;
   if (unit === 'm') return value;
   if (unit === 'h') return value * 60;
   return null;
@@ -783,6 +792,7 @@ type Ctx = {
     metaRefreshSec?: number;
     cspNonce?: string;
     ribbon?: DeployRibbon;
+    version?: { build_sha: string; build_date?: string };
   };
 };
 
@@ -1038,7 +1048,7 @@ app.use('/api/*', async (c, next) => {
   }
 });
 
-app.use('/*', renderer());
+app.use('/*', renderer);
 
 app.get('/health', (c) => c.json({ ok: true, ts: new Date().toISOString() }));
 
@@ -2618,7 +2628,7 @@ app.post('/api/reports/incident/v2', async (c) => {
   const path = keyToPath(pdf.key);
 
   const { clients, recipients } = await collectSiteRecipients(c.env.DB, siteId);
-  const primaryClientId = clients.length > 0 ? clients[0].id : null;
+  const primaryClientId = clients[0]?.id ?? null;
 
   await logReportDelivery(c.env.DB, {
     type: 'incident',
@@ -2876,9 +2886,10 @@ app.post('/api/reports/email-existing', async (c) => {
     const { clients, recipients: siteRecipients } = await collectSiteRecipients(c.env.DB, siteId);
     recipients = recipients.concat(siteRecipients);
     if (!resolvedClientId && clients.length === 1) {
-      resolvedClientId = clients[0].id;
-      if (!clientName) {
-        clientName = clients[0].name ?? clients[0].id;
+      const [firstClient] = clients;
+      resolvedClientId = firstClient?.id ?? null;
+      if (!clientName && firstClient) {
+        clientName = firstClient.name ?? firstClient.id;
       }
     }
   }
@@ -4299,9 +4310,9 @@ async function computeTimeWeightedUptime(
       continue;
     }
     intervals.sort((a, b) => a.start - b.start);
-    let current = intervals[0];
+    let current = { ...intervals[0]! };
     for (let i = 1; i < intervals.length; i++) {
-      const next = intervals[i];
+      const next = intervals[i]!;
       if (next.start <= current.end) {
         current.end = Math.max(current.end, next.end);
       } else {

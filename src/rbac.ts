@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
-import type { Env, Role } from './types';
+import type { Env } from './types/env';
+import type { Role } from './types';
 
 export type AccessContext = {
   sub: string;
@@ -73,7 +74,10 @@ function str(p: JWTPayload, key: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-export function requireRole(ctx: AccessContext, allowed: Role[]): void {
+export function requireRole(ctx: AccessContext | null | undefined, allowed: Role[]): asserts ctx is AccessContext {
+  if (!ctx) {
+    throw new Response('Unauthorized', { status: 401 });
+  }
   if (!ctx.roles.some((r) => allowed.includes(r))) {
     throw new Response('Forbidden', { status: 403 });
   }

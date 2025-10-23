@@ -1,4 +1,4 @@
-import type { Env } from '../types';
+import type { Env } from '../types/env';
 
 type EnvRecord = Partial<Record<keyof Env, unknown>> & Record<string, unknown>;
 
@@ -14,22 +14,23 @@ const REQ: RequirementGroups = {
   vars: ['ACCESS_AUD', 'ACCESS_ISS', 'ACCESS_JWKS', 'JWT_SECRET'],
 };
 
-export function preflight(env: EnvRecord): void {
+export function preflight(env: EnvRecord | Env): void {
+  const record = env as EnvRecord;
   const miss: string[] = [];
 
   for (const key of REQ.d1) {
-    if (!env[key]) {
+    if (!record[key]) {
       miss.push(`D1:${String(key)}`);
     }
   }
 
   for (const key of REQ.r2) {
-    if (!env[key]) {
+    if (!record[key]) {
       miss.push(`R2:${String(key)}`);
     }
   }
 
-  const hasJwks = Boolean((env as EnvRecord).ACCESS_JWKS || (env as EnvRecord).ACCESS_JWKS_URL);
+  const hasJwks = Boolean(record.ACCESS_JWKS || record.ACCESS_JWKS_URL);
   for (const key of REQ.vars) {
     if (key === 'ACCESS_JWKS') {
       if (!hasJwks) {
@@ -38,7 +39,7 @@ export function preflight(env: EnvRecord): void {
       continue;
     }
 
-    if (!env[key]) {
+    if (!record[key]) {
       miss.push(`VAR:${key}`);
     }
   }

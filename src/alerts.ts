@@ -1,4 +1,5 @@
-import type { Env, TelemetryPayload } from './types';
+import type { Env } from './types/env';
+import type { TelemetryPayload } from './types';
 
 export type Severity = 'minor' | 'major' | 'critical';
 

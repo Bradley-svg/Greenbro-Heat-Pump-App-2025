@@ -1,4 +1,4 @@
-import type { Env } from '../types';
+import type { Env } from '../types/env';
 
 const REQUIRED_TABLES = ['devices', 'alerts', 'telemetry', 'heartbeat'] as const;
 
