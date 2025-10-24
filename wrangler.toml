@@ -20,14 +20,6 @@ BUILD_SOURCE = "__BUILD_SOURCE__"
 [triggers]
 crons = ["0 2 * * *", "*/5 * * * *", "15 2 1 * *"]
 
-[[queues.producers]]
-queue = "ingest-q"
-binding = "INGEST_Q"
-
-[[queues.consumers]]
-queue = "ingest-q"
-max_batch_size = 50
-max_batch_timeout = 30
 
 [durable_objects]
 bindings = [
