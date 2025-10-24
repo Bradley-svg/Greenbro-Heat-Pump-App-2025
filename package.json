@@ -25,7 +25,8 @@
     "quality": "npm run axe:pdf && npm run contrast:budget",
     "release:gate": "npm run copy-guard && npm run brand-audit && npm run lint && npm run typecheck",
     "worker:size": "node scripts/check-worker-size.mjs",
-    "dev:gate": "node scripts/preview-stack.mjs"
+    "dev:gate": "node scripts/preview-stack.mjs",
+    "cf:doctor": "node tools/cf-doctor.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1",
@@ -38,6 +39,7 @@
     "@axe-core/playwright": "^4.11.0",
     "@cloudflare/workers-types": "^4.20251014.0",
     "@eslint/js": "^9.14.0",
+    "@iarna/toml": "^2.2.5",
     "@playwright/test": "1.56.1",
     "@types/node": "^22.9.0",
     "@typescript-eslint/eslint-plugin": "^8.13.0",
