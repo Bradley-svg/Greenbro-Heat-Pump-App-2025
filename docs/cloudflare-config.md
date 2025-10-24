@@ -65,12 +65,12 @@ The worker both produces to and consumes from `ingest-q`, so the queue is declar
 ## Zero Trust Access
 
 - **Team domain (issuer):** `bradleyayliffl.cloudflareaccess.com`
-- **JWKS URL:** `https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/cert`
+- **JWKS URL:** `https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/certs`
 - **Session duration:** 24 hours for both applications.
 
 | Access application | Public hostname / pattern                                                     | AUD tag                                                              | Notes |
 |--------------------|-------------------------------------------------------------------------------|----------------------------------------------------------------------|-------|
-| `greenbro-heat-pump-app-2025 - Cloudflare Workers` | `greenbro-heat-pump-app-2025.bradleyayliffl.workers.dev`                    | `ea60442dfdb5aafba9682114c7017423a599f2a829f52c6c613610944e6a6bdd` | Primary API & dashboard worker (mirrors `ACCESS_AUD` binding). |
+| `greenbro-heat-pump-app-2025 - Cloudflare Workers` | `*-greenbro-heat-pump-app-2025.bradleyayliffl.workers.dev`                  | `558e7450465163f7be473dcb75d5cea6d786f7143f3fcfe4dc658049c47c5e0b` | Primary API & dashboard worker (mirrors `ACCESS_AUD` binding). |
 | `greeenbro-heat-pump-monitoring-2025 - Cloudflare Workers` | `*-greeenbro-heat-pump-monitoring-2025.bradleyayliffl.workers.dev` | `965324499988b497906c949af33be0c457edff0b9ac3edf8d287825b7d7af78d` | Wildcard access application for monitoring endpoints. |
 
 Ensure the `ACCESS_AUD`, `ACCESS_ISS`, and `ACCESS_JWKS` bindings in `wrangler.toml` match these values before deploying. Rotate secrets (for example `JWT_SECRET`) with `wrangler secret put ...` as usual.

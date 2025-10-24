@@ -66,6 +66,7 @@ import { audit } from './lib/audit';
 import { pruneR2Prefix } from './lib/prune';
 import { compareToIqr } from './lib/baseline';
 import { getSetting, setSetting } from './lib/settings';
+import { decodeTelemetryFromRegisters, normalizeRegisterMap, FAULT_CODES } from './lib/modbus';
 import argon2Module from 'argon2-wasm-esm/lib/argon2.js';
 const { ArgonType, hash: argon2Hash } = argon2Module;
 const DEV_BYPASS_AUTH: AccessContext = { sub: 'dev-bypass', roles: ['admin', 'ops'], clientIds: [] };
@@ -95,6 +96,24 @@ const DEV_ALLOWED_ORIGINS = Object.freeze([
   'http://localhost:8787',
   'http://127.0.0.1:8787',
 ]);
+
+const FAULT_DESCRIPTION_LOOKUP = (() => {
+  const map = new Map<string, string>();
+  for (const fault of FAULT_CODES) {
+    const normalized = fault.code.toLowerCase();
+    map.set(normalized, fault.description);
+    map.set(normalized.replace(/\s+/g, ''), fault.description);
+  }
+  return map;
+})();
+
+function lookupFaultDescription(code: string): string | undefined {
+  if (typeof code !== 'string' || code.length === 0) {
+    return undefined;
+  }
+  const normalized = code.toLowerCase();
+  return FAULT_DESCRIPTION_LOOKUP.get(normalized) ?? FAULT_DESCRIPTION_LOOKUP.get(normalized.replace(/\s+/g, ''));
+}
 
 function maskId(id: unknown): string {
   if (typeof id !== 'string' || id.length === 0) {
@@ -130,6 +149,33 @@ function getWriteLimits(env: Env): { minC: number; maxC: number } {
     minC: parseWriteLimit(env.WRITE_MIN_C, 'WRITE_MIN_C'),
     maxC: parseWriteLimit(env.WRITE_MAX_C, 'WRITE_MAX_C'),
   };
+}
+
+function normalizeFlagGroup(flags: unknown): Record<string, boolean> | undefined {
+  if (!flags || typeof flags !== 'object') {
+    return undefined;
+  }
+  const result: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(flags as Record<string, unknown>)) {
+    if (typeof value === 'boolean') {
+      result[key] = value;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizeFlagMap(flags: unknown): Record<string, Record<string, boolean>> | undefined {
+  if (!flags || typeof flags !== 'object') {
+    return undefined;
+  }
+  const result: Record<string, Record<string, boolean>> = {};
+  for (const [groupKey, groupValue] of Object.entries(flags as Record<string, unknown>)) {
+    const group = normalizeFlagGroup(groupValue);
+    if (group) {
+      result[groupKey] = group;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function isDevBypassAllowed(env: Env): boolean {
@@ -1984,9 +2030,117 @@ app.get('/api/devices/:id/latest', async (c) => {
   if (!(await canAccessDevice(DB, auth, id))) {
     return c.text('Forbidden', 403);
   }
-  const row = await DB.prepare('SELECT * FROM latest_state WHERE device_id=?').bind(id).first();
+  const row = await DB.prepare('SELECT * FROM latest_state WHERE device_id=?')
+    .bind(id)
+    .first<{
+      device_id: string;
+      ts: string;
+      supplyC: number | null;
+      returnC: number | null;
+      tankC: number | null;
+      ambientC: number | null;
+      flowLps: number | null;
+      compCurrentA: number | null;
+      eevSteps: number | null;
+      powerKW: number | null;
+      deltaT: number | null;
+      thermalKW: number | null;
+      cop: number | null;
+      cop_quality: string | null;
+      mode: string | null;
+      defrost: number | null;
+      online: number | null;
+      faults_json: string | null;
+    }>();
 
-  return row ? c.json(row) : c.text('Not found', 404);
+  if (!row) {
+    return c.text('Not found', 404);
+  }
+
+  const metrics: Record<string, number | null> = {};
+  const setMetric = (key: string, value: unknown) => {
+    if (value == null) {
+      return;
+    }
+    const num = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(num)) {
+      return;
+    }
+    metrics[key] = num;
+  };
+
+  setMetric('supplyC', row.supplyC);
+  setMetric('returnC', row.returnC);
+  setMetric('tankC', row.tankC);
+  setMetric('ambientC', row.ambientC);
+  setMetric('flowLps', row.flowLps);
+  setMetric('compCurrentA', row.compCurrentA);
+  setMetric('eevSteps', row.eevSteps);
+  setMetric('powerKW', row.powerKW);
+  setMetric('deltaT', row.deltaT);
+  setMetric('thermalKW', row.thermalKW);
+  setMetric('cop', row.cop);
+
+  const status: TelemetryPayload['status'] = {
+    mode: typeof row.mode === 'string' && row.mode.length > 0 ? row.mode : undefined,
+    defrost: row.defrost == null ? undefined : row.defrost === 1,
+    online: row.online == null ? undefined : row.online === 1,
+  };
+
+  const faults: Array<{ code: string; description?: string; active: boolean }> = [];
+  if (typeof row.faults_json === 'string' && row.faults_json.length > 0) {
+    try {
+      const parsed = JSON.parse(row.faults_json) as Array<{
+        code?: string;
+        description?: string;
+        active?: boolean;
+      }>;
+      for (const entry of parsed) {
+        if (!entry || typeof entry.code !== 'string') {
+          continue;
+        }
+        const code = entry.code;
+        if (faults.some((fault) => fault.code === code)) {
+          continue;
+        }
+        const description =
+          typeof entry.description === 'string' && entry.description.length > 0
+            ? entry.description
+            : lookupFaultDescription(code);
+        const active = typeof entry.active === 'boolean' ? entry.active : true;
+        faults.push({ code, description, active });
+      }
+    } catch (error) {
+      console.warn('Failed to parse faults_json for latest_state', error);
+    }
+  }
+
+  if (!status.flags) {
+    const statusRow = await DB.prepare(
+      'SELECT status_json FROM telemetry WHERE device_id=? ORDER BY ts DESC LIMIT 1',
+    )
+      .bind(id)
+      .first<{ status_json: string | null }>();
+    if (statusRow?.status_json) {
+      try {
+        const parsed = JSON.parse(statusRow.status_json) as { flags?: unknown };
+        const flags = normalizeFlagMap(parsed.flags);
+        if (flags) {
+          status.flags = flags;
+        }
+      } catch (error) {
+        console.warn('Failed to parse status_json for latest_state', error);
+      }
+    }
+  }
+
+  return c.json({
+    deviceId: row.device_id,
+    timestamp: row.ts,
+    metrics,
+    status,
+    faults,
+  });
 });
 
 app.get('/api/devices/:id/series', async (c) => {
@@ -2850,7 +3004,10 @@ type IngestStatus = {
 type ValidIngestPayload = {
   device_id: string;
   ts: string;
-  metrics: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  registers?: Record<string, unknown> | null;
+  holding_registers?: Record<string, unknown> | null;
+  read_only_registers?: Record<string, unknown> | null;
   status?: IngestStatus | null;
   meta?: Record<string, unknown> | null;
 };
@@ -2895,9 +3052,22 @@ app.post('/api/ingest/:profileId', async (c) => {
       return c.json({ ok: true, deduped: true });
     }
 
-    const rawMetrics: Record<string, unknown> = payload.metrics ?? {};
+    const rawMetrics: Record<string, unknown> =
+      payload.metrics && typeof payload.metrics === 'object' ? (payload.metrics as Record<string, unknown>) : {};
     const rawStatus: IngestStatus =
       typeof payload.status === 'object' && payload.status ? (payload.status as IngestStatus) : {};
+    const registerSources = [
+      payload.registers,
+      payload.holding_registers,
+      payload.read_only_registers,
+    ] as Array<Record<string | number, unknown> | null | undefined>;
+    const registerSnapshot: Record<number, number> = {};
+    for (const source of registerSources) {
+      if (source && typeof source === 'object') {
+        Object.assign(registerSnapshot, normalizeRegisterMap(source));
+      }
+    }
+    const decoded = Object.keys(registerSnapshot).length > 0 ? decodeTelemetryFromRegisters(registerSnapshot) : null;
 
     const toNumber = (value: unknown): number | undefined =>
       typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -2922,11 +3092,42 @@ app.post('/api/ingest/:profileId', async (c) => {
       powerKW: toNumber((rawMetrics as any).powerKW ?? (rawMetrics as any).power_kw),
     };
 
+    if (decoded) {
+      for (const [key, value] of Object.entries(decoded.metrics)) {
+        if (typeof value === 'number' && telemetryMetrics[key as keyof TelemetryPayload['metrics']] == null) {
+          telemetryMetrics[key as keyof TelemetryPayload['metrics']] = value;
+        }
+      }
+    }
+
+    let statusFlags = normalizeFlagMap((rawStatus as { flags?: unknown }).flags);
+
     const telemetryStatus: TelemetryPayload['status'] = {
       mode: typeof rawStatus.mode === 'string' ? rawStatus.mode : undefined,
       defrost: typeof rawStatus.defrost === 'boolean' ? rawStatus.defrost : undefined,
       online: typeof rawStatus.online === 'boolean' ? rawStatus.online : undefined,
     };
+
+    if (decoded) {
+      telemetryStatus.mode = telemetryStatus.mode ?? decoded.status.mode;
+      telemetryStatus.defrost =
+        typeof telemetryStatus.defrost === 'boolean' ? telemetryStatus.defrost : decoded.status.defrost;
+      telemetryStatus.online =
+        typeof telemetryStatus.online === 'boolean' ? telemetryStatus.online : decoded.status.online;
+      if (decoded.status.flags) {
+        statusFlags = statusFlags ?? {};
+        for (const [groupKey, groupValue] of Object.entries(decoded.status.flags)) {
+          statusFlags[groupKey] = { ...(statusFlags[groupKey] ?? {}), ...groupValue };
+        }
+      }
+    }
+
+    if (statusFlags && Object.keys(statusFlags).length > 0) {
+      telemetryStatus.flags = statusFlags;
+    }
+
+    const telemetryFaults =
+      decoded && decoded.faults.length > 0 ? decoded.faults.map((fault) => ({ ...fault })) : undefined;
 
     const telemetry: TelemetryPayload = {
       deviceId,
@@ -2934,6 +3135,9 @@ app.post('/api/ingest/:profileId', async (c) => {
       metrics: telemetryMetrics,
       status: telemetryStatus,
     };
+    if (telemetryFaults) {
+      telemetry.faults = telemetryFaults;
+    }
 
     if (c.env.INGEST_Q) {
       await c.env.INGEST_Q.send({ type: 'telemetry', profileId, body: telemetry });

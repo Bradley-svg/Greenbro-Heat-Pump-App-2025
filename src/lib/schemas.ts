@@ -7,8 +7,14 @@ addFormats(ajv);
 export const IngestSchema = {
   $id: 'gb:ingest-v1',
   type: 'object',
-  required: ['device_id', 'ts', 'metrics'],
+  required: ['device_id', 'ts'],
   additionalProperties: false,
+  anyOf: [
+    { required: ['metrics'] },
+    { required: ['registers'] },
+    { required: ['holding_registers'] },
+    { required: ['read_only_registers'] },
+  ],
   properties: {
     device_id: { type: 'string', minLength: 1 },
     ts: { type: 'string', format: 'date-time' },
@@ -22,6 +28,18 @@ export const IngestSchema = {
         compressor_a: { type: 'number' },
         flow_lpm: { type: 'number' },
       },
+    },
+    registers: {
+      type: 'object',
+      additionalProperties: { type: 'number' },
+    },
+    holding_registers: {
+      type: 'object',
+      additionalProperties: { type: 'number' },
+    },
+    read_only_registers: {
+      type: 'object',
+      additionalProperties: { type: 'number' },
     },
     status: { type: 'object', additionalProperties: true },
     meta: { type: 'object', additionalProperties: true },

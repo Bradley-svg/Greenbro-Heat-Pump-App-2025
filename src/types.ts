@@ -17,8 +17,9 @@ export type TelemetryPayload = {
     mode?: string;
     defrost?: boolean;
     online?: boolean;
+    flags?: Record<string, Record<string, boolean>>;
   };
-  faults?: Array<{ code: string; active: boolean }>;
+  faults?: Array<{ code: string; description?: string; active: boolean }>;
   derived?: {
     deltaT?: number;
     thermalKW?: number;

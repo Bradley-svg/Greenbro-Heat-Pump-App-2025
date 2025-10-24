@@ -29,6 +29,7 @@ export interface DeviceLatestState {
     mode?: string;
     defrost?: boolean;
     online?: boolean;
+    flags?: Record<string, Record<string, boolean>>;
   };
   faults?: Array<{ code: string; description?: string; active: boolean }>;
 }

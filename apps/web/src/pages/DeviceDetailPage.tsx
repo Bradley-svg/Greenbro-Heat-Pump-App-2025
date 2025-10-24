@@ -20,6 +20,12 @@ import { toast } from '@app/providers/toast';
 
 const TELEMETRY_RANGES: Array<'24h' | '7d'> = ['24h', '7d'];
 
+function humanizeKey(label: string): string {
+  return label
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 interface CommissioningWindowSummary {
   session_id: string;
   step_id: string;
@@ -681,8 +687,8 @@ export function DeviceDetailPage(): JSX.Element {
               </li>
               {Object.entries(latest.metrics).map(([metric, value]) => (
                 <li key={metric}>
-                  <span>{metric}</span>
-                  <span>{value ?? '—'}</span>
+                  <span>{humanizeKey(metric)}</span>
+                  <span>{value ?? 'N/A'}</span>
                 </li>
               ))}
               {latest.status.mode ? (
@@ -691,10 +697,29 @@ export function DeviceDetailPage(): JSX.Element {
                   <span>{latest.status.mode}</span>
                 </li>
               ) : null}
+              {typeof latest.status.defrost === 'boolean' ? (
+                <li>
+                  <span>Defrost</span>
+                  <span>{latest.status.defrost ? 'Active' : 'Idle'}</span>
+                </li>
+              ) : null}
               <li>
                 <span>Online</span>
                 <span>{latest.status.online === false ? 'Offline' : 'Online'}</span>
               </li>
+              {latest.status.flags
+                ? Object.entries(latest.status.flags).map(([groupKey, flagGroup]) => {
+                    const activeFlags = Object.entries(flagGroup)
+                      .filter(([, flagValue]) => flagValue)
+                      .map(([flagKey]) => humanizeKey(flagKey));
+                    return (
+                      <li key={`flag-${groupKey}`}>
+                        <span>{humanizeKey(groupKey)}</span>
+                        <span>{activeFlags.length > 0 ? activeFlags.join(', ') : 'None active'}</span>
+                      </li>
+                    );
+                  })
+                : null}
             </ul>
           ) : (
             <p>No telemetry yet.</p>

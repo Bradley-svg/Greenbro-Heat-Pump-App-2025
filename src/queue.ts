@@ -49,6 +49,33 @@ function sanitizeTelemetry(input: TelemetryPayload): TelemetryPayload {
   const coerceNumber = (value: unknown): number | undefined =>
     typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
+  const sanitizeFlagGroup = (group: unknown): Record<string, boolean> | undefined => {
+    if (!group || typeof group !== 'object') {
+      return undefined;
+    }
+    const result: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(group as Record<string, unknown>)) {
+      if (typeof value === 'boolean') {
+        result[key] = value;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  };
+
+  const sanitizeFlags = (flags: unknown): Record<string, Record<string, boolean>> | undefined => {
+    if (!flags || typeof flags !== 'object') {
+      return undefined;
+    }
+    const result: Record<string, Record<string, boolean>> = {};
+    for (const [groupKey, groupValue] of Object.entries(flags as Record<string, unknown>)) {
+      const sanitizedGroup = sanitizeFlagGroup(groupValue);
+      if (sanitizedGroup) {
+        result[groupKey] = sanitizedGroup;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  };
+
   return {
     deviceId: input.deviceId,
     ts: input.ts,
@@ -62,15 +89,31 @@ function sanitizeTelemetry(input: TelemetryPayload): TelemetryPayload {
       eevSteps: coerceNumber(metrics.eevSteps),
       powerKW: coerceNumber(metrics.powerKW),
     },
-    status: input.status,
+    status: input.status
+      ? {
+          mode: typeof input.status.mode === 'string' ? input.status.mode : undefined,
+          defrost: typeof input.status.defrost === 'boolean' ? input.status.defrost : undefined,
+          online: typeof input.status.online === 'boolean' ? input.status.online : undefined,
+          flags: sanitizeFlags(input.status.flags),
+        }
+      : undefined,
     faults: Array.isArray(input.faults)
       ? input.faults
           .map((fault) =>
             fault && typeof fault.code === 'string' && typeof fault.active === 'boolean'
-              ? { code: fault.code, active: fault.active }
+              ? {
+                  code: fault.code,
+                  active: fault.active,
+                  ...(typeof fault.description === 'string' && fault.description.length > 0
+                    ? { description: fault.description }
+                    : {}),
+                }
               : undefined,
           )
-          .filter((fault): fault is { code: string; active: boolean } => fault !== undefined)
+          .filter(
+            (fault): fault is { code: string; active: boolean; description?: string } =>
+              fault !== undefined,
+          )
       : undefined,
   };
 }

@@ -65,9 +65,9 @@ queue = "ingest-q"
 queue = "ingest-q"
 
 [env.staging]
-vars.ACCESS_AUD = "ea60442dfdb5aafba9682114c7017423a599f2a829f52c6c613610944e6a6bdd"
+vars.ACCESS_AUD = "558e7450465163f7be473dcb75d5cea6d786f7143f3fcfe4dc658049c47c5e0b"
 vars.ACCESS_ISS = "https://bradleyayliffl.cloudflareaccess.com"
-vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/cert"
+vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/certs"
 vars.BUILD_SHA = "__BUILD_SHA__"
 vars.BUILD_DATE = "__BUILD_DATE__"
 vars.BUILD_SOURCE = "__BUILD_SOURCE__"
@@ -102,7 +102,7 @@ bindings = [
 [env.production]
 vars.ACCESS_AUD = "965324499988b497906c949af33be0c457edff0b9ac3edf8d287825b7d7af78d"
 vars.ACCESS_ISS = "https://bradleyayliffl.cloudflareaccess.com"
-vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/cert"
+vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/certs"
 vars.BUILD_SHA = "__BUILD_SHA__"
 vars.BUILD_DATE = "__BUILD_DATE__"
 vars.BUILD_SOURCE = "__BUILD_SOURCE__"
