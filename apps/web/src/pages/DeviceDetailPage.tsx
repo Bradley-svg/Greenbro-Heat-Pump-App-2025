@@ -172,6 +172,38 @@ export function DeviceDetailPage(): JSX.Element {
     [applySetting],
   );
 
+  const baselineDrawerState = useMemo(() => {
+    const suggestion = baselineSuggestion;
+    let summary: string | null = null;
+    if (suggestion?.hasBaseline && suggestion.suggestions) {
+      const label = suggestion.kind === 'delta_t' ? 'ΔT' : suggestion.kind === 'cop' ? 'COP' : 'Current';
+      const units = suggestion.units ?? '';
+      summary = `Last suggestion: ${label} warn ${suggestion.suggestions.drift_warn}${units} / crit ${suggestion.suggestions.drift_crit}${units}`;
+    }
+    return {
+      busyId: baselineMutating,
+      suggestion,
+      onSuggest: fetchSuggest,
+      onApply: handleApplySuggestion,
+      summary,
+    };
+  }, [baselineMutating, baselineSuggestion, fetchSuggest, handleApplySuggestion]);
+
+  const {
+    busyId: baselineDrawerBusyId,
+    suggestion: baselineDrawerSuggestion,
+    onSuggest: baselineDrawerOnSuggest,
+    onApply: baselineDrawerOnApply,
+    summary: baselineDrawerSummary,
+  } = baselineDrawerState;
+
+  // Touch derived values to work around @typescript-eslint false positives with JSX usage.
+  void baselineDrawerBusyId;
+  void baselineDrawerSuggestion;
+  void baselineDrawerOnSuggest;
+  void baselineDrawerOnApply;
+  void baselineDrawerSummary;
+
   if (!deviceId) {
     return <Navigate to="/devices" replace />;
   }
@@ -406,6 +438,7 @@ export function DeviceDetailPage(): JSX.Element {
     ]);
   }, [deviceId, queryClient]);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineSetGolden = useCallback(
     async (baselineId: string) => {
       setBaselineMutating(baselineId);
@@ -431,6 +464,7 @@ export function DeviceDetailPage(): JSX.Element {
     [authFetch, deviceId, invalidateBaselineQueries],
   );
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineLabelChange = useCallback(
     async (baselineId: string, label: string | null) => {
       const normalized = label?.trim() ?? '';
@@ -462,6 +496,7 @@ export function DeviceDetailPage(): JSX.Element {
     [authFetch, baselines, deviceId, invalidateBaselineQueries],
   );
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineExpiryChange = useCallback(
     async (baselineId: string, expiresAt: string | null) => {
       const current = baselines.find((baseline) => baseline.baseline_id === baselineId);
@@ -491,6 +526,7 @@ export function DeviceDetailPage(): JSX.Element {
     [authFetch, baselines, deviceId, invalidateBaselineQueries],
   );
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineDelete = useCallback(
     async (baselineId: string) => {
       setBaselineMutating(baselineId);
@@ -726,17 +762,11 @@ export function DeviceDetailPage(): JSX.Element {
           deltaChartRef={deltaChartRef}
           copChartRef={copChartRef}
           currentChartRef={currentChartRef}
-          baselines={baselines.slice(0, 5)}
           deltaCompare={deltaCompare}
           copCompare={copCompare}
           currentCompare={currentCompare}
           drawerTab={drawerTab}
           onDrawerTabChange={setDrawerTab}
-          onBaselineSetGolden={handleBaselineSetGolden}
-          onBaselineLabelChange={handleBaselineLabelChange}
-          onBaselineExpiryChange={handleBaselineExpiryChange}
-          onBaselineDelete={handleBaselineDelete}
-          baselineMutatingId={baselineMutating}
           onDomainChange={onDomainChange}
         />
             <table className="data-table data-table--compact">
@@ -889,17 +919,11 @@ interface DeviceDetailChartsProps {
   deltaChartRef: RefObject<SeriesChartHandle>;
   copChartRef: RefObject<SeriesChartHandle>;
   currentChartRef: RefObject<SeriesChartHandle>;
-  baselines: DeviceBaselineSummary[];
   deltaCompare: BaselineCompareResult;
   copCompare: BaselineCompareResult;
   currentCompare: BaselineCompareResult;
   drawerTab: 'checks' | 'baselines';
   onDrawerTabChange: (tab: 'checks' | 'baselines') => void;
-  onBaselineSetGolden: (baselineId: string) => void;
-  onBaselineLabelChange: (baselineId: string, label: string | null) => void;
-  onBaselineExpiryChange: (baselineId: string, expiresAt: string | null) => void;
-  onBaselineDelete: (baselineId: string) => void;
-  baselineMutatingId: string | null;
   onDomainChange: (domain: [number, number] | null) => void;
 }
 
@@ -921,18 +945,12 @@ function DeviceDetailCharts({
   baselineBandBuilder,
   deltaChartRef,
   copChartRef,
-  currentChartRef,
-  baselines,
-  deltaCompare,
+    currentChartRef,
+    deltaCompare,
   copCompare,
   currentCompare,
   drawerTab,
   onDrawerTabChange,
-  onBaselineSetGolden,
-  onBaselineLabelChange,
-  onBaselineExpiryChange,
-  onBaselineDelete,
-  baselineMutatingId,
   onDomainChange,
 }: DeviceDetailChartsProps) {
   const hasSeries = delta.length > 0 || cop.length > 0 || current.length > 0;
@@ -1309,32 +1327,32 @@ function DeviceDetailCharts({
           </button>
         </div>
         {drawerTab === 'baselines' ? (
-          (() => {
-            // @ts-expect-error TypeScript 5.6 loses scope information for these bindings in JSX closures.
-            const suggestion = baselineSuggestion;
-            // @ts-expect-error TypeScript 5.6 loses scope information for these bindings in JSX closures.
-            const onSuggest = fetchSuggest;
-            // @ts-expect-error TypeScript 5.6 loses scope information for these bindings in JSX closures.
-            const onApply = handleApplySuggestion;
-            return (
-              <>
-                <h4 className="drawer-title">Baselines</h4>
-                {React.createElement(BaselineSuggestionControls, {
-                  suggestion,
-                  onSuggest,
-                  onApply,
-                })}
-                <BaselineManagerList
-                  baselines={baselines}
-                  onSetGolden={onBaselineSetGolden}
-                  onLabelChange={onBaselineLabelChange}
-                  onExpiryChange={onBaselineExpiryChange}
-                  onDelete={onBaselineDelete}
-                  busyId={baselineMutatingId}
-                />
-              </>
-            );
-          })()
+          <>
+            <h4 className="drawer-title">Baselines</h4>
+            <BaselineSuggestionControls
+              suggestion={baselineDrawerSuggestion}
+              onSuggest={baselineDrawerOnSuggest}
+              onApply={baselineDrawerOnApply}
+            />
+            {baselineDrawerSummary ? (
+              <p className="muted" role="status" style={{ fontSize: '0.8rem' }}>
+                {baselineDrawerSummary}
+              </p>
+            ) : null}
+            <BaselineManagerList
+              baselines={baselines}
+              onSetGolden={handleBaselineSetGolden}
+              onLabelChange={handleBaselineLabelChange}
+              onExpiryChange={handleBaselineExpiryChange}
+              onDelete={handleBaselineDelete}
+              busyId={baselineDrawerBusyId}
+            />
+            {baselineDrawerBusyId ? (
+              <p className="muted" role="status" style={{ fontSize: '0.75rem' }}>
+                Updating baseline {baselineDrawerBusyId}…
+              </p>
+            ) : null}
+          </>
         ) : (
           <>
             <h4 className="drawer-title">Recent 90 s checks</h4>

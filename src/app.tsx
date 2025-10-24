@@ -1325,7 +1325,8 @@ app.get('/api/devices/:id/baseline-suggest', async (c) => {
 
   let sample: any = null;
   try {
-    sample = JSON.parse(base.sample_json ?? '{}');
+    const sampleJson = typeof base.sample_json === 'string' ? base.sample_json : '{}';
+    sample = JSON.parse(sampleJson);
   } catch (error) {
     console.warn('baseline sample parse error', error);
   }
@@ -1364,7 +1365,8 @@ app.get('/api/devices/:id/baseline-suggest', async (c) => {
     }
     const index = Math.floor(p * drifts.length);
     const clampedIndex = Math.max(0, Math.min(drifts.length - 1, index));
-    return drifts[clampedIndex];
+    const value = drifts[clampedIndex];
+    return typeof value === 'number' ? value : 0;
   };
 
   const warnRaw = percentile(0.9);
@@ -1855,6 +1857,20 @@ type IngestStatus = {
   [key: string]: unknown;
 };
 
+type ValidIngestPayload = {
+  device_id: string;
+  ts: string;
+  metrics: Record<string, unknown>;
+  status?: IngestStatus | null;
+  meta?: Record<string, unknown> | null;
+};
+
+type ValidHeartbeatPayload = {
+  device_id: string;
+  timestamp: string;
+  rssi?: number | null;
+};
+
 app.post('/api/ingest/:profileId', async (c) => {
   const started = Date.now();
   let status = 500;
@@ -1866,7 +1882,12 @@ app.post('/api/ingest/:profileId', async (c) => {
       return bad(c, validateIngest.errors);
     }
 
-    deviceId = body.device_id;
+    const payload = body as ValidIngestPayload;
+    deviceId = payload.device_id;
+    if (!deviceId) {
+      status = 400;
+      return c.text('Invalid device_id', 400);
+    }
     const ok = await verifyDeviceKey(c.env.DB, deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
     if (!ok) {
       status = 403;
@@ -1884,8 +1905,9 @@ app.post('/api/ingest/:profileId', async (c) => {
       return c.json({ ok: true, deduped: true });
     }
 
-    const rawMetrics: Record<string, unknown> = body.metrics ?? {};
-    const rawStatus: IngestStatus = body.status ?? {};
+    const rawMetrics: Record<string, unknown> = payload.metrics ?? {};
+    const rawStatus: IngestStatus =
+      typeof payload.status === 'object' && payload.status ? (payload.status as IngestStatus) : {};
 
     const toNumber = (value: unknown): number | undefined =>
       typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -1918,7 +1940,7 @@ app.post('/api/ingest/:profileId', async (c) => {
 
     const telemetry: TelemetryPayload = {
       deviceId,
-      ts: body.ts,
+      ts: payload.ts,
       metrics: telemetryMetrics,
       status: telemetryStatus,
     };
@@ -2163,14 +2185,19 @@ app.post('/api/heartbeat/:profileId', async (c) => {
   if (!body || !validateHeartbeat(body)) {
     return bad(c, validateHeartbeat.errors);
   }
-  const ok = await verifyDeviceKey(c.env.DB, body.device_id, c.req.header('X-GREENBRO-DEVICE-KEY'));
+  const payload = body as ValidHeartbeatPayload;
+  const deviceId = payload.device_id;
+  const timestamp = payload.timestamp;
+  const rssi = typeof payload.rssi === 'number' && Number.isFinite(payload.rssi) ? payload.rssi : null;
+
+  const ok = await verifyDeviceKey(c.env.DB, deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
   if (!ok) return c.text('Forbidden', 403);
 
   await c.env.DB.prepare('INSERT INTO heartbeat (ts, device_id, rssi) VALUES (?, ?, ?)')
-    .bind(body.timestamp, body.device_id, body.rssi ?? null)
+    .bind(timestamp, deviceId, rssi)
     .run();
   await c.env.DB.prepare('UPDATE devices SET last_seen_at=?, online=1 WHERE device_id=?')
-    .bind(body.timestamp, body.device_id)
+    .bind(timestamp, deviceId)
     .run();
 
   // Let the scheduled job handle “no heartbeat” open/close; we’re only refreshing last_seen_at here.
@@ -2532,22 +2559,24 @@ app.post('/api/commissioning/measure-now', async (c) => {
   const copMin =
     body.expectations?.cop_min ?? numberFromSetting(await getSetting(c.env.DB, 'commissioning_cop_min'), 0);
 
-  const deltaT = latest.delta_t ?? computeDeltaT(latest.outlet, latest.ret);
-  const flowValue = typeof latest.flow_lpm === 'number' ? latest.flow_lpm : null;
-  const copValue = typeof latest.cop === 'number' ? latest.cop : null;
+  const outlet = typeof latest.outlet === 'number' ? latest.outlet : undefined;
+  const ret = typeof latest.ret === 'number' ? latest.ret : undefined;
+  const deltaT = typeof latest.delta_t === 'number' ? latest.delta_t : computeDeltaT(outlet, ret);
+  const flowValue = typeof latest.flow_lpm === 'number' ? latest.flow_lpm : undefined;
+  const copValue = typeof latest.cop === 'number' ? latest.cop : undefined;
 
-  const flowOk = flowValue == null ? flowMin === 0 : flowValue >= flowMin;
+  const flowOk = flowValue === undefined ? flowMin === 0 : flowValue >= flowMin;
   const dtOk = deltaT == null ? dtMin === 0 : deltaT >= dtMin;
-  const copOk = copValue == null ? copMin === 0 : copValue >= copMin;
+  const copOk = copValue === undefined ? copMin === 0 : copValue >= copMin;
   const pass = flowOk && dtOk && copOk;
 
   const readings = {
     ts: latest.ts,
     outlet: typeof latest.outlet === 'number' ? latest.outlet : null,
     return: typeof latest.ret === 'number' ? latest.ret : null,
-    flow_lpm: flowValue,
+    flow_lpm: flowValue ?? null,
     delta_t: deltaT,
-    cop: copValue,
+    cop: copValue ?? null,
   };
 
   await c.env.DB.prepare(
@@ -2898,7 +2927,8 @@ app.get('/api/alerts', async (c) => {
     let kind = typeof (row as { meta_kind?: string }).meta_kind === 'string' ? row.meta_kind! : 'delta_t';
     let units = typeof (row as { meta_units?: string }).meta_units === 'string' ? row.meta_units! : '';
     try {
-      const meta = row.meta_json ? JSON.parse(row.meta_json) : null;
+      const metaJson = typeof row.meta_json === 'string' ? row.meta_json : null;
+      const meta = metaJson ? JSON.parse(metaJson) : null;
       if (meta && typeof meta === 'object') {
         if (coverage == null && typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
           coverage = meta.coverage;

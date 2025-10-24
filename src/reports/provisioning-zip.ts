@@ -3,14 +3,16 @@ import { zipStore } from '../lib/zip';
 
 export async function renderProvisioningZip(env: Env, opts: { device_id: string; session_id?: string | null }) {
   const labelsKey = `labels/${opts.device_id}-latest.pdf`;
-  let labels = await env.REPORTS.get(labelsKey, { type: 'arrayBuffer' });
+  const existing = await env.REPORTS.get(labelsKey);
+  let labels = existing ? await existing.arrayBuffer() : null;
   if (!labels) {
     const { renderDeviceLabels } = await import('./labels-pdf');
     const gen = await renderDeviceLabels(env, { device_id: opts.device_id });
-    const copy = await env.REPORTS.get(gen.key, { type: 'arrayBuffer' });
+    const copy = await env.REPORTS.get(gen.key);
     if (copy) {
-      await env.REPORTS.put(labelsKey, copy, { httpMetadata: { contentType: 'application/pdf' } });
-      labels = copy;
+      const buffer = await copy.arrayBuffer();
+      await env.REPORTS.put(labelsKey, buffer, { httpMetadata: { contentType: 'application/pdf' } });
+      labels = buffer;
     }
   }
 

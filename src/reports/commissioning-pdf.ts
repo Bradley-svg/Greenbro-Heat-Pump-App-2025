@@ -22,10 +22,6 @@ type StepRow = {
 
 type StoredPdf = { key: string; size: number };
 
-type ReportBucket = {
-  put: (key: string, value: ArrayBuffer | Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => Promise<void>;
-};
-
 export async function renderCommissioningPdf(env: Env, session_id: string): Promise<StoredPdf> {
   const db = env.DB;
   const session = await db
@@ -88,7 +84,6 @@ export async function renderCommissioningPdf(env: Env, session_id: string): Prom
 
   const bytes = await pdf.save();
   const key = `commissioning/${session_id}.pdf`;
-  const bucket = env.REPORTS as ReportBucket;
-  await bucket.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
+  await env.REPORTS.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
   return { key, size: bytes.byteLength };
 }

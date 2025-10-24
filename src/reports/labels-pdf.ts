@@ -1,25 +1,5 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { WHITE_LOGO_SVG } from '../shared/brand';
 import type { Env } from '../types/env';
-
-export async function embedLogo(pdf: PDFDocument, fetcher: typeof fetch = fetch) {
-  try {
-    const response = await fetcher('/brand/logo-white.svg');
-    if (response?.ok) {
-      const svgBuffer = await response.arrayBuffer();
-      return await pdf.embedSvg(svgBuffer);
-    }
-  } catch {
-    /* ignore network issues */
-  }
-
-  try {
-    const fallback = new TextEncoder().encode(WHITE_LOGO_SVG);
-    return await pdf.embedSvg(fallback);
-  } catch {
-    return null;
-  }
-}
 
 export async function renderDeviceLabels(
   env: Env,
@@ -30,8 +10,6 @@ export async function renderDeviceLabels(
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const green = rgb(0.13, 0.82, 0.41);
   let y = 720;
-
-  const logoImg = await embedLogo(pdf);
 
   for (let i = 0; i < 4; i++) {
     page.drawRectangle({ x: 40, y, width: 515, height: 120, borderColor: green, borderWidth: 1 });
@@ -53,9 +31,7 @@ export async function renderDeviceLabels(
       font,
       color: rgb(0.62, 0.69, 0.75),
     });
-    if (logoImg) {
-      page.drawImage(logoImg, { x: 430, y: y + 78, width: 100, height: 26 });
-    }
+    page.drawText('Greenbro', { x: 430, y: y + 96, size: 16, font, color: green });
     y -= 160;
   }
 

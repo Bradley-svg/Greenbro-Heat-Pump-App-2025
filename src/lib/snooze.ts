@@ -1,3 +1,5 @@
+import type { D1Database } from '../types/env';
+
 export async function isSnoozed(DB: D1Database, deviceId: string, type: string, kind?: string | null) {
   const row = await DB.prepare(
     `SELECT 1 FROM alert_snoozes

@@ -37,6 +37,13 @@ type AlertRow = {
   meta_json: string | null;
 };
 
+type SnoozeRow = {
+  device_id: string;
+  type: string;
+  kind: string | null;
+  until_ts: string;
+};
+
 class MockBaselineStatement {
   #sql: string;
   #db: MockBaselineDB;
@@ -71,6 +78,7 @@ class MockBaselineDB {
   #telemetry = new Map<string, TelemetryRow[]>();
   #alerts: AlertRow[] = [];
   #alertState = new Map<string, { last_trigger_ts: string | null; dwell_start_ts: string | null; cooldown_until_ts: string | null; suppress: number }>();
+  #snoozes: SnoozeRow[] = [];
   #clock = 0;
 
   constructor() {
@@ -110,6 +118,10 @@ class MockBaselineDB {
     this.#telemetry.set(deviceId, existing);
   }
 
+  addSnooze(deviceId: string, type: string, kind: string | null, until: string) {
+    this.#snoozes.push({ device_id: deviceId, type, kind, until_ts: until });
+  }
+
   async execute<T>(sql: string, args: unknown[], mode: 'run' | 'all' | 'first') {
     if (sql.startsWith('SELECT value FROM settings WHERE key=?')) {
       const key = String(args[0] ?? '');
@@ -131,6 +143,12 @@ class MockBaselineDB {
       return { success: true };
     }
 
+    if (sql.startsWith('INSERT INTO alert_snoozes')) {
+      const [, deviceId, type, kind, until] = args as [string, string, string, string | null, string];
+      this.addSnooze(deviceId, type, kind ?? null, until);
+      return { success: true };
+    }
+
     if (sql.startsWith('SELECT last_trigger_ts')) {
       const [deviceId, rule] = args as [string, string];
       const state = this.#alertState.get(`${deviceId}:${rule}`);
@@ -138,6 +156,22 @@ class MockBaselineDB {
         return state ? (state as unknown as T) : null;
       }
       return { results: state ? ([state] as unknown as T[]) : [] };
+    }
+
+    if (sql.includes('FROM alert_snoozes')) {
+      const [deviceId, type, kind] = args as [string, string, string | null];
+      const now = new Date();
+      const active = this.#snoozes.find(
+        (entry) =>
+          entry.device_id === deviceId &&
+          entry.type === type &&
+          (!entry.kind || entry.kind === kind) &&
+          new Date(entry.until_ts).getTime() > now.getTime(),
+      );
+      if (mode === 'first') {
+        return active ? ({ 1: 1 } as unknown as T) : null;
+      }
+      return { results: active ? ([{ 1: 1 }] as unknown as T[]) : [] };
     }
 
     if (sql.startsWith('UPDATE alerts SET severity=')) {
@@ -588,4 +622,44 @@ test('baseline alerts evaluate per kind with independent dwell and severity', as
 
   assert.equal(copAfter?.state, 'closed');
   assert.equal(currentAfter?.state, 'open');
+});
+
+test('baseline alerts respect active snoozes', async () => {
+  const db = new MockBaselineDB();
+  db.setSetting('baseline_dwell_s', '0');
+  db.setSetting('baseline_cov_warn_cop', '0.75');
+  db.setSetting('baseline_cov_warn_current', '0.75');
+  const baseTs = Date.UTC(2024, 0, 1, 0, 0, 0);
+  const windowData: Record<string, Array<{ t: number; v: number | null }>> = {
+    cop: Array.from({ length: 6 }, (_, index) => ({ t: baseTs + index * 1000, v: 1.2 })),
+    current: Array.from({ length: 6 }, (_, index) => ({ t: baseTs + index * 1000, v: 14 })),
+  };
+  const env = createEnv(db, windowData);
+  const ctx = createCtx();
+
+  async function createBaseline(kind: 'cop' | 'current', sample: { median: number; p25: number; p75: number }) {
+    const req = new Request('http://test/api/devices/dev-1/baselines', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind, sample, thresholds: null, label: `${kind} baseline`, is_golden: true }),
+    });
+    const res = await worker.fetch(req, env, ctx);
+    assert.equal(res?.status, 200);
+  }
+
+  await createBaseline('cop', { median: 3, p25: 2.5, p75: 3.5 });
+  await createBaseline('current', { median: 8, p25: 6, p75: 10 });
+
+  const now = Date.UTC(2024, 0, 1, 0, 10, 0);
+  const future = new Date(Date.now() + 30_000).toISOString();
+  db.addSnooze('dev-1', 'baseline_deviation', 'cop', future);
+
+  await evaluateBaselineAlerts(env as Env, 'dev-1', now);
+
+  const alerts = db.listAlerts();
+  assert.equal(alerts.length, 1);
+  const currentAlert = alerts[0];
+  assert.equal(currentAlert?.type, 'baseline_deviation');
+  const meta = currentAlert?.meta_json ? JSON.parse(currentAlert.meta_json) : {};
+  assert.equal(meta.kind, 'current');
 });

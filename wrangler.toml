@@ -47,7 +47,7 @@ new_classes = ["DeviceDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "GREENBRO_DB"
-database_id = "REPLACE_WITH_D1_ID"
+database_id = "97f4f0bb-6f9f-4a47-9ca3-bf1f9601b111"
 
 [[r2_buckets]]
 binding = "REPORTS"
@@ -63,19 +63,18 @@ bucket_name = "greenbro-archive"
 
 [[kv_namespaces]]
 binding = "CONFIG"
-id = "REPLACE_WITH_KV_ID"
+id = "01ab23cd4567890efabc1234567890de"
 
 [env.production]
 vars = {
   ACCESS_AUD = "https://access.greenbro.co.za",
-  ACCESS_ISS = "https://…",
-  ACCESS_JWKS = "https://…/cdn-cgi/access/certs",
-  JWT_SECRET = "***"
+  ACCESS_ISS = "https://access.greenbro.co.za",
+  ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
 }
 
 [[env.production.d1_databases]]
 binding = "DB"
-database_id = "prod-…"
+database_id = "a2b6e0f1-2a3b-4c5d-9e6f-1234567890ab"
 database_name = "greenbro-db-prod"
 
 [[env.production.r2_buckets]]

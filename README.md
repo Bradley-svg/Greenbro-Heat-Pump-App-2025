@@ -29,7 +29,7 @@ npm install
 wrangler d1 create GREENBRO_DB
 wrangler kv namespace create CONFIG
 wrangler r2 bucket create greenbro-reports
-wrangler queues create greenbro-ingest
+wrangler queues create ingest-q
 
 # Paste generated IDs into wrangler.toml
 

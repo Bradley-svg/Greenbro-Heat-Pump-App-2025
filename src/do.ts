@@ -200,9 +200,13 @@ export class DeviceStateDO {
     };
     this.baseline.buf.push(item);
     const cutoff = t - WINDOW_MS;
-    while (this.baseline.buf.length && this.baseline.buf[0].t < cutoff) {
-      this.baseline.buf.shift();
-    }
+      while (this.baseline.buf.length) {
+        const head = this.baseline.buf[0];
+        if (!head || head.t >= cutoff) {
+          break;
+        }
+        this.baseline.buf.shift();
+      }
   }
 
   private async getLatestState(deviceId: string): Promise<Record<string, unknown>> {
