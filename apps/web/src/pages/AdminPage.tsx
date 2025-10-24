@@ -213,7 +213,7 @@ export function AdminPage(): JSX.Element {
         )}
         <div className="button-row">
           <button className="app-button" type="button" onClick={() => void refresh()}>
-            Refresh token
+            Refresh session
           </button>
           <button className="app-button" type="button" onClick={() => void logout()}>
             Sign out

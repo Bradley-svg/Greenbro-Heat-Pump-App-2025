@@ -1,88 +1,69 @@
-import type { AuthSession, AuthTokens, User } from '@utils/types';
-import { apiFetch, resolveApiUrl } from './client';
+import type { User } from '@utils/types';
+import { apiFetch, getCsrfToken, resolveApiUrl, setCsrfToken } from './client';
 
 export interface LoginInput {
   email: string;
   password: string;
 }
 
-export interface RefreshResponse {
-  accessToken: string;
-  refreshToken?: string;
-  user?: User;
+export interface LoginResponse {
+  user: User;
+  csrfToken?: string;
 }
 
-export async function login(input: LoginInput): Promise<AuthSession> {
-  const data = await apiFetch<{ user: User; accessToken: string; refreshToken?: string }>('/api/auth/login', {
+export interface RefreshResponse {
+  user?: User;
+  csrfToken?: string;
+}
+
+export async function login(input: LoginInput): Promise<LoginResponse> {
+  const data = await apiFetch<LoginResponse>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify(input),
+    headers: { 'Content-Type': 'application/json' },
   });
-
-  return {
-    user: data.user,
-    tokens: {
-      accessToken: data.accessToken,
-      refreshToken: data.refreshToken,
-    },
-  };
+  if (typeof data?.csrfToken === 'string') {
+    setCsrfToken(data.csrfToken);
+  }
+  return data;
 }
 
-export async function logout(accessToken?: string): Promise<void> {
+export async function logout(): Promise<void> {
   await fetch(resolveApiUrl('/api/auth/logout'), {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    },
   }).catch(() => undefined);
+  setCsrfToken(null);
 }
 
-export async function fetchMe(accessToken: string): Promise<User> {
-  return apiFetch<User>('/api/auth/me', {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+export async function fetchMe(): Promise<User> {
+  return apiFetch<User>('/api/auth/me');
 }
 
-export async function refresh(refreshToken: string): Promise<RefreshResponse> {
-  return apiFetch<RefreshResponse>('/api/auth/refresh', {
+export async function refresh(): Promise<RefreshResponse> {
+  const headers = new Headers();
+  const csrf = getCsrfToken();
+  if (csrf) {
+    headers.set('X-CSRF-Token', csrf);
+  }
+
+  const response = await fetch(resolveApiUrl('/api/auth/refresh'), {
     method: 'POST',
-    body: JSON.stringify({ refreshToken }),
+    credentials: 'include',
+    headers,
   });
-}
 
-export function storeSession(session: AuthSession | null): void {
-  if (typeof window === 'undefined') return;
-  if (!session) {
-    localStorage.removeItem('greenbro-auth');
-    return;
+  if (!response.ok) {
+    const message = await response
+      .text()
+      .catch(() => '')
+      .then((text) => text || 'Failed to refresh session');
+    throw new Error(message);
   }
-  localStorage.setItem(
-    'greenbro-auth',
-    JSON.stringify({
-      user: session.user,
-      tokens: session.tokens,
-      storedAt: Date.now(),
-    }),
-  );
-}
 
-export function loadStoredSession(): AuthSession | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem('greenbro-auth');
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { user: User; tokens: AuthTokens };
-    if (!parsed?.tokens?.accessToken) {
-      return null;
-    }
-    return {
-      user: parsed.user,
-      tokens: parsed.tokens,
-    };
-  } catch (error) {
-    console.warn('Failed to parse stored auth session', error);
-    return null;
+  const data = (await response.json().catch(() => ({}))) as RefreshResponse;
+  if (typeof data?.csrfToken === 'string') {
+    setCsrfToken(data.csrfToken);
   }
+  return data;
 }

@@ -10,12 +10,3 @@ export interface User {
   clientIds?: string[];
 }
 
-export interface AuthTokens {
-  accessToken: string;
-  refreshToken?: string;
-}
-
-export interface AuthSession {
-  user: User;
-  tokens: AuthTokens;
-}

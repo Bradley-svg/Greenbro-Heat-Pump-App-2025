@@ -1,0 +1,1056 @@
+9: +1 delta=1 -> import type {
+17: +1 delta=1 -> import {
+24: +1 delta=1 -> import {
+50: +1 delta=1 -> import {
+72: +1 delta=1 -> function parseWriteLimit(value: string, key: 'WRITE_MIN_C' | 'WRITE_MAX_C'): number {
+74: +1 delta=2 ->   if (trimmed.length === 0) {
+78: +1 delta=2 ->   if (!Number.isFinite(parsed)) {
+84: +1 delta=1 -> function getWriteLimits(env: Env): { minC: number; maxC: number } {
+85: +1 delta=2 ->   return {
+91: +1 delta=1 -> function isDevBypassAllowed(env: Env): boolean {
+92: +1 delta=2 ->   if (env.DEV_AUTH_BYPASS !== '1') {
+95: +1 delta=2 ->   if (env.BUILD_SOURCE === 'local') {
+101: +1 delta=1 -> function isDevBypassActive(env: Env): boolean {
+105: +1 delta=1 -> type NormalizedAuthUser = {
+115: +1 delta=1 -> type ApiUser = {
+123: +1 delta=1 -> type RefreshRecord = {
+147: +1 delta=1 -> function getJwtSecretKey(env: Env): Uint8Array {
+148: +1 delta=2 ->   if (!cachedJwtSecret || cachedJwtSecret.secret !== env.JWT_SECRET) {
+154: +1 delta=1 -> function normalizeRoleList(raw: unknown): Role[] {
+161: +1 delta=2 ->   for (const value of values) {
+172: +1 delta=1 -> function normalizeClientIds(raw: unknown): string[] {
+179: +1 delta=2 ->   for (const value of values) {
+182: +1 delta=3 ->     if (trimmed) {
+189: +1 delta=1 -> function timingSafeEqual(a: string, b: string): boolean {
+190: +1 delta=2 ->   if (a.length !== b.length) {
+194: +1 delta=2 ->   for (let i = 0; i < a.length; i += 1) {
+200: +1 delta=1 -> function bytesToHex(bytes: Uint8Array): string {
+206: +1 delta=1 -> function hexToBytes(hex: string): Uint8Array {
+207: +1 delta=2 ->   if (hex.length % 2 !== 0) {
+211: +1 delta=2 ->   for (let i = 0; i < bytes.length; i += 1) {
+217: +1 delta=1 -> function generateSaltHex(): string {
+223: +1 delta=1 -> async function derivePasswordHash(password: string, saltHex?: string): Promise<{ hashHex: string; saltHex: string }> {
+226: +1 delta=2 ->   const result = await argon2Hash({
+238: +1 delta=1 -> async function hashLegacyPassword(value: string): Promise<string> {
+243: +1 delta=1 -> type AuthUserRow = {
+253: +1 delta=1 -> type LegacyAuthUser = {
+263: +1 delta=1 -> function parseAuthUserRow(row: AuthUserRow | null): NormalizedAuthUser | null {
+264: +1 delta=2 ->   if (!row) {
+269: +1 delta=2 ->   if (!id || !email) {
+274: +1 delta=2 ->   if (!passwordHash) {
+279: +1 delta=2 ->   const roles: Role[] = (() => {
+280: +1 delta=3 ->     if (typeof row.roles === 'string' && row.roles.trim().startsWith('[')) {
+281: +1 delta=4 ->       try {
+290: +1 delta=2 ->   if (roles.length === 0) {
+294: +1 delta=2 ->   const clientIds = (() => {
+295: +1 delta=3 ->     if (typeof row.client_ids === 'string' && row.client_ids.trim().startsWith('[')) {
+296: +1 delta=4 ->       try {
+309: +1 delta=1 -> function parseLegacyAuthUser(entry: unknown): LegacyAuthUser | null {
+310: +1 delta=2 ->   if (!entry || typeof entry !== 'object') {
+337: +1 delta=1 -> async function migrateLegacyAuthUsers(DB: D1Database): Promise<void> {
+338: +1 delta=2 ->   if (!authUserMigrationPromise) {
+339: +1 delta=3 ->     authUserMigrationPromise = (async () => {
+340: +1 delta=4 ->       try {
+343: +1 delta=5 ->         if (!hasTable) {
+352: +1 delta=4 ->       if (!legacy) {
+357: +1 delta=4 ->       try {
+364: +1 delta=4 ->       if (!Array.isArray(parsed)) {
+369: +1 delta=4 ->       for (const entry of parsed) {
+371: +1 delta=5 ->         if (resolved) {
+376: +1 delta=4 ->       for (const user of users) {
+377: +1 delta=5 ->         try {
+380: +1 delta=6 ->           if (user.password) {
+417: +1 delta=4 ->       try {
+427: +1 delta=1 -> async function loadAuthUsers(DB: D1Database): Promise<NormalizedAuthUser[]> {
+429: +1 delta=2 ->   try {
+433: +1 delta=3 ->     if (!rows || !rows.results) {
+442: +1 delta=3 -> async function authenticateUser(DB: D1Database, email: string, password: string): Promise<NormalizedAuthUser | null> {
+444: +1 delta=4 ->   if (!lookup || !password) {
+451: +1 delta=4 ->   try {
+463: +1 delta=4 ->   if (!user) {
+467: +1 delta=4 ->   if (user.passwordSalt) {
+473: +1 delta=4 ->   if (!timingSafeEqual(legacyAttempt, user.passwordHash)) {
+477: +1 delta=4 ->   try {
+490: +1 delta=3 -> function toApiUser(user: NormalizedAuthUser): ApiUser {
+491: +1 delta=4 ->   return {
+500: +1 delta=3 -> function generateRefreshToken(): string {
+508: +1 delta=3 -> function generateSessionId(): string {
+512: +1 delta=3 -> function generateCsrfToken(): string {
+520: +1 delta=3 -> function setAccessCookie(c: Context, token: string) {
+521: +1 delta=4 ->   setCookie(c, ACCESS_COOKIE_NAME, token, {
+528: +1 delta=3 -> function setRefreshCookie(c: Context, token: string) {
+529: +1 delta=4 ->   setCookie(c, REFRESH_COOKIE_NAME, token, {
+536: +1 delta=3 -> function setCsrfCookie(c: Context, token: string) {
+537: +1 delta=4 ->   setCookie(c, CSRF_COOKIE_NAME, token, {
+544: +1 delta=3 -> function clearCookie(c: Context, name: string) {
+548: +1 delta=3 -> function clearCsrfCookie(c: Context) {
+552: +1 delta=3 -> function clearAuthCookies(c: Context) {
+558: +1 delta=3 -> async function createAccessToken(env: Env, user: ApiUser, sessionId: string): Promise<string> {
+559: +1 delta=4 ->   const payload: Record<string, unknown> = {
+576: +1 delta=3 -> async function storeRefreshToken(env: Env, token: string, record: RefreshRecord): Promise<void> {
+577: +1 delta=4 ->   try {
+578: +1 delta=5 ->     await env.CONFIG.put(`${REFRESH_TOKEN_PREFIX}${token}`, JSON.stringify(record), {
+586: +1 delta=3 -> async function readRefreshRecord(env: Env, token: string): Promise<RefreshRecord | null> {
+587: +1 delta=4 ->   try {
+589: +1 delta=5 ->     if (!raw) {
+595: +1 delta=5 ->     if (!sessionId || !userRaw || typeof userRaw !== 'object') {
+601: +1 delta=5 ->     if (!id || !email) {
+606: +1 delta=5 ->     if (roles.length === 0) {
+617: +1 delta=3 -> async function deleteRefreshToken(env: Env, token: string): Promise<void> {
+618: +1 delta=4 ->   try {
+625: +1 delta=3 -> async function verifyAppToken(env: Env, token: string): Promise<AccessContext | null> {
+626: +1 delta=4 ->   try {
+627: +1 delta=5 ->     const { payload } = await jwtVerify(token, getJwtSecretKey(env), {
+632: +1 delta=5 ->     if (!sub) {
+638: +1 delta=5 ->     if (roles.length === 0) {
+649: +1 delta=3 -> function getDevBypassUser(): ApiUser {
+650: +1 delta=4 ->   return {
+659: +1 delta=3 -> function getAllowedOrigins(env: Env): string[] {
+665: +1 delta=4 ->   if (origins.size === 0) {
+666: +1 delta=5 ->     for (const origin of DEFAULT_ALLOWED_ORIGINS) {
+670: +1 delta=4 ->   if (isDevBypassActive(env)) {
+671: +1 delta=5 ->     for (const origin of DEV_ALLOWED_ORIGINS) {
+678: +1 delta=3 -> function enforceRoles(auth: AccessContext | null | undefined, allowed: Role[]): Response | null {
+679: +1 delta=4 ->   try {
+683: +1 delta=5 ->     if (error instanceof Response) {
+690: +1 delta=3 -> async function getAccessContext(c: Context<Ctx>, jwt?: string): Promise<AccessContext | null> {
+692: +1 delta=4 ->   if (!token) {
+695: +1 delta=4 ->   try {
+703: +1 delta=3 -> async function requirePageAuth(c: Context<Ctx>, roles: Role[]): Promise<AccessContext | Response> {
+704: +1 delta=4 ->   if (isDevBypassActive(c.env)) {
+708: +1 delta=4 ->   if (!auth) {
+712: +1 delta=4 ->   if (failure) {
+718: +1 delta=3 -> export async function getDeploySettings(DB: D1Database) {
+728: +1 delta=3 -> function validatePresets(arr: unknown): string | null {
+730: +1 delta=4 ->   for (const [i, p] of arr.entries()) {
+737: +1 delta=5 ->     if (!Array.isArray(cols) || !cols.every(isStr)) {
+744: +1 delta=3 -> function dedupeRecipients(values: string[]): string[] {
+746: +1 delta=4 ->   for (const value of values) {
+750: +1 delta=5 ->     if (!seen.has(key)) {
+757: +1 delta=3 -> function parseRecipientList(value?: string | null): string[] {
+758: +1 delta=4 ->   if (!value) {
+765: +1 delta=3 -> function canAccessClient(auth: AccessContext, clientId: string) {
+766: +1 delta=4 ->   if (auth.roles.includes('admin') || auth.roles.includes('ops')) {
+769: +1 delta=4 ->   if ((auth.roles.includes('client') || auth.roles.includes('contractor')) && auth.clientIds) {
+775: +1 delta=3 -> type ReportDeliveryLogEntry = {
+786: +1 delta=3 -> type ReportDeliveryFilters = {
+794: +1 delta=3 -> async function logReportDelivery(DB: D1Database, entry: ReportDeliveryLogEntry) {
+795: +1 delta=4 ->   try {
+825: +1 delta=3 -> async function listReportDeliveries(DB: D1Database, filters: ReportDeliveryFilters = {}): Promise<ReportHistoryRow[]> {
+829: +1 delta=4 ->   if (filters.clientId) {
+833: +1 delta=4 ->   if (filters.siteId) {
+837: +1 delta=4 ->   if (filters.type) {
+841: +1 delta=4 ->   if (filters.status) {
+845: +1 delta=4 ->   const limit = (() => {
+848: +1 delta=5 ->     if (!Number.isFinite(parsed)) {
+858: +1 delta=4 ->     .all<{
+871: +1 delta=4 ->   const parseRecipients = (value: string | null): string[] => {
+879: +1 delta=4 ->   return (rows.results ?? []).map((row) => {
+881: +1 delta=5 ->     if (row.meta_json) {
+882: +1 delta=6 ->       try {
+884: +1 delta=7 ->         if (parsed && typeof parsed === 'object') {
+891: +1 delta=5 ->     return {
+908: +1 delta=3 -> async function loadEmailSettings(DB: D1Database): Promise<EmailSettings> {
+923: +1 delta=3 -> ): Promise<boolean> {
+925: +1 delta=4 ->   if (recipients.length === 0) {
+929: +1 delta=4 ->   if (!cfg.webhook || !cfg.from) {
+932: +1 delta=4 ->   try {
+933: +1 delta=5 ->     const payload: Record<string, unknown> = {
+939: +1 delta=5 ->     if (html) {
+942: +1 delta=5 ->     await fetch(cfg.webhook, {
+954: +1 delta=3 -> async function notifyOps(env: Env, message: string) {
+957: +1 delta=4 ->   try {
+958: +1 delta=5 ->     await fetch(url, {
+968: +1 delta=3 -> async function collectSiteRecipients(DB: D1Database, siteId: string) {
+981: +1 delta=4 ->   for (const row of rows.results ?? []) {
+983: +1 delta=5 ->     if (row.report_recipients) {
+990: +1 delta=3 -> function formatWindowLabel(hours: number): string {
+991: +1 delta=4 ->   if (!Number.isFinite(hours) || hours <= 0) {
+994: +1 delta=4 ->   if (hours % 24 === 0) {
+996: +1 delta=5 ->     if (days === 1) {
+1005: +1 delta=3 -> function keyToPath(key: string): string {
+1007: +1 delta=4 ->   if (!trimmed) {
+1014: +1 delta=3 -> function normalizeReportPath(path: string): string | null {
+1018: +1 delta=4 ->   try {
+1022: +1 delta=4 ->   if (value.startsWith('/api/reports/')) {
+1025: +1 delta=4 ->   if (value.startsWith('api/reports/')) {
+1029: +1 delta=4 ->   if (!value) {
+1035: +1 delta=3 -> function parseDateParam(value?: string | null): Date | null {
+1044: +1 delta=4 ->   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+1048: +1 delta=4 ->   if (Number.isNaN(date.valueOf())) {
+1054: +1 delta=3 -> function startOfUtcDay(date: Date): Date {
+1058: +1 delta=3 -> function addUtcDays(date: Date, days: number): Date {
+1064: +1 delta=3 -> function formatDateKey(date: Date): string {
+1068: +1 delta=3 -> async function listArchiveRows(DB: D1Database, day: Date): Promise<AdminArchiveRow[]> {
+1071: +1 delta=4 ->   try {
+1079: +1 delta=5 ->       .all<{
+1086: +1 delta=5 ->     return (res.results ?? []).map((row) => ({
+1099: +1 delta=3 -> async function sha256Hex(input: string | ArrayBuffer | Uint8Array): Promise<string> {
+1117: +1 delta=3 -> function formatCsvValue(value: unknown): string {
+1118: +1 delta=4 ->   if (value == null) {
+1121: +1 delta=4 ->   if (typeof value === 'number') {
+1124: +1 delta=4 ->   if (typeof value === 'boolean') {
+1135: +1 delta=3 -> ): ReadableStream<Uint8Array> {
+1137: +1 delta=4 ->   return new ReadableStream<Uint8Array>({
+1138: +1 delta=5 ->     async start(controller) {
+1146: +1 delta=6 ->       const writeHeader = () => {
+1147: +1 delta=7 ->         if (!headerWritten && cols && cols.length > 0) {
+1153: +1 delta=6 ->       const pushRow = (record: Record<string, unknown>) => {
+1154: +1 delta=7 ->         if (!cols || cols.length === 0) {
+1157: +1 delta=7 ->         if (!cols || cols.length === 0) {
+1165: +1 delta=6 ->       const processLine = (line: string) => {
+1167: +1 delta=7 ->         if (!trimmed) {
+1170: +1 delta=7 ->         try {
+1172: +1 delta=8 ->           if (parsed && typeof parsed === 'object') {
+1180: +1 delta=6 ->       try {
+1181: +1 delta=7 ->         while (true) {
+1183: +1 delta=8 ->           if (done) {
+1188: +1 delta=8 ->           while (newlineIndex !== -1) {
+1196: +1 delta=7 ->         if (buffer.length > 0) {
+1212: +1 delta=3 -> function parseDurationMinutes(input: string | null | undefined): number | null {
+1227: +1 delta=3 -> async function computeBurn(DB: D1Database, minutes = 10, target = 0.999): Promise<BurnSnapshot> {
+1245: +1 delta=3 -> async function openP1IfNeeded(env: Env, nowISO: string, meta: BurnSnapshot): Promise<boolean> {
+1263: +1 delta=3 -> async function closeP1IfRecovered(env: Env, nowISO: string, meta: BurnSnapshot): Promise<boolean> {
+1278: +1 delta=3 -> async function fastBurnMonitor(env: Env): Promise<FastBurnResult> {
+1282: +1 delta=4 ->   if (snapshot.total >= 200 && snapshot.burn > 2.0) {
+1283: +1 delta=5 ->     if (await openP1IfNeeded(env, nowISO, snapshot)) {
+1287: +1 delta=4 ->   if (snapshot.total >= 200 && snapshot.burn <= 1.0) {
+1288: +1 delta=5 ->     if (await closeP1IfRecovered(env, nowISO, snapshot)) {
+1295: +1 delta=3 -> async function pruneStaged(env: Env, days = 14) {
+1301: +1 delta=4 ->   do {
+1304: +1 delta=5 ->     for (const o of res.objects || []) {
+1307: +1 delta=6 ->       if (d && d < cutoff) {
+1308: +1 delta=7 ->         try {
+1316: +1 delta=3 -> async function isReadOnly(DB: D1Database) {
+1320: +1 delta=3 -> function canSeeDeployRibbon(auth: AccessContext | null | undefined) {
+1321: +1 delta=4 ->   if (!auth) {
+1327: +1 delta=3 -> async function attachDeployRibbon(c: Context<Ctx>, auth: AccessContext | null | undefined) {
+1328: +1 delta=4 ->   if (!canSeeDeployRibbon(auth)) {
+1332: +1 delta=4 ->   if (!deploy.enabled) {
+1336: +1 delta=4 ->   if (deploy.msg) {
+1342: +1 delta=3 -> function canSeeVersionChip(auth: AccessContext | null | undefined) {
+1343: +1 delta=4 ->   if (!auth) {
+1349: +1 delta=3 -> async function attachVersionInfo(c: Context<Ctx>, auth: AccessContext | null | undefined) {
+1350: +1 delta=4 ->   if (!canSeeVersionChip(auth)) {
+1354: +1 delta=4 ->   c.set('version', {
+1360: +1 delta=3 -> async function guardWrite(c: any) {
+1361: +1 delta=4 ->   if (await isReadOnly(c.env.DB)) {
+1367: +1 delta=3 -> function bad(c: any, errors: unknown) {
+1378: +1 delta=3 -> ): Promise<Response> {
+1379: +1 delta=4 ->   const envelope = {
+1383: +1 delta=5 ->     limits: {
+1392: +1 delta=4 ->     new Request(`https://do/devices/${deviceId}/command`, {
+1394: +1 delta=5 ->       headers: {
+1402: +1 delta=4 ->   if (!auditRes.ok) {
+1408: +1 delta=4 ->   const res = await stateStub.fetch('https://do/command', {
+1417: +1 delta=3 -> type Ctx = {
+1419: +1 delta=4 ->   Variables: {
+1430: +1 delta=3 -> app.use('*', async (c, next) => {
+1431: +1 delta=4 ->   if (c.env.DEV_AUTH_BYPASS === '1' && !isDevBypassAllowed(c.env)) {
+1437: +1 delta=3 -> app.use('*', (c, next) => {
+1439: +1 delta=4 ->   return cors({
+1440: +1 delta=5 ->     origin: (origin) => {
+1441: +1 delta=6 ->       if (!origin) {
+1452: +1 delta=3 -> app.use('*', async (c, next) => {
+1456: +1 delta=4 ->   if (c.res) {
+1462: +1 delta=3 ->   c.text(brandCss, 200, {
+1471: +1 delta=3 ->     JSON.stringify({
+1485: +1 delta=3 ->     {
+1486: +1 delta=4 ->       headers: {
+1494: +1 delta=3 -> app.get('/brand/apple-touch-icon.png', async (c) => {
+1495: +1 delta=4 ->   const cacheHeaders = {
+1500: +1 delta=4 ->   try {
+1502: +1 delta=5 ->     if (object) {
+1505: +1 delta=6 ->       if (!headers.has('Content-Type')) {
+1516: +1 delta=4 ->   return new Response(await fallback.arrayBuffer(), {
+1517: +1 delta=5 ->     headers: {
+1524: +1 delta=3 -> for (const size of [192, 512] as const) {
+1525: +1 delta=4 ->   app.get(`/brand/icon-${size}.png`, async (c) => {
+1526: +1 delta=5 ->     try {
+1528: +1 delta=6 ->       if (object) {
+1529: +1 delta=7 ->         const headers = new Headers({
+1534: +1 delta=7 ->         if (!headers.has('Content-Type')) {
+1561: +1 delta=3 -> app.get('/brand/logo.svg', async (c) => {
+1562: +1 delta=4 ->   const baseHeaders = new Headers({
+1568: +1 delta=4 ->   try {
+1570: +1 delta=5 ->     if (logo) {
+1573: +1 delta=6 ->       if (!headers.has('Content-Type')) {
+1585: +1 delta=3 -> app.get('/brand/logo-white.svg', async (c) => {
+1586: +1 delta=4 ->   const baseHeaders = new Headers({
+1592: +1 delta=4 ->   try {
+1594: +1 delta=5 ->     if (logo) {
+1597: +1 delta=6 ->       if (!headers.has('Content-Type')) {
+1609: +1 delta=3 -> app.get('/brand/favicon.svg', async (c) => {
+1610: +1 delta=4 ->   const baseHeaders = new Headers({
+1616: +1 delta=4 ->   try {
+1618: +1 delta=5 ->     if (icon) {
+1621: +1 delta=6 ->       if (!headers.has('Content-Type')) {
+1633: +1 delta=3 -> app.get('/brand/favicon-white.svg', async (c) => {
+1634: +1 delta=4 ->   const baseHeaders = new Headers({
+1640: +1 delta=4 ->   try {
+1642: +1 delta=5 ->     if (icon) {
+1645: +1 delta=6 ->       if (!headers.has('Content-Type')) {
+1657: +1 delta=3 -> app.get('/brand/logo-mono.svg', async (c) => {
+1658: +1 delta=4 ->   const baseHeaders = new Headers({
+1664: +1 delta=4 ->   try {
+1666: +1 delta=5 ->     if (logo) {
+1669: +1 delta=6 ->       if (!headers.has('Content-Type')) {
+1681: +1 delta=3 -> app.post('/api/auth/login', async (c) => {
+1684: +1 delta=4 ->   try {
+1690: +1 delta=4 ->   if (!email || !password) {
+1695: +1 delta=4 ->   if (devBypass) {
+1699: +1 delta=5 ->     if (!authenticated) {
+1719: +1 delta=3 -> app.post('/api/auth/refresh', async (c) => {
+1721: +1 delta=4 ->   if (!refreshToken) {
+1727: +1 delta=4 ->   if (!csrfCookie || !csrfHeader || !timingSafeEqual(csrfCookie, csrfHeader)) {
+1732: +1 delta=4 ->   if (!record) {
+1750: +1 delta=3 -> app.post('/api/auth/logout', async (c) => {
+1752: +1 delta=4 ->   if (refreshToken) {
+1759: +1 delta=3 -> app.use('/api/*', async (c, next) => {
+1761: +1 delta=4 ->   if (path === '/api/auth/login' || path === '/api/auth/refresh' || path === '/api/auth/logout') {
+1766: +1 delta=4 ->   if (isDevBypassActive(c.env)) {
+1774: +1 delta=4 ->   if (accessCookie) {
+1775: +1 delta=5 ->     auth = await verifyAppToken(c.env, accessCookie).catch((error) => {
+1781: +1 delta=4 ->   if (!auth) {
+1783: +1 delta=5 ->     if (authorization && authorization.startsWith('Bearer ')) {
+1785: +1 delta=6 ->       if (token) {
+1791: +1 delta=4 ->   if (!auth) {
+1793: +1 delta=5 ->     if (jwt) {
+1798: +1 delta=4 ->   if (!auth) {
+1801: +1 delta=4 ->   if (auth.roles.length === 0) {
+1808: +1 delta=3 -> app.get('/api/auth/me', async (c) => {
+1809: +1 delta=4 ->   if (isDevBypassActive(c.env)) {
+1813: +1 delta=4 ->   if (!auth) {
+1816: +1 delta=4 ->   return c.json({
+1827: +1 delta=3 -> app.get('/health', async (c) => {
+1829: +1 delta=4 ->   try {
+1839: +1 delta=3 -> app.get('/api/devices/:id/latest', async (c) => {
+1842: +1 delta=4 ->   if (!auth) {
+1846: +1 delta=4 ->   if (!(await canAccessDevice(DB, auth, id))) {
+1854: +1 delta=3 -> app.get('/api/devices/:id/series', async (c) => {
+1857: +1 delta=4 ->   if (!auth) {
+1861: +1 delta=4 ->   if (!(await canAccessDevice(DB, auth, deviceId))) {
+1866: +1 delta=4 ->   const rangeConfig = {
+1884: +1 delta=4 ->     .all<{
+1897: +1 delta=4 ->     .map((row) => {
+1899: +1 delta=5 ->       if (row.metrics_json) {
+1900: +1 delta=6 ->         try {
+1902: +1 delta=7 ->           for (const [key, value] of Object.entries(parsed)) {
+1903: +1 delta=8 ->             if (typeof value === 'number') {
+1914: +1 delta=5 ->       const setMetric = (key: string, value: unknown) => {
+1915: +1 delta=6 ->         if (metrics[key] != null && typeof metrics[key] === 'number') {
+1918: +1 delta=6 ->         if (value == null) {
+1919: +1 delta=7 ->           if (!(key in metrics)) {
+1925: +1 delta=6 ->         if (Number.isFinite(num)) {
+1948: +1 delta=3 -> app.get('/api/devices/:id/commissioning/window', async (c) => {
+1951: +1 delta=4 ->   if (!auth) {
+1955: +1 delta=4 ->   if (!(await canAccessDevice(DB, auth, deviceId))) {
+1972: +1 delta=4 ->   if (row?.readings_json) {
+1973: +1 delta=5 ->     try {
+1975: +1 delta=6 ->       if (parsed && typeof parsed === 'object') {
+1984: +1 delta=4 ->   if (sample) {
+1987: +1 delta=5 ->     if (tStart && tEnd) {
+1992: +1 delta=4 ->   return c.json({
+2001: +1 delta=3 -> app.get('/api/devices/:id/commissioning/windows', async (c) => {
+2005: +1 delta=4 ->   if (!(await canAccessDevice(c.env.DB, auth, deviceId))) {
+2024: +1 delta=4 ->   const results = (rows.results ?? []).map((row) => {
+2026: +1 delta=5 ->     try {
+2031: +1 delta=5 ->     return {
+2039: +1 delta=6 ->       sample: {
+2050: +1 delta=3 -> app.post('/api/devices/:id/baselines', async (c) => {
+2054: +1 delta=4 ->   if (blocked) {
+2059: +1 delta=4 ->   try {
+2064: +1 delta=4 ->   const {
+2074: +1 delta=4 ->   if (!kind || !sample) {
+2078: +1 delta=4 ->   if (is_golden) {
+2105: +1 delta=3 -> app.get('/api/devices/:id/baselines', async (c) => {
+2116: +1 delta=4 ->     .all<{
+2128: +1 delta=4 ->   const baselines = (rows.results ?? []).map((row) => {
+2130: +1 delta=5 ->     try {
+2136: +1 delta=5 ->     if (row.thresholds_json) {
+2137: +1 delta=6 ->       try {
+2143: +1 delta=5 ->     return {
+2159: +1 delta=3 -> app.get('/api/devices/:id/baseline-suggest', async (c) => {
+2174: +1 delta=4 ->   if (!base) {
+2179: +1 delta=4 ->   try {
+2190: +1 delta=4 ->   if (typeof p25 !== 'number' || typeof p75 !== 'number' || typeof baselineMedian !== 'number') {
+2209: +1 delta=4 ->   if (!values.length) {
+2214: +1 delta=4 ->   const percentile = (p: number) => {
+2215: +1 delta=5 ->     if (!drifts.length) {
+2231: +1 delta=4 ->   for (const value of values) {
+2232: +1 delta=5 ->     if (value >= p25 && value <= p75) {
+2240: +1 delta=4 ->   return c.json({
+2245: +1 delta=5 ->     suggestions: {
+2250: +1 delta=5 ->     recent: {
+2257: +1 delta=3 -> app.patch('/api/devices/:id/baselines/:baselineId', async (c) => {
+2261: +1 delta=4 ->   if (blocked) {
+2267: +1 delta=4 ->   try {
+2273: +1 delta=4 ->   if (is_golden === true) {
+2279: +1 delta=5 ->     if (!kindRow) {
+2306: +1 delta=3 -> app.delete('/api/devices/:id/baselines/:baselineId', async (c) => {
+2310: +1 delta=4 ->   if (blocked) {
+2321: +1 delta=3 -> app.get('/api/devices/:id/baseline-compare', async (c) => {
+2328: +1 delta=4 ->   if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
+2340: +1 delta=4 ->   if (!baselineRow) {
+2344: +1 delta=4 ->   try {
+2352: +1 delta=4 ->   if (typeof p25 !== 'number' || typeof p75 !== 'number') {
+2374: +1 delta=4 ->   return c.json({
+2385: +1 delta=3 -> app.post('/api/devices/:id/write', async (c) => {
+2387: +1 delta=4 ->   if (blocked) {
+2391: +1 delta=4 ->   if (!auth) {
+2403: +1 delta=3 -> app.post('/api/devices/:id/command', async (c) => {
+2405: +1 delta=4 ->   if (ro) {
+2410: +1 delta=4 ->   if (!auth) {
+2418: +1 delta=4 ->   if (raw.trim().length > 0) {
+2419: +1 delta=5 ->     try {
+2431: +1 delta=3 -> app.get('/api/me/saved-views', async (c) => {
+2434: +1 delta=4 ->   if (!uid) {
+2447: +1 delta=3 -> app.post('/api/me/saved-views', async (c) => {
+2449: +1 delta=4 ->   if (blocked) {
+2454: +1 delta=4 ->   if (!uid) {
+2461: +1 delta=4 ->   if (!body?.name || !body?.route) {
+2475: +1 delta=3 -> app.delete('/api/me/saved-views/:id', async (c) => {
+2477: +1 delta=4 ->   if (blocked) {
+2482: +1 delta=4 ->   if (!uid) {
+2495: +1 delta=3 -> app.get('/api/admin/settings', async (c) => {
+2497: +1 delta=4 ->   if (!auth) {
+2505: +1 delta=3 -> app.post('/api/admin/settings', async (c) => {
+2507: +1 delta=4 ->   if (!auth) {
+2512: +1 delta=4 ->   if (!key) {
+2519: +1 delta=3 -> app.get('/api/admin/archive/presets', async (c) => {
+2521: +1 delta=4 ->   if (!auth) {
+2526: +1 delta=4 ->   if (!table) {
+2531: +1 delta=4 ->   if (raw) {
+2532: +1 delta=5 ->     try {
+2534: +1 delta=6 ->       if (Array.isArray(parsed)) {
+2544: +1 delta=3 -> app.post('/api/admin/archive/presets', async (c) => {
+2546: +1 delta=4 ->   if (!auth) {
+2553: +1 delta=4 ->   if (!table) {
+2557: +1 delta=4 ->   if (errorMsg) {
+2564: +1 delta=3 -> app.get('/api/admin/archive', async (c) => {
+2566: +1 delta=4 ->   if (!auth) {
+2579: +1 delta=3 -> app.get('/api/admin/archive/download', async (c) => {
+2582: +1 delta=4 ->   if (!auth) {
+2588: +1 delta=4 ->   if (!key) {
+2604: +1 delta=4 ->   if (!src) {
+2610: +1 delta=4 ->   const withGzip = (stream: ReadableStream<Uint8Array>) => {
+2612: +1 delta=5 ->     try {
+2615: +1 delta=6 ->       try {
+2624: +1 delta=4 ->   if (stage) {
+2628: +1 delta=5 ->     if (!(await bucket.head?.(stagedKey))) {
+2634: +1 delta=6 ->       await bucket.put(stagedKey, body, {
+2641: +1 delta=4 ->   if (fmt === 'csv') {
+2643: +1 delta=5 ->     return new Response(withGzip(s), {
+2644: +1 delta=6 ->       headers: {
+2653: +1 delta=4 ->   return new Response(withGzip(src.body as ReadableStream<Uint8Array>), {
+2654: +1 delta=5 ->     headers: {
+2663: +1 delta=3 -> app.get('/api/admin/archive/staged-for', async (c) => {
+2665: +1 delta=4 ->   if (!jwt) {
+2669: +1 delta=4 ->   if (!auth) {
+2676: +1 delta=4 ->   if (!date || !base) {
+2681: +1 delta=4 ->   if (!bucket?.list) {
+2686: +1 delta=4 ->   try {
+2689: +1 delta=5 ->     for (const o of res.objects || []) {
+2692: +1 delta=6 ->       if (!latest || (o.uploaded && latest.uploaded && o.uploaded > latest.uploaded)) {
+2705: +1 delta=3 -> type IngestStatus = {
+2712: +1 delta=3 -> type ValidIngestPayload = {
+2720: +1 delta=3 -> type ValidHeartbeatPayload = {
+2726: +1 delta=3 -> app.post('/api/ingest/:profileId', async (c) => {
+2730: +1 delta=4 ->   try {
+2732: +1 delta=5 ->     if (!body || !validateIngest(body)) {
+2739: +1 delta=5 ->     if (!deviceId) {
+2744: +1 delta=5 ->     if (!ok) {
+2750: +1 delta=5 ->     const idemKey = await (async () => {
+2755: +1 delta=5 ->     if (await isDuplicate(c.env.DB, idemKey)) {
+2767: +1 delta=5 ->     const telemetryMetrics: TelemetryPayload['metrics'] = {
+2776: +1 delta=6 ->       flowLps: (() => {
+2787: +1 delta=5 ->     const telemetryStatus: TelemetryPayload['status'] = {
+2793: +1 delta=5 ->     const telemetry: TelemetryPayload = {
+2814: +1 delta=3 -> app.get('/api/ops/deviation-counters', async (c) => {
+2829: +1 delta=4 ->   const counters: Record<'delta_t' | 'cop' | 'current', { warning: number; critical: number }> = {
+2835: +1 delta=4 ->   for (const row of rows.results ?? []) {
+2837: +1 delta=5 ->     if (!counters[kind]) {
+2841: +1 delta=5 ->     if (!severity) {
+2850: +1 delta=3 -> app.get('/api/ops/deviation-hotlist', async (c) => {
+2880: +1 delta=4 ->     .all<{
+2895: +1 delta=3 -> app.post('/api/ops/recompute-baselines', async (c) => {
+2897: +1 delta=4 ->   if (blocked) {
+2901: +1 delta=4 ->   if (!auth) {
+2909: +1 delta=3 -> app.post('/api/ops/incidents/sweep', async (c) => {
+2911: +1 delta=4 ->   if (blocked) {
+2915: +1 delta=4 ->   if (!auth) {
+2927: +1 delta=3 -> app.get('/api/ops/incidents', async (c) => {
+2929: +1 delta=4 ->   if (!auth) {
+2940: +1 delta=4 ->   if (sinceParam && /^\d{4}-\d{2}-\d{2}/.test(sinceParam)) {
+2948: +1 delta=4 ->   if (siteId) {
+2962: +1 delta=4 ->     .all<{
+2972: +1 delta=4 ->   if (incidents.length === 0) {
+2990: +1 delta=4 ->     {
+2996: +1 delta=4 ->   for (const row of alertRows.results ?? []) {
+2997: +1 delta=5 ->     if (!grouped.has(row.incident_id)) {
+3004: +1 delta=5 ->     if (prev) {
+3011: +1 delta=4 ->   const out = incidents.map((incident) => {
+3015: +1 delta=5 ->     return {
+3022: +1 delta=6 ->       alerts: {
+3035: +1 delta=3 -> app.post('/api/heartbeat/:profileId', async (c) => {
+3037: +1 delta=4 ->   if (!body || !validateHeartbeat(body)) {
+3056: +1 delta=3 -> app.get('/api/commissioning/settings', async (c) => {
+3062: +1 delta=4 ->   return c.json({
+3069: +1 delta=3 -> app.get('/api/commissioning/checklists', async (c) => {
+3076: +1 delta=3 -> app.get('/api/commissioning/checklist/:id', async (c) => {
+3086: +1 delta=3 -> app.get('/api/commissioning/sessions', async (c) => {
+3093: +1 delta=4 ->   ).all<{
+3106: +1 delta=4 ->   const sessions = (rows.results ?? []).map((row) => ({
+3122: +1 delta=3 -> app.get('/api/commissioning/session/:id', async (c) => {
+3128: +1 delta=4 ->     .first<{
+3140: +1 delta=4 ->   if (!session) {
+3148: +1 delta=4 ->     .all<{
+3161: +1 delta=4 ->     .all<{
+3168: +1 delta=4 ->   const parsedSteps = (steps.results ?? []).map((row) => {
+3170: +1 delta=5 ->     if (row.readings_json) {
+3171: +1 delta=6 ->       try {
+3173: +1 delta=7 ->         if (parsed && typeof parsed === 'object') {
+3180: +1 delta=5 ->     return {
+3191: +1 delta=4 ->   for (const row of artifacts.results ?? []) {
+3192: +1 delta=5 ->     artifactMap.set(row.kind, {
+3199: +1 delta=4 ->   return c.json({
+3200: +1 delta=5 ->     session: {
+3216: +1 delta=3 -> app.post('/api/commissioning/start', async (c) => {
+3218: +1 delta=4 ->   if (blocked) {
+3226: +1 delta=4 ->   if (!body?.device_id) {
+3247: +1 delta=4 ->   if (cl?.steps_json) {
+3248: +1 delta=5 ->     try {
+3255: +1 delta=4 ->   for (const step of steps) {
+3259: +1 delta=4 ->   await audit(c.env as any, auth, 'commissioning.start', body.device_id, {
+3267: +1 delta=3 -> app.post('/api/commissioning/step', async (c) => {
+3269: +1 delta=4 ->   if (blocked) {
+3275: +1 delta=4 ->     .json<{
+3283: +1 delta=4 ->   if (!body?.session_id || !body.step_id || !body.state) {
+3297: +1 delta=4 ->   await audit(c.env as any, auth, 'commissioning.step', `${body.session_id}:${body.step_id}`, {
+3305: +1 delta=3 -> app.post('/api/commissioning/finalise', async (c) => {
+3307: +1 delta=4 ->   if (blocked) {
+3315: +1 delta=4 ->   if (!body?.session_id) {
+3319: +1 delta=4 ->   if (outcome === 'passed') {
+3327: +1 delta=5 ->     if (req?.steps) {
+3328: +1 delta=6 ->       try {
+3337: +1 delta=5 ->     if (required.length) {
+3345: +1 delta=6 ->       if (missing.length) {
+3364: +1 delta=4 ->   await audit(c.env as any, auth, 'commissioning.finalise', body.session_id, {
+3372: +1 delta=3 -> app.post('/api/commissioning/measure-now', async (c) => {
+3376: +1 delta=4 ->   if (blocked) {
+3381: +1 delta=4 ->     .json<{
+3388: +1 delta=4 ->   if (!body?.session_id || !body.step_id) {
+3395: +1 delta=4 ->   if (!session) {
+3400: +1 delta=4 ->   if (!latest) {
+3422: +1 delta=4 ->   const readings = {
+3437: +1 delta=4 ->   await audit(c.env as any, auth, 'commissioning.measure-now', `${body.session_id}:${body.step_id}`, {
+3438: +1 delta=5 ->     result: {
+3445: +1 delta=4 ->   return c.json({
+3456: +1 delta=3 -> app.post('/api/commissioning/measure-window', async (c) => {
+3460: +1 delta=4 ->   if (blocked) {
+3465: +1 delta=4 ->     .json<{
+3473: +1 delta=4 ->   if (!body?.session_id || !body.step_id) {
+3480: +1 delta=4 ->   if (!session) {
+3499: +1 delta=4 ->   const thresholdsPayload = {
+3513: +1 delta=4 ->       JSON.stringify({
+3522: +1 delta=4 ->   await audit(c.env as any, auth, 'commissioning.measure-window', `${body.session_id}:${body.step_id}`, {
+3527: +1 delta=4 ->   return c.json({
+3535: +1 delta=3 -> app.post('/api/commissioning/labels', async (c) => {
+3539: +1 delta=4 ->   if (blocked) {
+3544: +1 delta=4 ->   if (!body?.session_id) {
+3551: +1 delta=4 ->   if (!session) {
+3556: +1 delta=4 ->   const { key, size } = await renderDeviceLabels(c.env as Env, {
+3572: +1 delta=3 -> app.post('/api/commissioning/provisioning-zip', async (c) => {
+3576: +1 delta=4 ->   if (blocked) {
+3581: +1 delta=4 ->   if (!body?.session_id) {
+3588: +1 delta=4 ->   if (!session) {
+3593: +1 delta=4 ->   const { key, size } = await renderProvisioningZip(c.env, {
+3609: +1 delta=3 -> app.post('/api/commissioning/email-bundle', async (c) => {
+3613: +1 delta=4 ->   if (!body?.session_id) {
+3623: +1 delta=3 -> app.post('/api/commissioning/email-report', async (c) => {
+3627: +1 delta=4 ->   if (!body?.session_id) {
+3636: +1 delta=4 ->   if (!row) {
+3651: +1 delta=3 -> app.post('/api/alerts/:id/snooze', async (c) => {
+3655: +1 delta=4 ->   if (blocked) {
+3670: +1 delta=4 ->   if (!alertRow) {
+3706: +1 delta=3 -> app.get('/api/alerts/snoozes', async (c) => {
+3719: +1 delta=3 -> app.get('/api/alerts', async (c) => {
+3722: +1 delta=4 ->   if (!auth) {
+3738: +1 delta=4 ->   if (state) {
+3742: +1 delta=4 ->   if (severity) {
+3746: +1 delta=4 ->   if (type) {
+3750: +1 delta=4 ->   if (device) {
+3755: +1 delta=4 ->   if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
+3757: +1 delta=5 ->     if (clientIds.length === 0) {
+3769: +1 delta=4 ->   const results = (rows.results ?? []).map((row) => {
+3770: +1 delta=5 ->     if (row?.type !== 'baseline_deviation') {
+3778: +1 delta=5 ->     try {
+3781: +1 delta=6 ->       if (meta && typeof meta === 'object') {
+3782: +1 delta=7 ->         if (coverage == null && typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
+3785: +1 delta=7 ->         if (drift == null && typeof meta.drift === 'number' && Number.isFinite(meta.drift)) {
+3788: +1 delta=7 ->         if (typeof meta.kind === 'string') {
+3791: +1 delta=7 ->         if (typeof meta.units === 'string') {
+3798: +1 delta=5 ->     if (!units) {
+3802: +1 delta=5 ->     if (typeof drift === 'number' && Number.isFinite(drift)) {
+3806: +1 delta=5 ->     return {
+3821: +1 delta=3 -> app.post('/api/alerts/:id/ack', async (c) => {
+3823: +1 delta=4 ->   if (blocked) {
+3827: +1 delta=4 ->   if (!auth) {
+3837: +1 delta=3 -> app.post('/api/alerts/:id/resolve', async (c) => {
+3839: +1 delta=4 ->   if (blocked) {
+3843: +1 delta=4 ->   if (!auth) {
+3855: +1 delta=3 -> app.post('/api/alerts/:id/comment', async (c) => {
+3857: +1 delta=4 ->   if (blocked) {
+3861: +1 delta=4 ->   if (!auth) {
+3875: +1 delta=3 -> app.get('/api/admin/distinct/regions', async (c) => {
+3877: +1 delta=4 ->   if (!auth) {
+3887: +1 delta=3 -> app.get('/api/admin/distinct/clients', async (c) => {
+3889: +1 delta=4 ->   if (!auth) {
+3899: +1 delta=3 -> app.get('/api/admin/site-clients', async (c) => {
+3901: +1 delta=4 ->   if (!auth) {
+3909: +1 delta=3 -> app.post('/api/admin/site-clients', async (c) => {
+3911: +1 delta=4 ->   if (blocked) {
+3915: +1 delta=4 ->   if (!auth) {
+3920: +1 delta=4 ->   if (!clientId || !siteId) {
+3927: +1 delta=3 -> app.delete('/api/admin/site-clients', async (c) => {
+3929: +1 delta=4 ->   if (blocked) {
+3933: +1 delta=4 ->   if (!auth) {
+3940: +1 delta=4 ->   if (!clientId || !siteId) {
+3947: +1 delta=3 -> app.get('/api/admin/slo', async (c) => {
+3949: +1 delta=4 ->   if (!auth) {
+3958: +1 delta=4 ->   if (clientId) {
+3967: +1 delta=3 -> app.post('/api/admin/slo', async (c) => {
+3969: +1 delta=4 ->   if (blocked) {
+3973: +1 delta=4 ->   if (!auth) {
+3978: +1 delta=4 ->     .json<{
+3986: +1 delta=4 ->   if (!body?.clientId) {
+3990: +1 delta=4 ->   const toRatio = (value: number | string | null | undefined): number | null => {
+3992: +1 delta=5 ->     if (typeof value === 'number') {
+3995: +1 delta=5 ->     if (typeof value === 'string' && value.trim() !== '') {
+3997: +1 delta=6 ->       if (Number.isFinite(parsed)) {
+4025: +1 delta=3 -> app.get('/api/admin/sites', async (c) => {
+4027: +1 delta=4 ->   if (!auth) {
+4035: +1 delta=3 -> app.get('/api/admin/maintenance', async (c) => {
+4037: +1 delta=4 ->   if (!auth) {
+4047: +1 delta=4 ->   ).all<{
+4056: +1 delta=4 ->   const results = (rows.results ?? []).map((row) => ({
+4063: +1 delta=3 -> app.post('/api/admin/maintenance', async (c) => {
+4065: +1 delta=4 ->   if (blocked) {
+4069: +1 delta=4 ->   if (!auth) {
+4076: +1 delta=4 ->   if (!body) {
+4082: +1 delta=4 ->   if (!siteId && !deviceId) {
+4088: +1 delta=4 ->   if (!startTs || !endTs) {
+4092: +1 delta=4 ->   if (Date.parse(startTs) >= Date.parse(endTs)) {
+4107: +1 delta=3 -> app.delete('/api/admin/maintenance/:id', async (c) => {
+4109: +1 delta=4 ->   if (blocked) {
+4113: +1 delta=4 ->   if (!auth) {
+4122: +1 delta=3 -> app.post('/api/admin/sites', async (c) => {
+4124: +1 delta=4 ->   if (blocked) {
+4128: +1 delta=4 ->   if (!auth) {
+4133: +1 delta=4 ->   if (!siteId) {
+4144: +1 delta=3 -> app.delete('/api/admin/sites', async (c) => {
+4146: +1 delta=4 ->   if (blocked) {
+4150: +1 delta=4 ->   if (!auth) {
+4156: +1 delta=4 ->   if (!siteId) {
+4163: +1 delta=3 -> app.get('/api/overview', async (c) => {
+4165: +1 delta=4 ->   if (!auth) {
+4172: +1 delta=3 -> app.get('/api/overview/kpis', async (c) => {
+4174: +1 delta=4 ->   if (!auth) {
+4179: +1 delta=4 ->   return c.json({
+4188: +1 delta=3 -> app.get('/api/overview/sparklines', async (c) => {
+4190: +1 delta=4 ->   if (!auth) {
+4203: +1 delta=3 -> app.get('/api/devices', async (c) => {
+4206: +1 delta=4 ->   if (!auth) {
+4224: +1 delta=4 ->   if (site) {
+4228: +1 delta=4 ->   if (region) {
+4232: +1 delta=4 ->   if (typeof online === 'string' && (online === '0' || online === '1')) {
+4236: +1 delta=4 ->   if (client) {
+4241: +1 delta=4 ->   if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
+4243: +1 delta=5 ->     if (clientIds.length === 0) {
+4257: +1 delta=4 ->   const devices = results.map((row: any) => {
+4263: +1 delta=5 ->     return {
+4276: +1 delta=3 -> app.get('/api/regions', async (c) => {
+4292: +1 delta=3 -> app.get('/api/site-list', async (c) => {
+4306: +1 delta=4 ->   if (region) {
+4310: +1 delta=4 ->   if (searchTerm) {
+4326: +1 delta=3 -> app.get('/api/sites/search', async (c) => {
+4328: +1 delta=4 ->   if (!auth) {
+4411: +1 delta=4 ->     .all<{
+4436: +1 delta=4 ->   const results = (page.results ?? []).map((row) => {
+4444: +1 delta=5 ->     if (totalDevices === 0) {
+4449: +1 delta=5 ->     return {
+4467: +1 delta=3 -> app.get('/api/devices/search', async (c) => {
+4469: +1 delta=4 ->   if (!auth) {
+4512: +1 delta=4 ->     .all<{
+4553: +1 delta=4 ->   const results = (rows.results ?? []).map((row) => {
+4557: +1 delta=5 ->     return {
+4573: +1 delta=3 -> app.post('/api/commissioning/:deviceId/report', async (c) => {
+4575: +1 delta=4 ->   if (blocked) {
+4579: +1 delta=4 ->   if (!auth) {
+4590: +1 delta=3 -> app.post('/api/reports/incident', async (c) => {
+4592: +1 delta=4 ->   if (!auth) {
+4600: +1 delta=4 ->   if (!siteId) {
+4655: +1 delta=4 ->     .all<{
+4668: +1 delta=4 ->   const draw = (text: string, size = 12) => {
+4682: +1 delta=4 ->   if (severityRows.length === 0) {
+4685: +1 delta=5 ->     for (const row of severityRows) {
+4693: +1 delta=4 ->   if (topRows.length === 0) {
+4696: +1 delta=5 ->     for (const row of topRows) {
+4706: +1 delta=4 ->   const normalizeIso = (value: string | null | undefined): string | null => {
+4713: +1 delta=4 ->   if (y < 140) {
+4724: +1 delta=4 ->   if (latestP1) {
+4733: +1 delta=4 ->   if (maintenanceRows.length === 0) {
+4737: +1 delta=5 ->     for (const row of maintenanceRows) {
+4738: +1 delta=6 ->       if (y < 60) {
+4758: +1 delta=4 ->   return c.json({
+4767: +1 delta=3 -> app.post('/api/reports/incident/v2', async (c) => {
+4769: +1 delta=4 ->   if (!auth) {
+4777: +1 delta=4 ->   if (!siteId) {
+4793: +1 delta=4 ->   await logReportDelivery(c.env.DB, {
+4803: +1 delta=4 ->   if (recipients.length > 0) {
+4818: +1 delta=5 ->     const html = brandEmail({
+4827: +1 delta=5 ->     if (emailed) {
+4828: +1 delta=6 ->       await logReportDelivery(c.env.DB, {
+4841: +1 delta=4 ->   return c.json({
+4855: +1 delta=3 -> app.get('/api/reports/preview-html', async (c) => {
+4857: +1 delta=4 ->   if (!bypass) {
+4859: +1 delta=5 ->     if (!jwt) {
+4863: +1 delta=5 ->     if (!auth) {
+4866: +1 delta=5 ->     try {
+4881: +1 delta=4 ->   if (type === 'incident') {
+4883: +1 delta=5 ->     if (sample) {
+4888: +1 delta=6 ->       if (incidentId) {
+4889: +1 delta=7 ->         try {
+4904: +1 delta=5 ->     if (sample) {
+4909: +1 delta=6 ->       if (!clientId || !monthKey) {
+4912: +1 delta=6 ->       try {
+4917: +1 delta=7 ->         if (message === 'Client not found') {
+4937: +1 delta=3 -> app.post('/api/reports/client-monthly', async (c) => {
+4939: +1 delta=4 ->   if (!auth) {
+4946: +1 delta=4 ->   if (!clientId || !monthParam) {
+4951: +1 delta=4 ->   try {
+4955: +1 delta=5 ->     if (message === 'Client not found') {
+4966: +1 delta=4 ->   await logReportDelivery(c.env.DB, {
+4976: +1 delta=4 ->   return c.json({
+4990: +1 delta=3 -> app.post('/api/reports/email-existing', async (c) => {
+4992: +1 delta=4 ->   if (!auth) {
+4997: +1 delta=4 ->   if (blocked) {
+5000: +1 delta=4 ->   let body: {
+5007: +1 delta=4 ->   try {
+5016: +1 delta=4 ->   if (!body?.path) {
+5020: +1 delta=4 ->   if (!normalizedPath) {
+5023: +1 delta=4 ->   if (normalizedType !== 'monthly' && normalizedType !== 'incident') {
+5026: +1 delta=4 ->   if (!clientId && !siteId) {
+5035: +1 delta=4 ->   if (clientId) {
+5044: +1 delta=5 ->     if (row) {
+5050: +1 delta=4 ->   if (siteId) {
+5054: +1 delta=5 ->     if (siteRow) {
+5059: +1 delta=5 ->     if (!resolvedClientId && clients.length === 1) {
+5062: +1 delta=6 ->       if (!clientName && firstClient) {
+5069: +1 delta=4 ->   const defaultSubject = (() => {
+5070: +1 delta=5 ->     if (normalizedType === 'monthly') {
+5073: +1 delta=5 ->     if (normalizedType === 'incident') {
+5080: +1 delta=4 ->   if (uniqueRecipients.length === 0) {
+5081: +1 delta=5 ->     await logReportDelivery(c.env.DB, {
+5094: +1 delta=4 ->   if (!settings.webhook || !settings.from) {
+5095: +1 delta=5 ->     await logReportDelivery(c.env.DB, {
+5125: +1 delta=4 ->   const html = brandEmail({
+5134: +1 delta=4 ->   await logReportDelivery(c.env.DB, {
+5144: +1 delta=4 ->   if (!emailed) {
+5150: +1 delta=3 -> app.post('/api/reports/client-monthly/v2', async (c) => {
+5152: +1 delta=4 ->   if (!auth) {
+5159: +1 delta=4 ->   if (!clientId || !monthParam) {
+5164: +1 delta=4 ->   try {
+5168: +1 delta=5 ->     if (message === 'Client not found') {
+5179: +1 delta=4 ->   await logReportDelivery(c.env.DB, {
+5190: +1 delta=4 ->   if (recipients.length > 0) {
+5203: +1 delta=5 ->     const html = brandEmail({
+5212: +1 delta=5 ->     await logReportDelivery(c.env.DB, {
+5224: +1 delta=4 ->   return c.json({
+5240: +1 delta=3 -> app.get('/api/reports/client-monthly', async (c) => {
+5242: +1 delta=4 ->   if (!auth) {
+5248: +1 delta=4 ->   if (!clientId) {
+5256: +1 delta=4 ->   const out = objects.map((obj) => ({
+5265: +1 delta=3 -> app.get('/api/reports/history', async (c) => {
+5267: +1 delta=4 ->   if (!auth) {
+5272: +1 delta=4 ->   const normalize = (key: string) => {
+5279: +1 delta=4 ->   const rows = await listReportDeliveries(c.env.DB, {
+5289: +1 delta=3 -> app.get('/api/clients/:clientId/slo-summary', async (c) => {
+5291: +1 delta=4 ->   if (!auth) {
+5296: +1 delta=4 ->   if (!canAccessClient(auth, clientId)) {
+5301: +1 delta=4 ->   try {
+5306: +1 delta=5 ->     if (message === 'Client not found') {
+5313: +1 delta=3 -> app.get('/api/clients/:clientId/uptime-daily', async (c) => {
+5315: +1 delta=4 ->   if (!auth) {
+5319: +1 delta=4 ->   if (!canAccessClient(auth, clientId)) {
+5325: +1 delta=4 ->   if (!range) {
+5342: +1 delta=4 ->   const effectiveEndMs = (() => {
+5345: +1 delta=5 ->     if (nowMs >= monthEnd) {
+5348: +1 delta=5 ->     if (nowMs <= range.start.getTime()) {
+5358: +1 delta=4 ->   for (let i = 0; i < totalDays; i += 1) {
+5362: +1 delta=5 ->     if (dayStart.getTime() >= effectiveEndMs || deviceIds.length === 0) {
+5367: +1 delta=5 ->     if (windowEndMs <= dayStart.getTime()) {
+5372: +1 delta=5 ->     try {
+5386: +1 delta=4 ->   return c.json({
+5398: +1 delta=3 -> app.post('/api/ops/monthly-run', async (c) => {
+5400: +1 delta=4 ->   if (!auth) {
+5406: +1 delta=4 ->   try {
+5411: +1 delta=4 ->   if (!parseMonthRange(month)) {
+5417: +1 delta=4 ->   const results: Array<{
+5430: +1 delta=4 ->   for (const row of rows.results ?? []) {
+5431: +1 delta=5 ->     try {
+5436: +1 delta=6 ->       if (recipients.length > 0) {
+5449: +1 delta=7 ->         const html = brandEmail({
+5459: +1 delta=6 ->       results.push({
+5477: +1 delta=3 -> app.get('/api/reports/*', async (c) => {
+5480: +1 delta=4 ->   if (!obj) {
+5483: +1 delta=4 ->   return new Response(obj.body, {
+5484: +1 delta=5 ->     headers: {
+5490: +1 delta=3 -> app.get('/', async (c) => {
+5492: +1 delta=4 ->   if (authResult instanceof Response) {
+5502: +1 delta=3 -> app.get('/api/ops/check-fastburn', async (c) => {
+5504: +1 delta=4 ->   if (!auth) {
+5512: +1 delta=3 -> app.get('/api/ops/slo', async (c) => {
+5513: +1 delta=4 ->   try {
+5522: +1 delta=3 -> app.get('/api/ops/burn-series', async (c) => {
+5524: +1 delta=4 ->   if (!auth) {
+5552: +1 delta=4 ->   for (const row of rows.results ?? []) {
+5560: +1 delta=4 ->   for (let i = cappedSteps - 1; i >= 0; i--) {
+5573: +1 delta=3 -> async function tryDB(DB: D1Database) {
+5574: +1 delta=4 ->   try {
+5582: +1 delta=3 -> async function tryR2(bucket: R2Bucket, key: string) {
+5583: +1 delta=4 ->   try {
+5591: +1 delta=3 -> async function schemaSnapshot(DB: D1Database) {
+5592: +1 delta=4 ->   try {
+5601: +1 delta=3 -> app.get('/api/ops/readiness', async (c) => {
+5603: +1 delta=4 ->   if (!bypass) {
+5610: +1 delta=5 ->     if (!authorized) {
+5612: +1 delta=6 ->       if (jwt) {
+5614: +1 delta=7 ->         if (hasAdminOpsRole(accessAuth)) {
+5620: +1 delta=5 ->     if (!authorized) {
+5635: +1 delta=4 ->   const body = {
+5639: +1 delta=5 ->     checks: {
+5645: +1 delta=5 ->     meta: {
+5654: +1 delta=3 -> app.get('/api/ops/version', async (c) => {
+5658: +1 delta=4 ->   if (!bypass) {
+5660: +1 delta=5 ->     if (canSeeVersionChip(sessionAuth)) {
+5664: +1 delta=6 ->       if (jwt) {
+5669: +1 delta=5 ->     if (!allowed) {
+5678: +1 delta=3 -> app.get('/api/ops/health', async (c) => {
+5680: +1 delta=4 ->   if (!auth) {
+5688: +1 delta=3 -> app.get('/ops', async (c) => {
+5691: +1 delta=4 ->   if (!auth) {
+5699: +1 delta=4 ->   if (readOnly) {
+5707: +1 delta=3 -> app.get('/alerts', async (c) => {
+5710: +1 delta=4 ->   if (authResult instanceof Response) {
+5729: +1 delta=4 ->   if (state) {
+5733: +1 delta=4 ->   if (severity) {
+5737: +1 delta=4 ->   if (type) {
+5741: +1 delta=4 ->   if (deviceId) {
+5746: +1 delta=4 ->   if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
+5748: +1 delta=5 ->     if (clientIds.length === 0) {
+5764: +1 delta=3 -> app.get('/clients/:clientId/slo', async (c) => {
+5766: +1 delta=4 ->   if (!jwt) {
+5770: +1 delta=4 ->   if (!auth) {
+5775: +1 delta=4 ->   if (!canAccessClient(auth, clientId)) {
+5780: +1 delta=4 ->   try {
+5785: +2 delta=6 ->         filters={{
+5792: +1 delta=5 ->     if (message === 'Client not found') {
+5799: +1 delta=3 -> app.get('/devices', async (c) => {
+5802: +1 delta=4 ->   if (!jwt) {
+5806: +1 delta=4 ->   if (!auth) {
+5821: +1 delta=4 ->   if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
+5823: +1 delta=5 ->     if (clientIds.length === 0) {
+5840: +1 delta=3 -> app.get('/admin/archive', async (c) => {
+5842: +1 delta=4 ->   if (!jwt) {
+5846: +1 delta=4 ->   if (!auth) {
+5860: +1 delta=3 -> app.get('/admin/presets', async (c) => {
+5862: +1 delta=4 ->   if (!jwt) {
+5866: +1 delta=4 ->   if (!auth) {
+5875: +1 delta=3 -> app.get('/admin/commissioning', async (c) => {
+5877: +1 delta=4 ->   if (!jwt) {
+5881: +1 delta=4 ->   if (!auth) {
+5894: +1 delta=4 ->   ).all<{
+5909: +1 delta=4 ->   if (checklistIds.length) {
+5918: +1 delta=5 ->     for (const row of rows.results ?? []) {
+5920: +1 delta=6 ->       try {
+5922: +1 delta=7 ->         if (Array.isArray(parsed)) {
+5924: +1 delta=8 ->             .map((value) => {
+5926: +1 delta=9 ->               if (value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string') {
+5941: +1 delta=4 ->   if (sessionRows.length) {
+5950: +1 delta=5 ->     for (const row of steps.results ?? []) {
+5952: +1 delta=6 ->       if (!list) {
+5961: +1 delta=4 ->   if (sessionRows.length > 0) {
+5969: +1 delta=5 ->       .all<{
+5977: +1 delta=5 ->     for (const row of artifactRows.results ?? []) {
+5979: +1 delta=6 ->       if (!target) {
+5983: +1 delta=6 ->       target.set(row.kind, {
+5991: +1 delta=4 ->   const toRow = (row: (typeof sessionRows)[number]): AdminCommissioningRow => {
+6000: +1 delta=5 ->     if (requiredTotal > 0) {
+6001: +1 delta=6 ->       for (const step of steps) {
+6003: +1 delta=7 ->         if (step.state === 'pass') {
+6010: +1 delta=5 ->     return {
+6035: +1 delta=3 -> app.get('/admin/sites', async (c) => {
+6037: +1 delta=4 ->   if (!jwt) {
+6041: +1 delta=4 ->   if (!auth) {
+6050: +1 delta=3 -> app.get('/admin/email', async (c) => {
+6052: +1 delta=4 ->   if (!jwt) {
+6056: +1 delta=4 ->   if (!auth) {
+6065: +1 delta=3 -> app.get('/admin/maintenance', async (c) => {
+6067: +1 delta=4 ->   if (!jwt) {
+6071: +1 delta=4 ->   if (!auth) {
+6080: +1 delta=3 -> app.get('/admin/settings', async (c) => {
+6082: +1 delta=4 ->   if (!jwt) {
+6086: +1 delta=4 ->   if (!auth) {
+6095: +1 delta=3 -> app.get('/admin/reports/outbox', async (c) => {
+6097: +1 delta=4 ->   if (!jwt) {
+6101: +1 delta=4 ->   if (!auth) {
+6111: +1 delta=4 ->   const rows = await listReportDeliveries(c.env.DB, {
+6121: +2 delta=5 ->       filters={{
+6132: +1 delta=3 -> app.get('/admin/reports', async (c) => {
+6134: +1 delta=4 ->   if (!jwt) {
+6138: +1 delta=4 ->   if (!auth) {
+6147: +1 delta=3 -> app.get('/admin/reports/history', async (c) => {
+6149: +1 delta=4 ->   if (!jwt) {
+6153: +1 delta=4 ->   if (!auth) {
+6160: +1 delta=4 ->   const get = (key: string) => {
+6165: +1 delta=4 ->   const rows = await listReportDeliveries(c.env.DB, {
+6175: +2 delta=5 ->       filters={{
+6186: +1 delta=3 -> const toNumber = (value: unknown): number | null => {
+6187: +1 delta=4 ->   if (typeof value === 'number') {
+6190: +1 delta=4 ->   if (typeof value === 'string' && value !== '') {
+6197: +1 delta=3 -> type OverviewSnapshot = {
+6209: +1 delta=3 -> type OverviewSnapshotOptions = {
+6214: +1 delta=3 -> const emptyOverviewSnapshot = (): OverviewSnapshot => ({
+6231: +1 delta=3 -> ): Promise<OverviewSnapshot> {
+6238: +1 delta=4 ->   if (restricted) {
+6240: +1 delta=5 ->     if (clientIds.length === 0) {
+6252: +1 delta=5 ->     if (sites.length === 0) {
+6262: +1 delta=4 ->     `SELECT SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) as onlineCount, COUNT(*) as totalCount FROM devices${
+6300: +1 delta=4 ->   if (includeSeries) {
+6310: +1 delta=5 ->     for (const row of (telemetryRows?.results ?? []).reverse()) {
+6318: +1 delta=4 ->   if (includeSites) {
+6341: +1 delta=5 ->     for (const row of severityRows?.results ?? []) {
+6377: +1 delta=5 ->     for (const row of siteRows?.results ?? []) {
+6388: +1 delta=6 ->       sites.push({
+6402: +1 delta=5 ->     if (siteFilter) {
+6403: +1 delta=6 ->       for (const siteId of siteFilter) {
+6411: +1 delta=7 ->         sites.push({
+6434: +1 delta=4 ->   return {
+6447: +1 delta=3 -> async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<OverviewData> {
+6449: +1 delta=4 ->   return {
+6450: +1 delta=5 ->     kpis: {
+6456: +1 delta=5 ->     series: {
+6465: +1 delta=3 -> async function canAccessDevice(DB: D1Database, auth: AccessContext, deviceId: string): Promise<boolean> {
+6467: +1 delta=4 ->   if (!restricted) {
+6471: +1 delta=4 ->   if (clientIds.length === 0) {
+6483: +1 delta=3 -> async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | null | undefined) {
+6496: +1 delta=3 -> async function isDuplicate(DB: D1Database, key: string) {
+6504: +1 delta=3 -> async function recomputeBaselines(DB: D1Database) {
+6530: +1 delta=4 ->   `).all<{
+6542: +1 delta=4 ->   if (results.length === 0) {
+6547: +1 delta=4 ->     results.map((row) => {
+6587: +1 delta=3 -> ) {
+6588: +1 delta=4 ->   try {
+6599: +1 delta=3 -> function parseIsoTimestamp(value?: string | null): string | null {
+6610: +1 delta=3 -> function parseMonthRange(month: string): MonthRange | null {
+6615: +1 delta=4 ->   if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+6624: +1 delta=3 -> function formatMonthKey(date: Date): string {
+6630: +1 delta=3 -> function previousMonthKey(reference: Date = new Date()): string {
+6642: +1 delta=3 -> ): Promise<number | null> {
+6643: +1 delta=4 ->   if (deviceIds.length === 0) {
+6650: +1 delta=4 ->   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+6679: +1 delta=4 ->   for (const id of deviceIds) {
+6683: +1 delta=4 ->   for (const row of heartbeats.results ?? []) {
+6691: +1 delta=4 ->   for (const row of previous.results ?? []) {
+6704: +1 delta=4 ->   for (const id of deviceIds) {
+6706: +1 delta=5 ->     if (beats.length === 0) {
+6711: +1 delta=5 ->     for (const beatMs of beats) {
+6714: +1 delta=6 ->       if (intervalEnd <= intervalStart) {
+6719: +1 delta=5 ->     if (intervals.length === 0) {
+6724: +1 delta=5 ->     for (let i = 1; i < intervals.length; i++) {
+6726: +1 delta=6 ->       if (next.start <= current.end) {
+6737: +1 delta=4 ->   if (denominator <= 0) {
+6743: +1 delta=3 -> type ClientMonthlyMetrics = {
+6756: +1 delta=3 -> ): Promise<ClientMonthlyMetrics> {
+6760: +1 delta=4 ->   if (deviceIds.length > 0) {
+6776: +1 delta=5 ->     if (total > 0) {
+6824: +1 delta=3 -> ): Promise<ClientMonthlyMetrics> {
+6835: +1 delta=3 -> ): Promise<IncidentReportV2Payload> {
+6883: +1 delta=4 ->     .all<{
+6894: +1 delta=4 ->     {
+6900: +1 delta=4 ->   if (incidents.length > 0) {
+6914: +1 delta=5 ->     for (const row of metaRows.results ?? []) {
+6915: +1 delta=6 ->       if (!incidentMeta.has(row.incident_id)) {
+6919: +1 delta=6 ->       if (row.state) {
+6923: +1 delta=6 ->       if (!bucket.alerts.has(key)) {
+6943: +1 delta=4 ->     .all<{
+6951: +1 delta=4 ->   return {
+6959: +1 delta=5 ->     summary: {
+6963: +1 delta=5 ->     incidents: incidents.map((row) => {
+6968: +1 delta=6 ->       return {
+6977: +1 delta=5 ->     maintenance: (maintenanceRows.results ?? []).map((row) => ({
+6991: +1 delta=3 -> ): Promise<IncidentReportV2Payload> {
+6998: +1 delta=4 ->   if (!incident || !incident.site_id) {
+7017: +1 delta=3 -> ): Promise<{ payload: ClientMonthlyReportPayload; client: { id: string; name: string } }> {
+7019: +1 delta=4 ->   if (!range) {
+7026: +1 delta=4 ->   if (!client) {
+7041: +1 delta=4 ->   for (const row of mapRows.results ?? []) {
+7042: +1 delta=5 ->     if (row.site_id) {
+7063: +1 delta=4 ->   const payload: ClientMonthlyReportPayload = {
+7073: +1 delta=5 ->     targets: {
+7084: +1 delta=3 -> async function buildClientSloSummary(env: Env, clientId: string, monthParam?: string | null): Promise<ClientSloSummary> {
+7088: +1 delta=4 ->   if (!range) {
+7092: +1 delta=4 ->   if (!range) {
+7099: +1 delta=4 ->   if (!client) {
+7116: +1 delta=4 ->   for (const row of mapRows.results ?? []) {
+7117: +1 delta=5 ->     if (row.site_id) {
+7126: +1 delta=4 ->   if (nowMs >= range.start.getTime()) {
+7134: +1 delta=4 ->   for (const alert of metrics.alerts) {
+7148: +1 delta=4 ->   for (let i = 0; i < 7; i += 1) {
+7153: +1 delta=4 ->   if (deviceIds.length > 0) {
+7168: +1 delta=5 ->     for (const row of rows.results ?? []) {
+7171: +1 delta=5 ->     copSparkline.forEach((point, idx) => {
+7177: +1 delta=4 ->   return {
+7180: +1 delta=5 ->     month: {
+7189: +1 delta=5 ->     metrics: {
+7196: +1 delta=5 ->     targets: {
+7209: +1 delta=3 -> async function fetchLatestCanary(DB: D1Database): Promise<{ lastAt: string | null; minutesSince: number | null; status: 'ok' | 'warn' | 'crit' }> {
+7210: +1 delta=4 ->   try {
+7215: +1 delta=5 ->     if (!raw) {
+7219: +1 delta=5 ->     if (Number.isNaN(parsed.valueOf())) {
+7232: +1 delta=3 -> async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
+7255: +1 delta=4 ->   try {
+7283: +1 delta=4 ->   const baselineDeviation = {
+7289: +1 delta=4 ->   return {
+7291: +1 delta=5 ->     ingest: {
+7292: +1 delta=6 ->       total: {
+7298: +1 delta=6 ->       window1k: {
+7306: +1 delta=5 ->     heartbeat: {
+7316: +1 delta=3 -> export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: ExecutionContext) {
+7319: +1 delta=4 ->   for (const message of batch.messages) {
+7322: +1 delta=5 ->     try {
+7327: +1 delta=6 ->         .first<{
+7346: +1 delta=3 -> async function runFastBurnJob(env: Env) {
+7347: +1 delta=4 ->   try {
+7354: +1 delta=3 -> async function runNightlyJobs(env: Env) {
+7355: +1 delta=4 ->   await evaluateHeartbeatAlerts(env, new Date().toISOString()).catch((error) => {
+7358: +1 delta=4 ->   await recomputeBaselines(env.DB).catch((error) => {
+7364: +1 delta=4 ->     .catch((error) => {
+7367: +1 delta=4 ->   await sweepIncidents(env.DB).catch((error) => {
+7372: +1 delta=3 -> async function runMonthlyJobs(env: Env, evt: ScheduledEvent) {
+7377: +1 delta=4 ->   for (const row of sloRows.results ?? []) {
+7378: +1 delta=5 ->     try {
+7387: +1 delta=3 -> async function runHousekeepingJobs(env: Env) {
+7388: +1 delta=4 ->   try {
+7391: +1 delta=4 ->   try {
+7398: +1 delta=3 -> const CRON_HANDLERS: Record<string, CronHandler> = {
+7399: +1 delta=4 ->   [CRON_FAST]: async (env) => {
+7402: +1 delta=4 ->   [CRON_NIGHTLY]: async (env) => {
+7406: +1 delta=4 ->   [CRON_MONTHLY]: async (env, evt) => {
+7413: +1 delta=3 -> export default {
+7414: +1 delta=4 ->   fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
+7419: +1 delta=4 ->   scheduled: async (evt: ScheduledEvent, env: Env) => {
+7421: +1 delta=5 ->     if (!cron) {
+7430: +1 delta=5 ->     if (!handler) {
+FINAL delta=2

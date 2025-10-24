@@ -33,6 +33,7 @@
     "@iarna/toml": "^2.2.5",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
+    "argon2-wasm-esm": "^1.0.3",
     "hono": "^4.10.2",
     "jose": "^5.9.3",
     "pdf-lib": "^1.17.1"

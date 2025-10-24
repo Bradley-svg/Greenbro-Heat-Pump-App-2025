@@ -2,6 +2,7 @@
 /** @jsxRuntime automatic */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import { SignJWT, jwtVerify } from 'jose';
 import type { Env, ExecutionContext, MessageBatch, ScheduledEvent } from './types/env';
@@ -12,7 +13,7 @@ import type {
 } from './pdf';
 import type { HeartbeatPayload, IngestMessage, TelemetryPayload, Role } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
-import { DeviceStateDO, DeviceDO } from './do';
+// Device DO classes are available in src/do.ts but not required here; remove to avoid unused-import lint warnings.
 import {
   evaluateTelemetryAlerts,
   evaluateHeartbeatAlerts,
@@ -64,46 +65,27 @@ import { audit } from './lib/audit';
 import { pruneR2Prefix } from './lib/prune';
 import { compareToIqr } from './lib/baseline';
 import { getSetting, setSetting } from './lib/settings';
+import argon2Module from 'argon2-wasm-esm/lib/argon2.js';
+const { ArgonType, hash: argon2Hash } = argon2Module;
+const DEV_BYPASS_AUTH: AccessContext = { sub: 'dev-bypass', roles: ['admin', 'ops'], clientIds: [] };
 
-let pdfModulePromise: Promise<typeof import('./pdf')> | undefined;
-const getPdfModule = () => {
-  if (!pdfModulePromise) {
-    pdfModulePromise = import('./pdf');
-  }
+var pdfModulePromise: Promise<any> | null = null;
+function getPdfModule(): Promise<any> {
+  if (!pdfModulePromise) pdfModulePromise = import('./pdf');
   return pdfModulePromise;
-};
+}
 
-let pdfLibPromise: Promise<typeof import('pdf-lib')> | undefined;
-const getPdfLib = () => {
-  if (!pdfLibPromise) {
-    pdfLibPromise = import('pdf-lib');
-  }
+var pdfLibPromise: Promise<any> | null = null;
+function getPdfLib(): Promise<any> {
+  if (!pdfLibPromise) pdfLibPromise = import('pdf-lib');
   return pdfLibPromise;
-};
-
-void DeviceStateDO;
-void DeviceDO;
-
-function maskId(id: unknown): string {
-  if (typeof id !== 'string' || id.length === 0) {
-    return '';
-  }
-  return id.length <= 5 ? `•••${id.slice(-2)}` : `${id.slice(0, 3)}…${id.slice(-2)}`;
 }
 
-function escapeForLike(value: string) {
-  return value.replace(/[%_]/g, (match) => `\\${match}`);
-}
+const DEFAULT_ALLOWED_ORIGINS = Object.freeze([
+  'https://dash.greenbro.co.za',
+  'https://ops.greenbro.co.za',
+]);
 
-function numberFromSetting(value: string | null, fallback = 0): number {
-  if (value == null) {
-    return fallback;
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-const DEFAULT_ALLOWED_ORIGINS = Object.freeze(['https://dash.greenbro.co.za', 'https://ops.greenbro.co.za']);
 const DEV_ALLOWED_ORIGINS = Object.freeze([
   'http://localhost:5173',
   'http://127.0.0.1:5173',
@@ -113,7 +95,22 @@ const DEV_ALLOWED_ORIGINS = Object.freeze([
   'http://127.0.0.1:8787',
 ]);
 
-const DEV_BYPASS_AUTH: AccessContext = { sub: 'dev-bypass', roles: ['admin', 'ops'], clientIds: [] };
+function maskId(id: unknown): string {
+  if (typeof id !== 'string' || id.length === 0) {
+    return '';
+  }
+  return id.length <= 5 ? `\u2022\u2022\u2022${id.slice(-2)}` : `${id.slice(0, 3)}\u2026${id.slice(-2)}`;
+}
+
+function escapeForLike(value: string): string {
+  return value.replace(/[%_]/g, (match) => `\\${match}`);
+}
+
+function numberFromSetting(value: unknown, fallback = 0): number {
+  if (value == null) return fallback;
+  const parsed = Number(value as any);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 function parseWriteLimit(value: string, key: 'WRITE_MIN_C' | 'WRITE_MAX_C'): number {
   const trimmed = value.trim();
@@ -134,11 +131,26 @@ function getWriteLimits(env: Env): { minC: number; maxC: number } {
   };
 }
 
+function isDevBypassAllowed(env: Env): boolean {
+  if (env.DEV_AUTH_BYPASS !== '1') {
+    return false;
+  }
+  if (env.BUILD_SOURCE === 'local') {
+    return true;
+  }
+  return env.ALLOW_AUTH_BYPASS === '1';
+}
+
+function isDevBypassActive(env: Env): boolean {
+  return env.DEV_AUTH_BYPASS === '1' && isDevBypassAllowed(env);
+}
+
 type NormalizedAuthUser = {
   id: string;
   email: string;
   name?: string;
   passwordHash: string;
+  passwordSalt: string | null;
   roles: Role[];
   clientIds: string[];
 };
@@ -161,6 +173,17 @@ const APP_JWT_AUDIENCE = 'greenbro-app';
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
 const REFRESH_TOKEN_PREFIX = 'auth-refresh:';
+
+const ACCESS_COOKIE_NAME = 'gb_access';
+const REFRESH_COOKIE_NAME = 'gb_refresh';
+const CSRF_COOKIE_NAME = 'gb_csrf';
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
+
+const PASSWORD_SALT_BYTES = 16;
+const PASSWORD_HASH_LENGTH = 32;
+const PASSWORD_TIME_COST = 3;
+const PASSWORD_MEMORY_KIB = 64 * 1024;
+const PASSWORD_PARALLELISM = 1;
 
 let cachedJwtSecret: { secret: string; key: Uint8Array } | null = null;
 
@@ -206,13 +229,6 @@ function normalizeClientIds(raw: unknown): string[] {
   return [...set];
 }
 
-async function hashPassword(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) {
     return false;
@@ -224,69 +240,249 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new Error('Invalid hex string');
+  }
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function generateSaltHex(): string {
+  const salt = new Uint8Array(PASSWORD_SALT_BYTES);
+  crypto.getRandomValues(salt);
+  return bytesToHex(salt);
+}
+
+async function derivePasswordHash(password: string, saltHex?: string): Promise<{ hashHex: string; saltHex: string }> {
+  const resolvedSaltHex = saltHex ?? generateSaltHex();
+  const salt = hexToBytes(resolvedSaltHex);
+  const result = await argon2Hash({
+    pass: password,
+    salt,
+    time: PASSWORD_TIME_COST,
+    mem: PASSWORD_MEMORY_KIB,
+    parallelism: PASSWORD_PARALLELISM,
+    hashLen: PASSWORD_HASH_LENGTH,
+    type: ArgonType.argon2id,
+  });
+  return { hashHex: result.hashHex.toLowerCase(), saltHex: resolvedSaltHex.toLowerCase() };
+}
+
+async function hashLegacyPassword(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return bytesToHex(new Uint8Array(digest)).toLowerCase();
+}
+
 type AuthUserRow = {
-  user_id: string;
+  id: string;
   email: string;
   name: string | null;
   password_hash: string;
-  roles_json: string | null;
-  client_ids_json: string | null;
-  disabled_at: string | null;
+  password_salt: string | null;
+  roles: string | null;
+  client_ids: string | null;
 };
 
-function parseJsonArray(raw: string | null): unknown {
-  if (!raw || raw.trim().length === 0) {
-    return [];
-  }
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch (error) {
-    console.warn('Failed to parse auth_users JSON', error);
-    return [];
-  }
-}
+type LegacyAuthUser = {
+  id: string;
+  email: string;
+  name?: string;
+  roles: Role[];
+  clientIds: string[];
+  password?: string;
+  passwordHash?: string;
+};
 
-function mapAuthUserRow(row: AuthUserRow): NormalizedAuthUser | null {
-  const id = typeof row.user_id === 'string' ? row.user_id.trim() : '';
-  const email = typeof row.email === 'string' ? row.email.trim().toLowerCase() : '';
-  if (!id || !email || row.disabled_at) {
+function parseAuthUserRow(row: AuthUserRow | null): NormalizedAuthUser | null {
+  if (!row) {
     return null;
   }
-
-  const passwordHash = typeof row.password_hash === 'string' ? row.password_hash.trim().toLowerCase() : '';
+  const id = typeof row.id === 'string' && row.id.trim().length > 0 ? row.id.trim() : null;
+  const email = typeof row.email === 'string' && row.email.trim().length > 0 ? row.email.trim().toLowerCase() : null;
+  if (!id || !email) {
+    return null;
+  }
+  const name = typeof row.name === 'string' && row.name.trim().length > 0 ? row.name.trim() : undefined;
+  const passwordHash = typeof row.password_hash === 'string' && row.password_hash ? row.password_hash.toLowerCase() : null;
   if (!passwordHash) {
     return null;
   }
+  const passwordSalt = typeof row.password_salt === 'string' && row.password_salt ? row.password_salt.toLowerCase() : null;
 
-  const roles = normalizeRoleList(parseJsonArray(row.roles_json));
+  const roles: Role[] = (() => {
+    if (typeof row.roles === 'string' && row.roles.trim().startsWith('[')) {
+      try {
+        const parsed = JSON.parse(row.roles) as unknown;
+        return normalizeRoleList(parsed);
+      } catch (error) {
+        console.warn('Failed to parse auth user roles JSON', error);
+      }
+    }
+    return normalizeRoleList(row.roles);
+  })();
   if (roles.length === 0) {
     return null;
   }
 
-  const clientIds = normalizeClientIds(parseJsonArray(row.client_ids_json));
-  const name = typeof row.name === 'string' && row.name.trim().length > 0 ? row.name.trim() : undefined;
+  const clientIds = (() => {
+    if (typeof row.client_ids === 'string' && row.client_ids.trim().startsWith('[')) {
+      try {
+        const parsed = JSON.parse(row.client_ids) as unknown;
+        return normalizeClientIds(parsed);
+      } catch (error) {
+        console.warn('Failed to parse auth user client IDs JSON', error);
+      }
+    }
+    return normalizeClientIds(row.client_ids);
+  })();
 
-  return {
-    id,
-    email,
-    name,
-    passwordHash,
-    roles,
-    clientIds,
-  };
+  return { id, email, name, passwordHash, passwordSalt, roles, clientIds };
 }
 
-async function loadAuthUsers(DB: D1Database): Promise<NormalizedAuthUser[]> {
-  const rows = await DB.prepare(
-    `SELECT user_id, email, name, password_hash, roles_json, client_ids_json, disabled_at
-     FROM auth_users
-     WHERE disabled_at IS NULL`,
-  ).all<AuthUserRow>();
+function parseLegacyAuthUser(entry: unknown): LegacyAuthUser | null {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const record = entry as Record<string, unknown>;
+  const idRaw = record.id ?? record.userId ?? record.uid;
+  const emailRaw = record.email;
+  const nameRaw = record.name;
+  const rolesRaw = record.roles ?? record.role;
+  const clientsRaw = record.clientIds ?? record.clients;
+  const passwordRaw = record.password;
+  const passwordHashRaw = record.password_hash ?? record.passwordHash;
 
-  const entries = rows.results ?? [];
-  return entries
-    .map((row) => mapAuthUserRow(row))
-    .filter((user): user is NormalizedAuthUser => user !== null);
+  const id = typeof idRaw === 'string' && idRaw.trim().length > 0 ? idRaw.trim() : null;
+  const email = typeof emailRaw === 'string' && emailRaw.trim().length > 0 ? emailRaw.trim().toLowerCase() : null;
+  if (!id || !email) return null;
+
+  const name = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : undefined;
+  const roles = normalizeRoleList(rolesRaw);
+  if (roles.length === 0) return null;
+  const clientIds = normalizeClientIds(clientsRaw);
+  const password = typeof passwordRaw === 'string' && passwordRaw ? passwordRaw : undefined;
+  const passwordHash = typeof passwordHashRaw === 'string' && passwordHashRaw ? passwordHashRaw.toLowerCase() : undefined;
+  return { id, email, name, roles, clientIds, password, passwordHash };
+}
+
+let authUserMigrationPromise: Promise<void> | null = null;
+
+async function migrateLegacyAuthUsers(DB: D1Database): Promise<void> {
+  if (!authUserMigrationPromise) {
+    authUserMigrationPromise = (async () => {
+      try {
+        const hasTable = await DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='auth_users'")
+          .first<{ name: string }>();
+        if (!hasTable) {
+          return;
+        }
+      } catch (error) {
+        console.warn('Failed to verify auth_users table', error);
+        return;
+      }
+
+      const legacy = await getSetting(DB, 'auth_users');
+      if (!legacy) {
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(legacy) as unknown;
+      } catch (error) {
+        console.warn('Failed to parse legacy auth_users setting', error);
+        return;
+      }
+
+      if (!Array.isArray(parsed)) {
+        return;
+      }
+
+      const users: LegacyAuthUser[] = [];
+      for (const entry of parsed) {
+        const resolved = parseLegacyAuthUser(entry);
+        if (resolved) {
+          users.push(resolved);
+        }
+      }
+
+      for (const user of users) {
+        try {
+          let nextHash: string;
+          let nextSalt: string | null = null;
+          if (user.password) {
+            const derived = await derivePasswordHash(user.password);
+            nextHash = derived.hashHex;
+            nextSalt = derived.saltHex;
+          } else if (user.passwordHash) {
+            nextHash = user.passwordHash.toLowerCase();
+            nextSalt = null;
+          } else {
+            continue;
+          }
+
+          await DB.prepare(
+            `INSERT INTO auth_users (id, email, password_hash, password_salt, name, roles, client_ids)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               email=excluded.email,
+               password_hash=excluded.password_hash,
+               password_salt=excluded.password_salt,
+               name=excluded.name,
+               roles=excluded.roles,
+               client_ids=excluded.client_ids`,
+          )
+            .bind(
+              user.id,
+              user.email,
+              nextHash,
+              nextSalt,
+              user.name ?? null,
+              JSON.stringify(user.roles),
+              JSON.stringify(user.clientIds),
+            )
+            .run();
+        } catch (error) {
+          console.warn('Failed to migrate auth user', user.email, error);
+        }
+      }
+
+      try {
+        await DB.prepare('DELETE FROM settings WHERE key=?').bind('auth_users').run();
+      } catch (error) {
+        console.warn('Failed to remove legacy auth_users setting', error);
+      }
+    })();
+  }
+  await authUserMigrationPromise;
+}
+
+async function _loadAuthUsers(DB: D1Database): Promise<NormalizedAuthUser[]> {
+  await migrateLegacyAuthUsers(DB);
+  try {
+    const rows = await DB.prepare(
+      'SELECT id, email, name, password_hash, password_salt, roles, client_ids FROM auth_users',
+    ).all<AuthUserRow>();
+    if (!rows || !rows.results) {
+      return [];
+    }
+    return rows.results
+      .map((row) => parseAuthUserRow(row))
+      .filter((user): user is NormalizedAuthUser => user !== null);
+  } catch (error) {
+    console.warn('Failed to load auth users', error);
+    return [];
+  }
 }
 
 async function authenticateUser(DB: D1Database, email: string, password: string): Promise<NormalizedAuthUser | null> {
@@ -294,13 +490,47 @@ async function authenticateUser(DB: D1Database, email: string, password: string)
   if (!lookup || !password) {
     return null;
   }
-  const users = await loadAuthUsers(DB);
-  const user = users.find((entry) => entry.email === lookup);
+
+  await migrateLegacyAuthUsers(DB);
+
+  let row: AuthUserRow | null = null;
+  try {
+    row = await DB.prepare(
+      'SELECT id, email, name, password_hash, password_salt, roles, client_ids FROM auth_users WHERE email=?',
+    )
+      .bind(lookup)
+      .first<AuthUserRow>();
+  } catch (error) {
+    console.warn('Failed to query auth user', error);
+    return null;
+  }
+
+  const user = parseAuthUserRow(row);
   if (!user) {
     return null;
   }
-  const attemptHash = await hashPassword(password);
-  return timingSafeEqual(attemptHash.toLowerCase(), user.passwordHash) ? user : null;
+
+  if (user.passwordSalt) {
+    const attempt = await derivePasswordHash(password, user.passwordSalt);
+    return timingSafeEqual(attempt.hashHex, user.passwordHash) ? user : null;
+  }
+
+  const legacyAttempt = await hashLegacyPassword(password);
+  if (!timingSafeEqual(legacyAttempt, user.passwordHash)) {
+    return null;
+  }
+
+  try {
+    const upgraded = await derivePasswordHash(password);
+    await DB.prepare('UPDATE auth_users SET password_hash=?, password_salt=? WHERE id=?')
+      .bind(upgraded.hashHex, upgraded.saltHex, user.id)
+      .run();
+    return { ...user, passwordHash: upgraded.hashHex, passwordSalt: upgraded.saltHex };
+  } catch (error) {
+    console.warn('Failed to upgrade legacy auth user hash', error);
+  }
+
+  return user;
 }
 
 function toApiUser(user: NormalizedAuthUser): ApiUser {
@@ -323,6 +553,52 @@ function generateRefreshToken(): string {
 
 function generateSessionId(): string {
   return crypto.randomUUID();
+}
+
+function generateCsrfToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return bytesToHex(bytes);
+}
+
+const COOKIE_BASE_OPTIONS = Object.freeze({ path: '/', secure: true, sameSite: 'Strict' as const });
+
+function setAccessCookie(c: Context, token: string) {
+  setCookie(c, ACCESS_COOKIE_NAME, token, {
+    ...COOKIE_BASE_OPTIONS,
+    httpOnly: true,
+    maxAge: ACCESS_TOKEN_TTL_SECONDS,
+  });
+}
+
+function setRefreshCookie(c: Context, token: string) {
+  setCookie(c, REFRESH_COOKIE_NAME, token, {
+    ...COOKIE_BASE_OPTIONS,
+    httpOnly: true,
+    maxAge: REFRESH_TOKEN_TTL_SECONDS,
+  });
+}
+
+function setCsrfCookie(c: Context, token: string) {
+  setCookie(c, CSRF_COOKIE_NAME, token, {
+    ...COOKIE_BASE_OPTIONS,
+    httpOnly: false,
+    maxAge: REFRESH_TOKEN_TTL_SECONDS,
+  });
+}
+
+function clearCookie(c: Context, name: string) {
+  setCookie(c, name, '', { ...COOKIE_BASE_OPTIONS, httpOnly: true, maxAge: 0 });
+}
+
+function clearCsrfCookie(c: Context) {
+  setCookie(c, CSRF_COOKIE_NAME, '', { ...COOKIE_BASE_OPTIONS, httpOnly: false, maxAge: 0 });
+}
+
+function clearAuthCookies(c: Context) {
+  clearCookie(c, ACCESS_COOKIE_NAME);
+  clearCookie(c, REFRESH_COOKIE_NAME);
+  clearCsrfCookie(c);
 }
 
 async function createAccessToken(env: Env, user: ApiUser, sessionId: string): Promise<string> {
@@ -437,7 +713,7 @@ function getAllowedOrigins(env: Env): string[] {
       origins.add(origin);
     }
   }
-  if (env.DEV_AUTH_BYPASS === '1') {
+  if (isDevBypassActive(env)) {
     for (const origin of DEV_ALLOWED_ORIGINS) {
       origins.add(origin);
     }
@@ -471,7 +747,7 @@ async function getAccessContext(c: Context<Ctx>, jwt?: string): Promise<AccessCo
 }
 
 async function requirePageAuth(c: Context<Ctx>, roles: Role[]): Promise<AccessContext | Response> {
-  if (c.env.DEV_AUTH_BYPASS === '1') {
+  if (isDevBypassActive(c.env)) {
     return { ...DEV_BYPASS_AUTH, roles: [...DEV_BYPASS_AUTH.roles], clientIds: [...(DEV_BYPASS_AUTH.clientIds ?? [])] };
   }
   const auth = await getAccessContext(c);
@@ -1197,6 +1473,13 @@ type Ctx = {
 
 const app = new Hono<Ctx>();
 
+app.use('*', async (c, next) => {
+  if (c.env.DEV_AUTH_BYPASS === '1' && !isDevBypassAllowed(c.env)) {
+    return c.text('Service Unavailable (dev auth bypass denied)', 503);
+  }
+  return next();
+});
+
 app.use('*', (c, next) => {
   const allowedOrigins = new Set(getAllowedOrigins(c.env));
   return cors({
@@ -1207,7 +1490,7 @@ app.use('*', (c, next) => {
       return allowedOrigins.has(origin) ? origin : null;
     },
     allowMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'Cf-Access-Jwt-Assertion'],
+    allowHeaders: ['Content-Type', 'Authorization', 'Cf-Access-Jwt-Assertion', CSRF_HEADER_NAME],
     credentials: true,
   })(c, next);
 });
@@ -1442,7 +1725,7 @@ app.get('/brand/logo-mono.svg', async (c) => {
 });
 
 app.post('/api/auth/login', async (c) => {
-  const devBypass = c.env.DEV_AUTH_BYPASS === '1';
+  const devBypass = isDevBypassActive(c.env);
   let body: { email?: string; password?: string } | null = null;
   try {
     body = await c.req.json<{ email?: string; password?: string }>();
@@ -1468,53 +1751,54 @@ app.post('/api/auth/login', async (c) => {
   const sessionId = generateSessionId();
   const accessToken = await createAccessToken(c.env, user, sessionId);
   const refreshToken = generateRefreshToken();
+  const csrfToken = generateCsrfToken();
+
   await storeRefreshToken(c.env, refreshToken, { sessionId, user });
 
-  return c.json({ user, accessToken, refreshToken });
+  setAccessCookie(c, accessToken);
+  setRefreshCookie(c, refreshToken);
+  setCsrfCookie(c, csrfToken);
+
+  return c.json({ user, csrfToken });
 });
 
 app.post('/api/auth/refresh', async (c) => {
-  const devBypass = c.env.DEV_AUTH_BYPASS === '1';
-  let body: { refreshToken?: string } | null = null;
-  try {
-    body = await c.req.json<{ refreshToken?: string }>();
-  } catch {}
-
-  const provided = typeof body?.refreshToken === 'string' ? body.refreshToken.trim() : '';
-  if (!provided) {
-    return c.json({ error: 'refreshToken required' }, 400);
+  const refreshToken = getCookie(c, REFRESH_COOKIE_NAME) ?? '';
+  if (!refreshToken) {
+    return c.json({ error: 'Refresh token missing' }, 401);
   }
 
-  if (devBypass) {
-    const user = getDevBypassUser();
-    const sessionId = generateSessionId();
-    const accessToken = await createAccessToken(c.env, user, sessionId);
-    const nextRefreshToken = generateRefreshToken();
-    await storeRefreshToken(c.env, nextRefreshToken, { sessionId, user });
-    return c.json({ accessToken, refreshToken: nextRefreshToken, user });
+  const csrfCookie = getCookie(c, CSRF_COOKIE_NAME) ?? '';
+  const csrfHeader = c.req.header(CSRF_HEADER_NAME) ?? '';
+  if (!csrfCookie || !csrfHeader || !timingSafeEqual(csrfCookie, csrfHeader)) {
+    return c.json({ error: 'Invalid CSRF token' }, 403);
   }
 
-  const record = await readRefreshRecord(c.env, provided);
+  const record = await readRefreshRecord(c.env, refreshToken);
   if (!record) {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
   const accessToken = await createAccessToken(c.env, record.user, record.sessionId);
   const nextRefreshToken = generateRefreshToken();
-  await storeRefreshToken(c.env, nextRefreshToken, record);
-  await deleteRefreshToken(c.env, provided);
+  const csrfToken = generateCsrfToken();
 
-  return c.json({ accessToken, refreshToken: nextRefreshToken, user: record.user });
+  await storeRefreshToken(c.env, nextRefreshToken, record);
+  await deleteRefreshToken(c.env, refreshToken);
+
+  setAccessCookie(c, accessToken);
+  setRefreshCookie(c, nextRefreshToken);
+  setCsrfCookie(c, csrfToken);
+
+  return c.json({ user: record.user, csrfToken });
 });
 
 app.post('/api/auth/logout', async (c) => {
-  const body = await c.req
-    .json<{ refreshToken?: string }>()
-    .catch(() => null);
-  const refreshToken = typeof body?.refreshToken === 'string' ? body.refreshToken.trim() : '';
+  const refreshToken = getCookie(c, REFRESH_COOKIE_NAME) ?? '';
   if (refreshToken) {
     await deleteRefreshToken(c.env, refreshToken);
   }
+  clearAuthCookies(c);
   return c.json({ ok: true });
 });
 
@@ -1525,18 +1809,28 @@ app.use('/api/*', async (c, next) => {
     return;
   }
 
-  if (c.env.DEV_AUTH_BYPASS === '1') {
+  if (isDevBypassActive(c.env)) {
     c.set('auth', { ...DEV_BYPASS_AUTH, roles: [...DEV_BYPASS_AUTH.roles], clientIds: [...(DEV_BYPASS_AUTH.clientIds ?? [])] });
     await next();
     return;
   }
 
   let auth: AccessContext | null = null;
-  const authorization = c.req.header('Authorization');
-  if (authorization && authorization.startsWith('Bearer ')) {
-    const token = authorization.slice(7).trim();
-    if (token) {
-      auth = await verifyAppToken(c.env, token);
+  const accessCookie = getCookie(c, ACCESS_COOKIE_NAME);
+  if (accessCookie) {
+    auth = await verifyAppToken(c.env, accessCookie).catch((error) => {
+      console.warn('Invalid access cookie token', error);
+      return null;
+    });
+  }
+
+  if (!auth) {
+    const authorization = c.req.header('Authorization');
+    if (authorization && authorization.startsWith('Bearer ')) {
+      const token = authorization.slice(7).trim();
+      if (token) {
+        auth = await verifyAppToken(c.env, token);
+      }
     }
   }
 
@@ -1558,7 +1852,7 @@ app.use('/api/*', async (c, next) => {
 });
 
 app.get('/api/auth/me', async (c) => {
-  if (c.env.DEV_AUTH_BYPASS === '1') {
+  if (isDevBypassActive(c.env)) {
     return c.json(getDevBypassUser());
   }
   const auth = c.get('auth');
@@ -4576,7 +4870,18 @@ app.post('/api/reports/incident/v2', async (c) => {
     });
     const text = [...introLines, ...detailLines, ...footerLines].join('\n');
     emailed = await sendEmail(c.env, recipients, subject, text, emailSettings, html);
-    // To capture email sends in the audit log, call logReportDelivery(c.env.DB, { ...status: 'sent' }) here.
+    if (emailed) {
+      await logReportDelivery(c.env.DB, {
+        type: 'incident',
+        status: 'sent',
+        clientId: primaryClientId,
+        siteId,
+        path,
+        subject,
+        to: recipients,
+        meta: { hours: windowHours, windowStart: payload.windowStart, windowEnd: payload.windowEnd },
+      });
+    }
   }
 
   return c.json({
@@ -4594,7 +4899,7 @@ app.post('/api/reports/incident/v2', async (c) => {
 });
 
 app.get('/api/reports/preview-html', async (c) => {
-  const bypass = c.env.DEV_AUTH_BYPASS === '1';
+  const bypass = isDevBypassActive(c.env);
   if (!bypass) {
     const jwt = c.req.header('Cf-Access-Jwt-Assertion');
     if (!jwt) {
@@ -5340,7 +5645,7 @@ async function schemaSnapshot(DB: D1Database) {
 }
 
 app.get('/api/ops/readiness', async (c) => {
-  const bypass = c.env.DEV_AUTH_BYPASS === '1';
+  const bypass = isDevBypassActive(c.env);
   if (!bypass) {
     const hasAdminOpsRole = (ctx: AccessContext | null | undefined) =>
       Boolean(ctx?.roles?.some((role) => role === 'admin' || role === 'ops'));
@@ -5393,7 +5698,7 @@ app.get('/api/ops/readiness', async (c) => {
 });
 
 app.get('/api/ops/version', async (c) => {
-  const bypass = c.env.DEV_AUTH_BYPASS === '1';
+  const bypass = isDevBypassActive(c.env);
   let allowed = false;
 
   if (!bypass) {

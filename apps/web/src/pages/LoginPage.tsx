@@ -33,11 +33,13 @@ export function LoginPage(): JSX.Element {
       await login(values);
       navigate('/overview', { replace: true });
     } catch (error) {
-      if (error instanceof Response) {
-        setFormError(error.status === 401 ? 'Invalid credentials' : 'Login failed');
-      } else {
-        setFormError('Login failed');
-      }
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : error instanceof Response && error.status === 401
+            ? 'Invalid credentials'
+            : 'Login failed';
+      setFormError(message);
     }
   });
 

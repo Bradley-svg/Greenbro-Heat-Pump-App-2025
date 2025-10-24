@@ -8,20 +8,17 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react';
-import { fetchMe, loadStoredSession, login as apiLogin, logout as apiLogout, refresh as apiRefresh, storeSession } from '@api/auth';
-import { setAuthToken } from '@api/client';
+import { fetchMe, login as apiLogin, logout as apiLogout, refresh as apiRefresh } from '@api/auth';
+import { onAuthChange } from '@api/client';
 import type { AuthStatus, Role, User } from '@utils/types';
-import type { AuthTokens } from '@utils/types';
 import type { LoginInput } from '@api/auth';
 
 interface AuthContextValue {
   user: User | null;
   status: AuthStatus;
-  accessToken: string | null;
-  refreshToken: string | null;
   login: (input: LoginInput) => Promise<void>;
   logout: () => Promise<void>;
-  refresh: () => Promise<string | null>;
+  refresh: () => Promise<boolean>;
   hasRole: (roles: Role | Role[]) => boolean;
 }
 
@@ -36,122 +33,93 @@ function hasRequiredRole(user: User | null, allowed: Role | Role[]): boolean {
 
 export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
   const [user, setUser] = useState<User | null>(null);
-  const [tokens, setTokens] = useState<AuthTokens | null>(null);
   const [status, setStatus] = useState<AuthStatus>('loading');
-  const refreshPromiseRef = useRef<Promise<string | null> | null>(null);
+  const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
 
-  const establishSession = useCallback(async (nextTokens: AuthTokens) => {
-    try {
-      const me = await fetchMe(nextTokens.accessToken);
-      setUser(me);
-      setTokens(nextTokens);
-      setAuthToken(nextTokens.accessToken);
-      setStatus('authenticated');
-    } catch (error) {
-      if (nextTokens.refreshToken) {
-        try {
-          const refreshed = await apiRefresh(nextTokens.refreshToken);
-          const mergedTokens: AuthTokens = {
-            accessToken: refreshed.accessToken,
-            refreshToken: refreshed.refreshToken ?? nextTokens.refreshToken,
-          };
-          const resolvedUser = refreshed.user ?? (await fetchMe(refreshed.accessToken));
-          setUser(resolvedUser);
-          setTokens(mergedTokens);
-          setAuthToken(mergedTokens.accessToken);
-          setStatus('authenticated');
-        } catch (refreshError) {
-          console.error('Failed to refresh session', refreshError);
-          setUser(null);
-          setTokens(null);
-          setAuthToken(null);
-          setStatus('unauthenticated');
-        }
-      } else {
-        console.error('Failed to establish session', error);
+  useEffect(() => {
+    let cancelled = false;
+    const initialise = async () => {
+      try {
+        const me = await fetchMe();
+        if (cancelled) return;
+        setUser(me);
+        setStatus('authenticated');
+      } catch {
+        if (cancelled) return;
         setUser(null);
-        setTokens(null);
-        setAuthToken(null);
         setStatus('unauthenticated');
       }
-    }
+    };
+    void initialise();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    const stored = loadStoredSession();
-    if (stored?.tokens?.accessToken) {
-      setTokens(stored.tokens);
-      setAuthToken(stored.tokens.accessToken);
-      setUser(stored.user);
-      void establishSession(stored.tokens);
-    } else {
-      setStatus('unauthenticated');
-    }
-  }, [establishSession]);
-
-  useEffect(() => {
-    if (user && tokens) {
-      storeSession({ user, tokens });
-    } else {
-      storeSession(null);
-    }
-  }, [tokens, user]);
+    const unsubscribe = onAuthChange((payload) => {
+      if (payload?.user) {
+        setUser(payload.user);
+        setStatus('authenticated');
+      }
+    });
+    return () => {
+      void unsubscribe();
+    };
+  }, []);
 
   const login = useCallback(async (input: LoginInput) => {
     setStatus('loading');
-    const session = await apiLogin(input);
-    setUser(session.user);
-    setTokens(session.tokens);
-    setAuthToken(session.tokens.accessToken);
-    setStatus('authenticated');
-    storeSession(session);
+    try {
+      const session = await apiLogin(input);
+      setUser(session.user);
+      setStatus('authenticated');
+    } catch (error) {
+      setUser(null);
+      setStatus('unauthenticated');
+      throw error;
+    }
   }, []);
 
   const logout = useCallback(async () => {
-    const accessToken = tokens?.accessToken;
     setStatus('loading');
     try {
-      await apiLogout(accessToken ?? undefined);
+      await apiLogout();
     } finally {
       setUser(null);
-      setTokens(null);
-      setAuthToken(null);
       setStatus('unauthenticated');
-      storeSession(null);
     }
-  }, [tokens]);
+  }, []);
 
   const refresh = useCallback(async () => {
     if (refreshPromiseRef.current) {
       return refreshPromiseRef.current;
     }
 
-    if (!tokens?.refreshToken) {
-      return null;
-    }
-
-    const promise = apiRefresh(tokens.refreshToken)
+    const promise = apiRefresh()
       .then(async (res) => {
-        const mergedTokens: AuthTokens = {
-          accessToken: res.accessToken,
-          refreshToken: res.refreshToken ?? tokens.refreshToken,
-        };
-        const nextUser = res.user ?? (await fetchMe(res.accessToken));
-        setTokens(mergedTokens);
-        setUser(nextUser);
-        setAuthToken(mergedTokens.accessToken);
-        setStatus('authenticated');
-        storeSession({ user: nextUser, tokens: mergedTokens });
-        return res.accessToken;
+        if (res.user) {
+          setUser(res.user);
+          setStatus('authenticated');
+          return true;
+        }
+        try {
+          const me = await fetchMe();
+          setUser(me);
+          setStatus('authenticated');
+          return true;
+        } catch (error) {
+          console.error('Failed to load user after refresh', error);
+          setUser(null);
+          setStatus('unauthenticated');
+          return false;
+        }
       })
       .catch((error) => {
-        console.error('Failed to refresh auth token', error);
+        console.error('Failed to refresh auth session', error);
         setUser(null);
-        setTokens(null);
-        setAuthToken(null);
         setStatus('unauthenticated');
-        storeSession(null);
-        return null;
+        return false;
       })
       .finally(() => {
         refreshPromiseRef.current = null;
@@ -159,20 +127,18 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
 
     refreshPromiseRef.current = promise;
     return promise;
-  }, [tokens, user]);
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
       status,
-      accessToken: tokens?.accessToken ?? null,
-      refreshToken: tokens?.refreshToken ?? null,
       login,
       logout,
       refresh,
       hasRole: (roles) => hasRequiredRole(user, roles),
     }),
-    [login, logout, refresh, status, tokens, user],
+    [login, logout, refresh, status, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,31 +1,37 @@
-// Single-source auth + fetch, with legacy-compatible exports to unblock TS builds.
+// Shared auth-aware fetch helpers.
 
-export type AuthListener = () => void;
+import type { User } from '@utils/types';
 
-let _token: string | null = null;
+export type AuthListener = (payload?: { user?: User } | null) => void;
+
+const CSRF_COOKIE_NAME = 'gb_csrf';
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
+
+let _csrfToken: string | null = null;
 const listeners = new Set<AuthListener>();
 
-// Initialise from storage (best-effort)
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match && typeof match[1] === 'string' ? decodeURIComponent(match[1]) : null;
+}
+
 try {
-  _token = localStorage.getItem('auth_token');
+  _csrfToken = readCookie(CSRF_COOKIE_NAME);
 } catch {
-  /* ignore storage access issues (SSR or locked-down env) */
+  _csrfToken = null;
 }
 
-export function setAuthToken(tok: string | null) {
-  _token = tok;
-  try {
-    if (tok) localStorage.setItem('auth_token', tok);
-    else localStorage.removeItem('auth_token');
-  } catch {
-    /* ignore */
+export function setCsrfToken(token: string | null) {
+  _csrfToken = token;
+  listeners.forEach((listener) => listener(null));
+}
+
+export function getCsrfToken(): string | null {
+  if (!_csrfToken) {
+    _csrfToken = readCookie(CSRF_COOKIE_NAME);
   }
-  // notify subscribers
-  listeners.forEach((l) => l());
-}
-
-export function getAuthToken() {
-  return _token;
+  return _csrfToken;
 }
 
 export function onAuthChange(fn: AuthListener) {
@@ -36,7 +42,6 @@ export function onAuthChange(fn: AuthListener) {
 function getFetchImpl(fetchImpl?: typeof fetch): typeof fetch {
   return fetchImpl ?? fetch;
 }
-
 function clearStoredSession() {
   try {
     localStorage.removeItem('greenbro-auth');
@@ -53,7 +58,7 @@ async function handleRefreshFailure(fetchImpl: typeof fetch): Promise<void> {
   }
   handlingUnauthorized = true;
 
-  setAuthToken(null);
+  (globalThis as any).setAuthToken?.(null);
   clearStoredSession();
 
   try {
@@ -76,67 +81,49 @@ async function handleRefreshFailure(fetchImpl: typeof fetch): Promise<void> {
   }
 }
 
-// ----- refresh helper (used by authFetch retry) -----
-export async function tryRefresh(fetchImpl?: typeof fetch): Promise<boolean> {
-  const runFetch = getFetchImpl(fetchImpl);
-  let refreshToken: string | null = null;
-  try {
-    const stored = localStorage.getItem('greenbro-auth');
-    if (stored) {
-      const parsed = JSON.parse(stored) as { tokens?: { refreshToken?: string } };
-      if (parsed?.tokens?.refreshToken) {
-        refreshToken = parsed.tokens.refreshToken;
-      }
-    }
-  } catch {
-    refreshToken = null;
+function resolveMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  if (init?.method) {
+    return init.method.toUpperCase();
   }
-
-  if (!refreshToken) {
-    return false;
+  if (input instanceof Request) {
+    return input.method.toUpperCase();
   }
+  return 'GET';
+}
 
-  try {
-    const response = await runFetch('/api/auth/refresh', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
-    });
-    if (!response.ok) {
-      return false;
-    }
-    const data = await response.json().catch(() => null);
-    if (!data || typeof data.accessToken !== 'string') {
-      return false;
-    }
+function shouldAttachCsrf(method: string): boolean {
+  return method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+}
 
-    const nextRefresh = typeof data.refreshToken === 'string' ? data.refreshToken : undefined;
-    setAuthToken(data.accessToken);
+/* tryRefresh is implemented below (single export). */
 
-    try {
-      const stored = localStorage.getItem('greenbro-auth');
-      if (stored) {
-        const parsed = JSON.parse(stored) as Record<string, any>;
-        const currentTokens = (parsed.tokens as Record<string, any>) ?? {};
-        parsed.tokens = {
-          ...currentTokens,
-          accessToken: data.accessToken,
-          refreshToken: nextRefresh ?? currentTokens.refreshToken,
-        };
-        localStorage.setItem('greenbro-auth', JSON.stringify(parsed));
-      }
-    } catch {
-      /* ignore storage errors */
-    }
-
-    return true;
-  } catch {
-    return false;
+function applyCsrf(headers: Headers, method: string) {
+  if (!shouldAttachCsrf(method)) {
+    return;
+  }
+  const token = getCsrfToken();
+  if (token && !headers.has(CSRF_HEADER_NAME)) {
+    headers.set(CSRF_HEADER_NAME, token);
   }
 }
 
-// Resolve an API URL relative to the configured base (if any)
+function isAuthEndpoint(input: RequestInfo | URL): boolean {
+  const target =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+  if (typeof target !== 'string') {
+    return false;
+  }
+  return (
+    target.includes('/api/auth/login') ||
+    target.includes('/api/auth/refresh') ||
+    target.includes('/api/auth/logout')
+  );
+}
+
 export function resolveApiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) {
     return path;
@@ -156,8 +143,7 @@ export function resolveApiUrl(path: string): string {
       ? ((import.meta as unknown as { env: { VITE_API_BASE_URL: string } }).env.VITE_API_BASE_URL as string)
       : undefined;
 
-  const windowBase =
-    typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined;
+  const windowBase = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : undefined;
 
   const base = metaBase || globalBase || windowBase;
   if (!base) {
@@ -171,26 +157,66 @@ export function resolveApiUrl(path: string): string {
   }
 }
 
-// ----- primary fetch wrapper -----
+export async function tryRefresh(fetchImpl?: typeof fetch): Promise<boolean> {
+  const runFetch = getFetchImpl(fetchImpl);
+  const headers = new Headers();
+  const csrf = getCsrfToken();
+  if (csrf) {
+    headers.set(CSRF_HEADER_NAME, csrf);
+  }
+
+  try {
+    const response = await runFetch('/api/auth/refresh', {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+    });
+    if (!response.ok) {
+      if (response.status === 403) {
+        setCsrfToken(null);
+      }
+      return false;
+    }
+    const data = (await response.json().catch(() => null)) as { user?: User; csrfToken?: string } | null;
+    if (data && typeof data.csrfToken === 'string') {
+      setCsrfToken(data.csrfToken);
+    } else {
+      setCsrfToken(readCookie(CSRF_COOKIE_NAME));
+    }
+    listeners.forEach((listener) => listener(data));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
   fetchImpl?: typeof fetch,
 ): Promise<Response> {
   const runFetch = getFetchImpl(fetchImpl);
-  const headers = new Headers(init?.headers || {});
-  const tok = getAuthToken();
-  if (tok && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${tok}`);
+  const method = resolveMethod(input, init);
+  const headers = new Headers(init?.headers ?? {});
+  applyCsrf(headers, method);
 
-  const first = await runFetch(input, { ...init, headers });
-  if (first.status !== 401) return first;
+  const first = await runFetch(input, {
+    ...init,
+    headers,
+    credentials: init?.credentials ?? 'include',
+  });
+  if (first.status !== 401 || isAuthEndpoint(input)) {
+    return first;
+  }
 
-  // one retry on 401 after refresh
   if (await tryRefresh(runFetch)) {
-    const headers2 = new Headers(init?.headers || {});
-    const tok2 = getAuthToken();
-    if (tok2) headers2.set('Authorization', `Bearer ${tok2}`);
-    return runFetch(input, { ...init, headers: headers2 });
+    const retryHeaders = new Headers(init?.headers ?? {});
+    applyCsrf(retryHeaders, method);
+    return runFetch(input, {
+      ...init,
+      headers: retryHeaders,
+      credentials: init?.credentials ?? 'include',
+    });
   }
   await handleRefreshFailure(runFetch);
   return first;
@@ -228,20 +254,10 @@ export async function apiFetch<T = unknown>(
   }
 }
 
-// ===== Legacy compatibility layer =====
-
-// Some modules might expect a factory that yields an object with a `fetch` method
 export function createClient() {
   return {
     fetch: authFetch,
   };
 }
 
-// Some older snippets import a default `api` or named `api` with a `fetch` method:
 export const api = createClient();
-export default api;
-
-// Very old code paths might import `createAuthedFetch`:
-export function createAuthedFetch() {
-  return authFetch;
-}

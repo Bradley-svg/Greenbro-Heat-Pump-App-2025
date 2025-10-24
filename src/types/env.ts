@@ -42,4 +42,5 @@ export interface Env {
   BUILD_SHA?: string;
   BUILD_DATE?: string;
   BUILD_SOURCE?: string;
+  ALLOW_AUTH_BYPASS?: string;
 }

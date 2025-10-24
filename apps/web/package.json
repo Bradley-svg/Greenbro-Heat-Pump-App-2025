@@ -9,7 +9,7 @@
     "preview": "vite preview --strictPort --host --port 4173",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test:smoke": "playwright test tests/mute-toast.spec.ts",
+    "test:smoke": "playwright test tests/mute-toast.spec.ts tests/app-flow.spec.ts",
     "test:a11y": "playwright test tests/a11y.spec.ts",
     "axe:pdf": "playwright test tests/pdf-a11y.spec.ts -g @pdf"
   },
