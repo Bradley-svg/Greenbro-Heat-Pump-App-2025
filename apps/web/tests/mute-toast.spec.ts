@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { primeOpsSession } from './utils/auth';
 
 const redSeries = [
   { ts: '2024-01-01T11:51:00.000Z', burn: 1.2, errRate: 0.01 },
@@ -7,7 +8,7 @@ const redSeries = [
 
 test.describe('Burn toast + mute behaviour', () => {
   test('muted: no toast when burn flips RED', async ({ page, baseURL }) => {
-    await page.addInitScript(() => localStorage.setItem('toast_muted', '1'));
+    await primeOpsSession(page, { mute: true });
 
     await page.route('**/api/ops/burn-series**', async (route) => {
       await route.fulfill({
@@ -25,7 +26,7 @@ test.describe('Burn toast + mute behaviour', () => {
   });
 
   test('unmuted: toast appears when burn is RED', async ({ page, baseURL }) => {
-    await page.addInitScript(() => localStorage.setItem('toast_muted', '0'));
+    await primeOpsSession(page);
     await page.route('**/api/ops/burn-series**', async (route) => {
       await route.fulfill({
         status: 200,
@@ -42,7 +43,7 @@ test.describe('Burn toast + mute behaviour', () => {
   });
 
   test('toggling mute on the page silences subsequent toasts', async ({ page, baseURL }) => {
-    await page.addInitScript(() => localStorage.setItem('toast_muted', '0'));
+    await primeOpsSession(page);
     await page.route('**/api/ops/burn-series**', async (route) => {
       await route.fulfill({
         status: 200,
