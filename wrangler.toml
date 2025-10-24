@@ -56,6 +56,32 @@ bucket_name = "greenbro-archive"
 binding = "CONFIG"
 id = "01ab23cd4567890efabc1234567890de"
 
+[env.staging]
+vars.ACCESS_AUD = "https://access.greenbro.co.za"
+vars.ACCESS_ISS = "https://access.greenbro.co.za"
+vars.ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_id = "4e2ddbf4-a12d-4a36-8e10-4a1a57f41d38"
+database_name = "GREENBRO_DB"
+
+[[env.staging.r2_buckets]]
+binding = "REPORTS"
+bucket_name = "greenbro-reports"
+
+[[env.staging.r2_buckets]]
+binding = "BRAND"
+bucket_name = "greenbro-brand"
+
+[[env.staging.r2_buckets]]
+binding = "ARCHIVE"
+bucket_name = "greenbro-archive"
+
+[[env.staging.kv_namespaces]]
+binding = "CONFIG"
+id = "01ab23cd4567890efabc1234567890de"
+
 [env.production]
 vars.ACCESS_AUD = "https://access.greenbro.co.za"
 vars.ACCESS_ISS = "https://access.greenbro.co.za"
