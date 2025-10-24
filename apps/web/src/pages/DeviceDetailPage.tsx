@@ -55,6 +55,40 @@ interface DeviceBaselineSummary {
 
 type BaselineCompareResult = ReturnType<typeof useBaselineCompare>;
 
+type BaselineSuggestionKind = 'delta_t' | 'cop' | 'current';
+
+interface BaselineSuggestResponse {
+  hasBaseline: boolean;
+  kind?: BaselineSuggestionKind;
+  sampleN?: number;
+  units?: string;
+  suggestions?: {
+    drift_warn: number;
+    drift_crit: number;
+    note?: string;
+  };
+  recent?: {
+    coverage?: number;
+    baseline?: { p25: number; p75: number; median: number };
+  };
+}
+
+const SUGGESTION_CONFIG = [
+  { kind: 'delta_t', label: 'ΔT', warnKey: 'baseline_drift_warn', critKey: 'baseline_drift_crit' },
+  { kind: 'cop', label: 'COP', warnKey: 'baseline_drift_warn_cop', critKey: 'baseline_drift_crit_cop' },
+  {
+    kind: 'current',
+    label: 'Current',
+    warnKey: 'baseline_drift_warn_current',
+    critKey: 'baseline_drift_crit_current',
+  },
+] as const satisfies ReadonlyArray<{
+  kind: BaselineSuggestionKind;
+  label: string;
+  warnKey: string;
+  critKey: string;
+}>;
+
 export function DeviceDetailPage(): JSX.Element {
   const { deviceId } = useParams<{ deviceId: string }>();
   const [range, setRange] = useState<'24h' | '7d'>('24h');
@@ -64,11 +98,84 @@ export function DeviceDetailPage(): JSX.Element {
   const [baselineSaving, setBaselineSaving] = useState(false);
   const [baselineMutating, setBaselineMutating] = useState<string | null>(null);
   const [drawerTab, setDrawerTab] = useState<'checks' | 'baselines'>('checks');
+  const [suggestion, setSuggestion] = useState<BaselineSuggestResponse | null>(null);
   const [xDomain, setXDomain] = useState<[number, number] | null>(null);
   const focusAppliedRef = useRef(false);
   const deltaChartRef = useRef<SeriesChartHandle>(null);
   const copChartRef = useRef<SeriesChartHandle>(null);
   const currentChartRef = useRef<SeriesChartHandle>(null);
+
+  const applySetting = useCallback(
+    async (key: string, value: string) => {
+      await apiFetch(
+        '/api/admin/settings',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ key, value }),
+        },
+        authFetch,
+      );
+    },
+    [authFetch],
+  );
+
+  const fetchSuggest = useCallback(
+    async (kind: BaselineSuggestionKind) => {
+      if (!deviceId) {
+        return;
+      }
+      try {
+        const params = new URLSearchParams({ kind, period: '7 days' });
+        const response = await authFetch(
+          `/api/devices/${deviceId}/baseline-suggest?${params.toString()}`,
+          {},
+        );
+        if (!response.ok) {
+          throw new Error(`Failed with status ${response.status}`);
+        }
+        const json = (await response.json()) as BaselineSuggestResponse;
+        const payload: BaselineSuggestResponse = { ...json, kind: json.kind ?? kind };
+        setSuggestion(payload);
+        if (payload.hasBaseline && payload.suggestions) {
+          const label = kind === 'delta_t' ? 'ΔT' : kind === 'cop' ? 'COP' : 'Current';
+          const units = payload.units ?? '';
+          toast.info(
+            `Suggested ${label} drift: warn ${payload.suggestions.drift_warn}${units} / crit ${payload.suggestions.drift_crit}${units}`,
+          );
+        } else if (!payload.hasBaseline) {
+          toast.warning('No baseline found for suggestions');
+        } else {
+          toast.warning('No recent telemetry for suggestions');
+        }
+      } catch (error) {
+        console.error('Failed to fetch baseline suggestions', error);
+        toast.error('Failed to load suggestions');
+      }
+    },
+    [authFetch, deviceId],
+  );
+
+  const handleApplySuggestion = useCallback(
+    async (config: (typeof SUGGESTION_CONFIG)[number], warn: number, crit: number) => {
+      try {
+        await Promise.all([
+          applySetting(config.warnKey, String(warn)),
+          applySetting(config.critKey, String(crit)),
+        ]);
+        toast.success(`Applied ${config.label} drift thresholds`);
+      } catch (error) {
+        console.error('Failed to apply drift thresholds', error);
+        toast.error('Failed to apply thresholds');
+      }
+    },
+    [applySetting],
+  );
+
+  // Ensure lint recognises usage when passed to child components.
+  void suggestion;
+  void fetchSuggest;
+  void handleApplySuggestion;
 
   if (!deviceId) {
     return <Navigate to="/devices" replace />;
@@ -1203,6 +1310,11 @@ function DeviceDetailCharts({
         {drawerTab === 'baselines' ? (
           <>
             <h4 className="drawer-title">Baselines</h4>
+            <BaselineSuggestionControls
+              suggestion={suggestion}
+              onSuggest={fetchSuggest}
+              onApply={handleApplySuggestion}
+            />
             <BaselineManagerList
               baselines={baselines}
               onSetGolden={onBaselineSetGolden}
@@ -1235,6 +1347,69 @@ function DeviceDetailCharts({
           </>
         )}
       </aside>
+    </div>
+  );
+}
+
+interface BaselineSuggestionControlsProps {
+  suggestion: BaselineSuggestResponse | null;
+  onSuggest: (kind: BaselineSuggestionKind) => void;
+  onApply: (config: (typeof SUGGESTION_CONFIG)[number], warn: number, crit: number) => Promise<void>;
+}
+
+function BaselineSuggestionControls({ suggestion, onSuggest, onApply }: BaselineSuggestionControlsProps) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+      {SUGGESTION_CONFIG.map((config) => {
+        const isActive = suggestion?.kind === config.kind;
+        const suggestions = isActive ? suggestion?.suggestions : undefined;
+        const hasSuggestion = Boolean(isActive && suggestion?.hasBaseline && suggestions);
+        const noBaseline = isActive && suggestion?.hasBaseline === false;
+        const noSamples = isActive && suggestion?.hasBaseline && !suggestions;
+        const units = isActive && suggestion?.units ? suggestion.units : '';
+        const coverage = isActive ? suggestion?.recent?.coverage : undefined;
+        const coveragePct = typeof coverage === 'number' && Number.isFinite(coverage)
+          ? Math.round(coverage * 100)
+          : 0;
+
+        return (
+          <div key={config.kind} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-outline" onClick={() => onSuggest(config.kind)}>
+                {`Suggest ${config.label} thresholds`}
+              </button>
+              {noBaseline ? (
+                <span className="muted" style={{ fontSize: '0.8rem' }}>
+                  No baseline found
+                </span>
+              ) : null}
+              {noSamples ? (
+                <span className="muted" style={{ fontSize: '0.8rem' }}>
+                  No recent telemetry in window
+                </span>
+              ) : null}
+            </div>
+            {hasSuggestion && suggestions ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: '0.85rem' }}>
+                <span>
+                  Recent coverage: {coveragePct}% in-range · Drift warn {suggestions.drift_warn}
+                  {units} / crit {suggestions.drift_crit}
+                  {units}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-pill"
+                  onClick={() => {
+                    void onApply(config, suggestions.drift_warn, suggestions.drift_crit);
+                  }}
+                >
+                  Apply
+                </button>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }

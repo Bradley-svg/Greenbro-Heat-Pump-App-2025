@@ -660,6 +660,29 @@ svg.spark.crit {
   color: var(--gb-ink);
 }
 
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kpi-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.kpi-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .card--error {
   border-color: rgba(239, 68, 68, 0.4);
   background: rgba(254, 226, 226, 0.75);

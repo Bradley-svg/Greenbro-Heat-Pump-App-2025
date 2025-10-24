@@ -2,6 +2,51 @@ import { useQuery } from '@tanstack/react-query';
 import { Sparkline } from '@components/charts/Sparkline';
 import { useBurnNotifier } from '@hooks/useBurnNotifier';
 
+type DeviationCounters = Record<'delta_t' | 'cop' | 'current', { warning: number; critical: number }>;
+
+function useDeviationCounters() {
+  return useQuery<DeviationCounters>({
+    queryKey: ['ops:dev-counters'],
+    queryFn: async () => {
+      const response = await fetch('/api/ops/deviation-counters');
+      if (!response.ok) {
+        throw new Error('Failed to load deviation counters');
+      }
+      return (await response.json()) as DeviationCounters;
+    },
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  });
+}
+
+function DeviationCountersCard() {
+  const { data } = useDeviationCounters();
+  if (!data) {
+    return null;
+  }
+
+  const renderKind = (kind: 'delta_t' | 'cop' | 'current') => {
+    const label = kind === 'delta_t' ? 'ΔT' : kind === 'cop' ? 'COP' : 'Current';
+    const entry = data[kind];
+    return (
+      <div className="kpi" key={kind}>
+        <div className="kpi-title">{label}</div>
+        <div className="kpi-row">
+          <span className="chip warn">Warn {entry.warning}</span>
+          <span className="chip crit">Crit {entry.critical}</span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      <h3 style={{ marginTop: 0 }}>Baseline deviations (24 h)</h3>
+      <div className="kpi-grid">{renderKind('delta_t')}{renderKind('cop')}{renderKind('current')}</div>
+    </div>
+  );
+}
+
 export default function OpsPage(){
   useBurnNotifier({ refetchMs: 60000 }); // keep in sync with wallboard cadence
   const slo = useQuery({
@@ -47,16 +92,19 @@ export default function OpsPage(){
         <small className="muted">Target ≤ 1.0× (SLO 99.9%)</small>
       </div>
 
-      <div className="card" style={{ padding:12 }}>
-        <h3 style={{ marginTop:0 }}>Baseline deviation (last 24 h)</h3>
-        <div style={{ display:'flex', gap:8 }}>
-          <span className={`chip ${baseline.critical > 0 ? 'crit' : 'ok'}`}>
-            Critical {baseline.critical}
-          </span>
-          <span className={`chip ${baseline.warning > 0 ? 'warn' : 'ok'}`}>
-            Warning {baseline.warning}
-          </span>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))', gap:12 }}>
+        <div className="card" style={{ padding:12 }}>
+          <h3 style={{ marginTop:0 }}>Baseline deviation (last 24 h)</h3>
+          <div style={{ display:'flex', gap:8 }}>
+            <span className={`chip ${baseline.critical > 0 ? 'crit' : 'ok'}`}>
+              Critical {baseline.critical}
+            </span>
+            <span className={`chip ${baseline.warning > 0 ? 'warn' : 'ok'}`}>
+              Warning {baseline.warning}
+            </span>
+          </div>
         </div>
+        <DeviationCountersCard />
       </div>
 
       <div className="card">

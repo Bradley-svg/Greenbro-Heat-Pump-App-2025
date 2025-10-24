@@ -1304,6 +1304,102 @@ app.get('/api/devices/:id/baselines', async (c) => {
   return c.json(baselines);
 });
 
+app.get('/api/devices/:id/baseline-suggest', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const deviceId = c.req.param('id');
+  const kind = (c.req.query('kind') as 'delta_t' | 'cop' | 'current' | null) ?? 'delta_t';
+  const period = c.req.query('period') ?? '7 days';
+
+  const base = await c.env.DB.prepare(
+    `SELECT sample_json FROM device_baselines
+     WHERE device_id=? AND kind=?
+     ORDER BY is_golden DESC, created_at DESC LIMIT 1`,
+  )
+    .bind(deviceId, kind)
+    .first<{ sample_json: string }>();
+
+  if (!base) {
+    return c.json({ hasBaseline: false, kind }, 200);
+  }
+
+  let sample: any = null;
+  try {
+    sample = JSON.parse(base.sample_json ?? '{}');
+  } catch (error) {
+    console.warn('baseline sample parse error', error);
+  }
+
+  const p25 = sample?.p25;
+  const p75 = sample?.p75;
+  const baselineMedian = sample?.median;
+
+  if (typeof p25 !== 'number' || typeof p75 !== 'number' || typeof baselineMedian !== 'number') {
+    return c.json({ hasBaseline: false, kind }, 200);
+  }
+
+  const column = kind === 'delta_t' ? 'delta_t' : kind;
+  const rows = await c.env.DB.prepare(
+    `SELECT ${column} AS v
+     FROM telemetry
+     WHERE device_id=? AND ts >= datetime('now', ?)
+     ORDER BY ts DESC
+     LIMIT 10000`,
+  )
+    .bind(deviceId, `-${period}`)
+    .all<{ v: number | null }>();
+
+  const values = (rows.results ?? [])
+    .map((row) => row.v)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+
+  if (!values.length) {
+    return c.json({ hasBaseline: true, kind, sampleN: 0 }, 200);
+  }
+
+  const drifts = values.map((value) => Math.abs(value - baselineMedian)).sort((a, b) => a - b);
+  const percentile = (p: number) => {
+    if (!drifts.length) {
+      return 0;
+    }
+    const index = Math.floor(p * drifts.length);
+    const clampedIndex = Math.max(0, Math.min(drifts.length - 1, index));
+    return drifts[clampedIndex];
+  };
+
+  const warnRaw = percentile(0.9);
+  const critRaw = percentile(0.99);
+
+  const warnFixed = kind === 'current' ? warnRaw.toFixed(1) : warnRaw.toFixed(2);
+  const critFixed = kind === 'current' ? critRaw.toFixed(1) : critRaw.toFixed(2);
+
+  let inside = 0;
+  for (const value of values) {
+    if (value >= p25 && value <= p75) {
+      inside += 1;
+    }
+  }
+
+  const coverage = values.length ? inside / values.length : 0;
+  const units = kind === 'cop' ? '' : kind === 'current' ? 'A' : '°C';
+
+  return c.json({
+    hasBaseline: true,
+    kind,
+    sampleN: values.length,
+    units,
+    suggestions: {
+      drift_warn: Number(warnFixed),
+      drift_crit: Number(critFixed),
+      note: "Coverage thresholds unchanged; consider tightening/loosening based on recent coverage below.",
+    },
+    recent: {
+      coverage,
+      baseline: { p25, p75, median: baselineMedian },
+    },
+  });
+});
+
 app.patch('/api/devices/:id/baselines/:baselineId', async (c) => {
   const auth = c.get('auth');
   requireRole(auth, ['admin', 'ops']);
@@ -1839,6 +1935,42 @@ app.post('/api/ingest/:profileId', async (c) => {
     const duration = Date.now() - started;
     await logOpsMetric(c.env.DB, '/api/ingest', status, duration, deviceId);
   }
+});
+
+app.get('/api/ops/deviation-counters', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const rows = await c.env.DB.prepare(
+    `SELECT
+      COALESCE(json_extract(meta_json, '$.kind'), 'delta_t') AS kind,
+      severity,
+      COUNT(*) AS n
+    FROM alerts
+    WHERE type='baseline_deviation'
+      AND state IN ('open','ack')
+      AND opened_at >= datetime('now','-24 hours')
+    GROUP BY kind, severity`,
+  ).all<{ kind: string | null; severity: string | null; n: number }>();
+
+  const counters: Record<'delta_t' | 'cop' | 'current', { warning: number; critical: number }> = {
+    delta_t: { warning: 0, critical: 0 },
+    cop: { warning: 0, critical: 0 },
+    current: { warning: 0, critical: 0 },
+  };
+
+  for (const row of rows.results ?? []) {
+    const kind = (row.kind ?? 'delta_t') as 'delta_t' | 'cop' | 'current';
+    if (!counters[kind]) {
+      continue;
+    }
+    const severity = row.severity === 'critical' ? 'critical' : row.severity === 'warning' ? 'warning' : null;
+    if (!severity) {
+      continue;
+    }
+    counters[kind][severity] = row.n;
+  }
+
+  return c.json(counters);
 });
 
 app.post('/api/ops/recompute-baselines', async (c) => {
