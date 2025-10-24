@@ -189,21 +189,6 @@ export function DeviceDetailPage(): JSX.Element {
     };
   }, [baselineMutating, baselineSuggestion, fetchSuggest, handleApplySuggestion]);
 
-  const {
-    busyId: baselineDrawerBusyId,
-    suggestion: baselineDrawerSuggestion,
-    onSuggest: baselineDrawerOnSuggest,
-    onApply: baselineDrawerOnApply,
-    summary: baselineDrawerSummary,
-  } = baselineDrawerState;
-
-  // Touch derived values to work around @typescript-eslint false positives with JSX usage.
-  void baselineDrawerBusyId;
-  void baselineDrawerSuggestion;
-  void baselineDrawerOnSuggest;
-  void baselineDrawerOnApply;
-  void baselineDrawerSummary;
-
   if (!deviceId) {
     return <Navigate to="/devices" replace />;
   }
@@ -758,6 +743,8 @@ export function DeviceDetailPage(): JSX.Element {
           onSelectWindow={handleSelectWindow}
           onSetBaseline={handleSetBaseline}
           baselineSaving={baselineSaving}
+          baselines={baselines}
+          baselineDrawer={baselineDrawerState}
           baselineBandBuilder={baselineBandBuilder}
           deltaChartRef={deltaChartRef}
           copChartRef={copChartRef}
@@ -768,6 +755,10 @@ export function DeviceDetailPage(): JSX.Element {
           drawerTab={drawerTab}
           onDrawerTabChange={setDrawerTab}
           onDomainChange={onDomainChange}
+          onBaselineSetGolden={handleBaselineSetGolden}
+          onBaselineLabelChange={handleBaselineLabelChange}
+          onBaselineExpiryChange={handleBaselineExpiryChange}
+          onBaselineDelete={handleBaselineDelete}
         />
             <table className="data-table data-table--compact">
               <thead>
@@ -915,6 +906,14 @@ interface DeviceDetailChartsProps {
   onSelectWindow: (window: CommissioningWindowSummary) => void;
   onSetBaseline: () => void;
   baselineSaving: boolean;
+  baselines: DeviceBaselineSummary[];
+  baselineDrawer: {
+    busyId: string | null;
+    suggestion: BaselineSuggestResponse | null;
+    onSuggest: (kind: BaselineSuggestionKind) => void;
+    onApply: (config: (typeof SUGGESTION_CONFIG)[number], warn: number, crit: number) => Promise<void>;
+    summary: string | null;
+  };
   baselineBandBuilder?: BandOverlayBuilder;
   deltaChartRef: RefObject<SeriesChartHandle>;
   copChartRef: RefObject<SeriesChartHandle>;
@@ -925,6 +924,10 @@ interface DeviceDetailChartsProps {
   drawerTab: 'checks' | 'baselines';
   onDrawerTabChange: (tab: 'checks' | 'baselines') => void;
   onDomainChange: (domain: [number, number] | null) => void;
+  onBaselineSetGolden: (baselineId: string) => void;
+  onBaselineLabelChange: (baselineId: string, label: string | null) => void;
+  onBaselineExpiryChange: (baselineId: string, expiresAt: string | null) => void;
+  onBaselineDelete: (baselineId: string) => void;
 }
 
 function DeviceDetailCharts({
@@ -942,16 +945,22 @@ function DeviceDetailCharts({
   onSelectWindow,
   onSetBaseline,
   baselineSaving,
+  baselines,
+  baselineDrawer,
   baselineBandBuilder,
   deltaChartRef,
   copChartRef,
-    currentChartRef,
-    deltaCompare,
+  currentChartRef,
+  deltaCompare,
   copCompare,
   currentCompare,
   drawerTab,
   onDrawerTabChange,
   onDomainChange,
+  onBaselineSetGolden,
+  onBaselineLabelChange,
+  onBaselineExpiryChange,
+  onBaselineDelete,
 }: DeviceDetailChartsProps) {
   const hasSeries = delta.length > 0 || cop.length > 0 || current.length > 0;
   const measurementWindows: TimeWindow[] = measurementWindow
@@ -1078,6 +1087,13 @@ function DeviceDetailCharts({
 
   const hasWindows = windows.length > 0;
   const baselineLabel = baselineSaving ? 'Saving…' : 'Set as baseline';
+  const {
+    busyId: baselineDrawerBusyId,
+    suggestion: baselineDrawerSuggestion,
+    onSuggest: baselineDrawerOnSuggest,
+    onApply: baselineDrawerOnApply,
+    summary: baselineDrawerSummary,
+  } = baselineDrawer;
 
   return (
     <div
@@ -1341,10 +1357,10 @@ function DeviceDetailCharts({
             ) : null}
             <BaselineManagerList
               baselines={baselines}
-              onSetGolden={handleBaselineSetGolden}
-              onLabelChange={handleBaselineLabelChange}
-              onExpiryChange={handleBaselineExpiryChange}
-              onDelete={handleBaselineDelete}
+              onSetGolden={onBaselineSetGolden}
+              onLabelChange={onBaselineLabelChange}
+              onExpiryChange={onBaselineExpiryChange}
+              onDelete={onBaselineDelete}
               busyId={baselineDrawerBusyId}
             />
             {baselineDrawerBusyId ? (
