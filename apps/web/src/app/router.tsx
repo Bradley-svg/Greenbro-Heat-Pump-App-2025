@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { Suspense, lazy, type ReactNode } from 'react';
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './AppLayout';
 import { useAuth } from './providers/AuthProvider';
@@ -9,13 +9,18 @@ import { LoginPage } from '@pages/LoginPage';
 import OverviewPage from '@pages/overview/OverviewPage';
 import CompactDashboard from '@pages/overview/CompactDashboard';
 import { DevicesPage } from '@pages/DevicesPage';
-import { DeviceDetailPage } from '@pages/DeviceDetailPage';
 import { AlertsPage } from '@pages/AlertsPage';
 import { CommissioningPage } from '@pages/CommissioningPage';
 import OpsPage from '@pages/ops/OpsPage';
 import { AdminPage } from '@pages/AdminPage';
 import { UnauthorizedPage } from '@pages/UnauthorizedPage';
-import { AdminArchivePage } from '@pages/AdminArchivePage';
+const DeviceDetailPage = lazy(() =>
+  import('@pages/DeviceDetailPage').then((module) => ({ default: module.DeviceDetailPage })),
+);
+
+const AdminArchivePage = lazy(() =>
+  import('@pages/AdminArchivePage').then((module) => ({ default: module.AdminArchivePage })),
+);
 
 export function AppRouter(): JSX.Element {
   return (
@@ -52,9 +57,11 @@ export function AppRouter(): JSX.Element {
           <Route
             path="devices/:deviceId"
             element={
-              <RoleGuard roles={ROUTE_ROLES.deviceDetail}>
-                <DeviceDetailPage />
-              </RoleGuard>
+              <Suspense fallback={<FullScreenLoader />}>
+                <RoleGuard roles={ROUTE_ROLES.deviceDetail}>
+                  <DeviceDetailPage />
+                </RoleGuard>
+              </Suspense>
             }
           />
           <Route
@@ -90,7 +97,14 @@ export function AppRouter(): JSX.Element {
             }
           >
             <Route index element={<AdminPage />} />
-            <Route path="archive" element={<AdminArchivePage />} />
+            <Route
+              path="archive"
+              element={
+                <Suspense fallback={<FullScreenLoader />}>
+                  <AdminArchivePage />
+                </Suspense>
+              }
+            />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/overview" replace />} />

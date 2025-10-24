@@ -37,6 +37,45 @@ function getFetchImpl(fetchImpl?: typeof fetch): typeof fetch {
   return fetchImpl ?? fetch;
 }
 
+function clearStoredSession() {
+  try {
+    localStorage.removeItem('greenbro-auth');
+  } catch {
+    /* ignore */
+  }
+}
+
+let handlingUnauthorized = false;
+
+async function handleRefreshFailure(fetchImpl: typeof fetch): Promise<void> {
+  if (handlingUnauthorized) {
+    return;
+  }
+  handlingUnauthorized = true;
+
+  setAuthToken(null);
+  clearStoredSession();
+
+  try {
+    await fetchImpl(resolveApiUrl('/api/auth/logout'), {
+      method: 'POST',
+      credentials: 'include',
+    });
+  } catch {
+    /* ignore */
+  }
+
+  if (typeof window !== 'undefined') {
+    try {
+      if (window.location.pathname !== '/login') {
+        window.location.replace('/login');
+      }
+    } catch {
+      /* ignore navigation errors */
+    }
+  }
+}
+
 // ----- refresh helper (used by authFetch retry) -----
 export async function tryRefresh(fetchImpl?: typeof fetch): Promise<boolean> {
   const runFetch = getFetchImpl(fetchImpl);
@@ -60,6 +99,7 @@ export async function tryRefresh(fetchImpl?: typeof fetch): Promise<boolean> {
   try {
     const response = await runFetch('/api/auth/refresh', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken }),
     });
@@ -152,6 +192,7 @@ export async function authFetch(
     if (tok2) headers2.set('Authorization', `Bearer ${tok2}`);
     return runFetch(input, { ...init, headers: headers2 });
   }
+  await handleRefreshFailure(runFetch);
   return first;
 }
 
