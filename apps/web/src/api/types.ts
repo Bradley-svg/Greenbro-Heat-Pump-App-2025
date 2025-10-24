@@ -81,6 +81,9 @@ export interface Alert {
   createdAt: string;
   acknowledgedAt?: string;
   acknowledgedBy?: string;
+  type?: string;
+  coverage?: number | null;
+  drift?: number | null;
 }
 
 export interface AcknowledgeAlertInput {

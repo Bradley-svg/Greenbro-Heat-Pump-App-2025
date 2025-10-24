@@ -13,6 +13,9 @@ export interface AlertWindow {
   start: number;
   end: number;
   kind: OverlayKind;
+  type?: string;
+  coverage?: number | null;
+  drift?: number | null;
 }
 
 export type TimeWindow = { start: number; end: number; kind?: 'info' | 'warn' | 'crit' };

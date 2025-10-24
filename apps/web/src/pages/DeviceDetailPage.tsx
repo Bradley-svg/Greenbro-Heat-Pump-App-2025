@@ -483,7 +483,12 @@ export function DeviceDetailPage(): JSX.Element {
         }
         const severity = typeof entry.severity === 'string' ? entry.severity.toLowerCase() : '';
         const kind: AlertWindow['kind'] = severity === 'critical' ? 'crit' : 'warn';
-        return { start, end, kind } satisfies AlertWindow;
+        const type = typeof entry.type === 'string' ? entry.type : undefined;
+        const coverage = Number.isFinite(Number(entry.coverage))
+          ? Number(entry.coverage)
+          : null;
+        const drift = Number.isFinite(Number(entry.drift)) ? Number(entry.drift) : null;
+        return { start, end, kind, type, coverage, drift } satisfies AlertWindow;
       })
       .filter((window): window is AlertWindow => Boolean(window));
   }, [alertWindowsQuery.data]);
@@ -850,6 +855,63 @@ function DeviceDetailCharts({
     : Math.max(320, Math.min(720, window.innerWidth - 120));
   const chartHeight = 160;
   const hasOverlays = overlays.length > 0;
+  const baselineOverlay = useMemo<AlertWindow | null>(() => {
+    let latest: AlertWindow | null = null;
+    for (const window of overlays) {
+      if (window.type !== 'baseline_deviation') {
+        continue;
+      }
+      if (!latest || window.end > latest.end) {
+        latest = window;
+      }
+    }
+    return latest;
+  }, [overlays]);
+
+  const baselineSummary = useMemo(() => {
+    if (!baselineOverlay) {
+      return null as { coverage: number | null; drift: number | null } | null;
+    }
+    const coverage =
+      typeof baselineOverlay.coverage === 'number' && Number.isFinite(baselineOverlay.coverage)
+        ? Math.round(baselineOverlay.coverage * 100)
+        : null;
+    const drift =
+      typeof baselineOverlay.drift === 'number' && Number.isFinite(baselineOverlay.drift)
+        ? baselineOverlay.drift
+        : null;
+    return { coverage, drift };
+  }, [baselineOverlay]);
+
+  const baselineMetaText = useMemo(() => {
+    if (!baselineSummary) {
+      return '';
+    }
+    const parts: string[] = [];
+    if (baselineSummary.coverage != null) {
+      parts.push(`${baselineSummary.coverage}% in-range`);
+    }
+    if (baselineSummary.drift != null) {
+      const signed = baselineSummary.drift >= 0
+        ? `+${baselineSummary.drift.toFixed(1)}`
+        : baselineSummary.drift.toFixed(1);
+      parts.push(`drift ${signed}°C`);
+    }
+    return parts.length ? ` — ${parts.join('; ')}` : '';
+  }, [baselineSummary]);
+
+  const focusBaseline = useCallback(() => {
+    if (!baselineOverlay) {
+      return;
+    }
+    const end = baselineOverlay.end;
+    const lookback = 10 * 60 * 1000;
+    const start = Math.max(baselineOverlay.start, end - lookback);
+    const domain: [number, number] = [start, end];
+    deltaChartRef.current?.setXDomain(domain);
+    copChartRef.current?.setXDomain(domain);
+    currentChartRef.current?.setXDomain(domain);
+  }, [baselineOverlay, copChartRef, currentChartRef, deltaChartRef]);
 
   const deltaBandOverlayBuilder = useMemo<BandOverlayBuilder | undefined>(
     () => mergeBandBuilders(createBandOverlayBuilder(deltaRolling), baselineBandBuilder),
@@ -955,6 +1017,16 @@ function DeviceDetailCharts({
                 },
               ]}
             />
+            {baselineOverlay ? (
+              <button
+                type="button"
+                className="pill pill--glow"
+                onClick={focusBaseline}
+                title="Focus the charts on the most recent baseline deviation"
+              >
+                {`Baseline deviation${baselineMetaText}`}
+              </button>
+            ) : null}
             <button
               type="button"
               className={`pill${hasOverlays ? ' is-active' : ''}`}

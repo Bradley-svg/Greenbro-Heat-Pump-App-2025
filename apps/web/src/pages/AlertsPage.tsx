@@ -6,6 +6,23 @@ import { useAuthFetch } from '@hooks/useAuthFetch';
 import { useToast } from '@app/providers/ToastProvider';
 import { useReadOnly } from '@hooks/useReadOnly';
 
+type AlertRow = {
+  alert_id: string;
+  device_id: string;
+  type?: string | null;
+  severity?: string | null;
+  state?: string | null;
+  opened_at?: string | null;
+  closed_at?: string | null;
+  ack_at?: string | null;
+  ack_by?: string | null;
+  title?: string | null;
+  description?: string | null;
+  meta_json?: string | null;
+  coverage?: number | null;
+  drift?: number | null;
+};
+
 function FocusIncidentsPill(): JSX.Element {
   const [params, setParams] = useSearchParams();
   const active = params.get('severity') === 'critical' && params.get('state') === 'open';
@@ -38,7 +55,15 @@ export function AlertsPage(): JSX.Element {
   const { ro } = useReadOnly();
   const alertsQuery = useQuery({
     queryKey: ['alerts'],
-    queryFn: () => apiFetch<Alert[]>('/api/alerts', undefined, authFetch),
+    queryFn: async () => {
+      const raw = await apiFetch<unknown>('/api/alerts', undefined, authFetch);
+      const rows = Array.isArray(raw)
+        ? raw
+        : Array.isArray((raw as { results?: unknown[] })?.results)
+          ? (raw as { results: unknown[] }).results
+          : [];
+      return rows.map((entry) => mapAlertRow(entry as Partial<AlertRow>));
+    },
     refetchInterval: 15_000,
   });
 
@@ -103,7 +128,7 @@ export function AlertsPage(): JSX.Element {
               </header>
               <p className="alert-card__description">{alert.description ?? 'No description provided.'}</p>
               <footer className="alert-card__footer">
-                <span className="alert-card__meta">Device {alert.deviceId}</span>
+                <span className="alert-card__meta">{formatAlertMeta(alert)}</span>
                 {alert.state === 'acknowledged' ? (
                   <span className="alert-card__ack">Acked</span>
                 ) : (
@@ -123,4 +148,93 @@ export function AlertsPage(): JSX.Element {
       )}
     </div>
   );
+}
+
+function mapAlertRow(row: Partial<AlertRow>): Alert {
+  const severityRaw = (row.severity ?? '').toLowerCase();
+  const severity: Alert['severity'] =
+    severityRaw === 'critical' ? 'critical' : severityRaw === 'major' || severityRaw === 'warning' ? 'warning' : 'info';
+
+  const stateRaw = (row.state ?? '').toLowerCase();
+  const state: Alert['state'] =
+    stateRaw === 'ack' || stateRaw === 'acknowledged'
+      ? 'acknowledged'
+      : stateRaw === 'closed'
+        ? 'closed'
+        : 'open';
+
+  const createdAt = row.opened_at ?? row.closed_at ?? new Date().toISOString();
+  const id = row.alert_id ?? `${row.device_id ?? 'alert'}-${createdAt}`;
+  const description = row.description ?? (row.type === 'baseline_deviation' ? 'Deviation from baseline coverage thresholds.' : undefined);
+  const meta = parseMetaFromRow(row);
+
+  return {
+    id,
+    deviceId: row.device_id ?? '—',
+    title: row.title ?? formatAlertTitle(row.type),
+    description,
+    severity,
+    state,
+    createdAt,
+    acknowledgedAt: row.ack_at ?? undefined,
+    acknowledgedBy: row.ack_by ?? undefined,
+    type: row.type ?? undefined,
+    coverage: meta.coverage,
+    drift: meta.drift,
+  };
+}
+
+function formatAlertTitle(type?: string | null): string {
+  if (!type) {
+    return 'Alert';
+  }
+  return type
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function parseMetaFromRow(row: Partial<AlertRow>): { coverage: number | null; drift: number | null } {
+  let coverage: number | null = typeof row.coverage === 'number' && Number.isFinite(row.coverage) ? row.coverage : null;
+  let drift: number | null = typeof row.drift === 'number' && Number.isFinite(row.drift) ? row.drift : null;
+
+  if ((coverage == null || !Number.isFinite(coverage)) || (drift == null || !Number.isFinite(drift))) {
+    try {
+      const meta = row.meta_json ? JSON.parse(row.meta_json) : null;
+      if (meta) {
+        if (coverage == null && typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
+          coverage = meta.coverage;
+        }
+        if (drift == null && typeof meta.drift === 'number' && Number.isFinite(meta.drift)) {
+          drift = meta.drift;
+        }
+      }
+    } catch (error) {
+      console.warn('failed to parse alert meta', error);
+    }
+  }
+
+  coverage =
+    coverage != null && Number.isFinite(coverage) ? Math.min(1, Math.max(0, coverage)) : null;
+
+  drift = drift != null && Number.isFinite(drift) ? drift : null;
+
+  return { coverage, drift };
+}
+
+function formatAlertMeta(alert: Alert): string {
+  if (alert.type === 'baseline_deviation') {
+    const parts: string[] = [];
+    if (typeof alert.coverage === 'number' && Number.isFinite(alert.coverage)) {
+      parts.push(`${Math.round(alert.coverage * 100)}% in-range`);
+    }
+    if (typeof alert.drift === 'number' && Number.isFinite(alert.drift)) {
+      const signed = alert.drift >= 0 ? `+${alert.drift.toFixed(1)}` : alert.drift.toFixed(1);
+      parts.push(`drift ${signed}°C`);
+    }
+    const detail = parts.length ? ` — ${parts.join('; ')}` : '';
+    return `Baseline deviation${detail}`;
+  }
+  return `Device ${alert.deviceId}`;
 }

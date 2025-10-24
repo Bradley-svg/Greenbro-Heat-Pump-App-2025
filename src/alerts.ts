@@ -1,5 +1,6 @@
 import type { Env } from './types/env';
 import type { TelemetryPayload } from './types';
+import { evaluateBaselineDeviation } from './lib/baseline-eval';
 
 export type Severity = 'minor' | 'major' | 'critical';
 
@@ -78,6 +79,81 @@ export async function evaluateTelemetryAlerts(env: Env, t: TelemetryPayload, d: 
   await trackShortCycling(env, deviceId, ts, compRunning);
 }
 
+export async function evaluateBaselineAlerts(env: Env, deviceId: string, now = Date.now()) {
+  const result = await evaluateBaselineDeviation(env, deviceId, now).catch((error) => {
+    console.error('baseline deviation eval error', error);
+    return null;
+  });
+  if (!result) return;
+
+  const rule = 'baseline_deviation';
+  const tsISO = new Date(result.now).toISOString();
+  const meta = { coverage: result.coverage, drift: result.drift };
+
+  if (await isMaintenanceActive(env, deviceId, tsISO)) {
+    await resetDwell(env, deviceId, rule);
+    return;
+  }
+
+  const severity: Severity | null =
+    result.level === 'crit' ? 'critical' : result.level === 'warn' ? 'major' : null;
+
+  if (!severity) {
+    await closeBaselineAlert(env, deviceId, tsISO, rule, result.dwellS, meta);
+    return;
+  }
+
+  const state = await loadState(env, deviceId, rule);
+  if (state.cooldown_until_ts && Date.parse(state.cooldown_until_ts) > result.now) {
+    await saveState(env, deviceId, rule, {
+      ...state,
+      last_trigger_ts: tsISO,
+    });
+    return;
+  }
+
+  let dwellStart = state.dwell_start_ts ? Date.parse(state.dwell_start_ts) : null;
+  if (!state.dwell_start_ts) {
+    dwellStart = result.now;
+    await saveState(env, deviceId, rule, {
+      ...state,
+      dwell_start_ts: tsISO,
+      last_trigger_ts: tsISO,
+    });
+  } else {
+    await saveState(env, deviceId, rule, {
+      ...state,
+      last_trigger_ts: tsISO,
+    });
+  }
+
+  dwellStart = dwellStart ?? result.now;
+  const dwellMet = result.now - dwellStart >= result.dwellS * 1000;
+  if (!dwellMet) return;
+
+  const open = await env.DB.prepare(
+    "SELECT alert_id, severity FROM alerts WHERE device_id=? AND type=? AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
+  )
+    .bind(deviceId, rule)
+    .first<{ alert_id: string; severity: string }>();
+
+  const metaJson = JSON.stringify(meta);
+  if (!open) {
+    const alertId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO alerts (alert_id, device_id, type, severity, state, opened_at, meta_json)
+       VALUES (?, ?, ?, ?, 'open', ?, ?)`,
+    )
+      .bind(alertId, deviceId, rule, severity, tsISO, metaJson)
+      .run();
+    return;
+  }
+
+  await env.DB.prepare('UPDATE alerts SET severity=?, meta_json=? WHERE alert_id=?')
+    .bind(severity, metaJson, open.alert_id)
+    .run();
+}
+
 export async function openAlertIfNeeded(
   env: Env,
   deviceId: string,
@@ -137,6 +213,45 @@ async function trackShortCycling(env: Env, deviceId: string, tsISO: string, comp
   if (data.toggles.length >= THRESH.shortCycleToggles) {
     await maybeOpen(env, deviceId, tsISO, rule, 'major', { toggles: data.toggles.length });
   }
+}
+
+async function closeBaselineAlert(
+  env: Env,
+  deviceId: string,
+  tsISO: string,
+  rule: string,
+  dwellS: number,
+  meta: Record<string, unknown>,
+) {
+  const open = await env.DB.prepare(
+    "SELECT alert_id FROM alerts WHERE device_id=? AND type=? AND state IN ('open','ack') ORDER BY opened_at DESC LIMIT 1",
+  )
+    .bind(deviceId, rule)
+    .first<{ alert_id: string }>();
+  const st = await loadState(env, deviceId, rule);
+
+  if (!open) {
+    if (st.dwell_start_ts || st.last_trigger_ts) {
+      await saveState(env, deviceId, rule, {
+        ...st,
+        dwell_start_ts: null,
+        last_trigger_ts: null,
+      });
+    }
+    return;
+  }
+
+  await env.DB.prepare("UPDATE alerts SET state='closed', closed_at=?, meta_json=? WHERE alert_id=?")
+    .bind(tsISO, JSON.stringify(meta), open.alert_id)
+    .run();
+
+  const cooldownUntil = new Date(Date.parse(tsISO) + Math.max(dwellS, 0) * 1000).toISOString();
+  await saveState(env, deviceId, rule, {
+    ...st,
+    dwell_start_ts: null,
+    last_trigger_ts: null,
+    cooldown_until_ts: cooldownUntil,
+  });
 }
 
 export async function evaluateHeartbeatAlerts(env: Env, nowISO: string) {
@@ -260,7 +375,7 @@ async function maybeClose(env: Env, deviceId: string, tsISO: string, rule: RuleN
   });
 }
 
-async function loadState(env: Env, deviceId: string, rule: RuleName) {
+async function loadState(env: Env, deviceId: string, rule: string) {
   const row = await env.DB.prepare(
     'SELECT last_trigger_ts, dwell_start_ts, cooldown_until_ts, suppress FROM alert_state WHERE device_id=? AND rule=?',
   )
@@ -281,7 +396,7 @@ async function loadState(env: Env, deviceId: string, rule: RuleName) {
   );
 }
 
-async function resetDwell(env: Env, deviceId: string, rule: RuleName) {
+async function resetDwell(env: Env, deviceId: string, rule: string) {
   const st = await loadState(env, deviceId, rule);
   if (st.dwell_start_ts || st.last_trigger_ts) {
     await saveState(env, deviceId, rule, {
@@ -295,7 +410,7 @@ async function resetDwell(env: Env, deviceId: string, rule: RuleName) {
 async function saveState(
   env: Env,
   deviceId: string,
-  rule: RuleName,
+  rule: string,
   st: {
     last_trigger_ts: string | null;
     dwell_start_ts: string | null;
@@ -316,7 +431,7 @@ async function saveState(
     .run();
 }
 
-async function setSuppress(env: Env, deviceId: string, rule: RuleName, shouldSuppress: boolean) {
+async function setSuppress(env: Env, deviceId: string, rule: string, shouldSuppress: boolean) {
   const st = await loadState(env, deviceId, rule);
   const suppress = shouldSuppress ? 1 : 0;
   if (st.suppress === suppress) {

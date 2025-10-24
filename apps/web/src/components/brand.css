@@ -402,6 +402,17 @@ body {
   color: #ffffff;
 }
 
+.pill--glow {
+  border-color: rgba(168, 85, 247, 0.8);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.4), 0 0 18px rgba(168, 85, 247, 0.45);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(168, 85, 247, 0.25));
+  color: #f8fafc;
+}
+
+.pill--glow:hover {
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.55), 0 0 22px rgba(168, 85, 247, 0.6);
+}
+
 /* Chart tooltip */
 .chart-tip {
   fill: #0b0e12;

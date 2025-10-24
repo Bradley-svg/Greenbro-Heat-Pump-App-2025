@@ -12,7 +12,12 @@ import type {
 import type { IngestMessage, TelemetryPayload } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO, DeviceDO } from './do';
-import { evaluateTelemetryAlerts, evaluateHeartbeatAlerts, type Derived } from './alerts';
+import {
+  evaluateTelemetryAlerts,
+  evaluateHeartbeatAlerts,
+  evaluateBaselineAlerts,
+  type Derived,
+} from './alerts';
 import { BRAND, brandCss, brandEmail, brandLogoSvg, brandLogoWhiteSvg, brandLogoMonoSvg } from './brand';
 import {
   renderer,
@@ -2638,7 +2643,27 @@ app.get('/api/alerts', async (c) => {
 
   sql += ' GROUP BY a.alert_id ORDER BY a.opened_at DESC LIMIT 200';
   const rows = await DB.prepare(sql).bind(...bind).all();
-  const results = rows.results ?? [];
+  const results = (rows.results ?? []).map((row) => {
+    if (row?.type !== 'baseline_deviation') {
+      return row;
+    }
+    let coverage: number | null = null;
+    let drift: number | null = null;
+    try {
+      const meta = row.meta_json ? JSON.parse(row.meta_json) : null;
+      if (meta) {
+        if (typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
+          coverage = meta.coverage;
+        }
+        if (typeof meta.drift === 'number' && Number.isFinite(meta.drift)) {
+          drift = meta.drift;
+        }
+      }
+    } catch (error) {
+      console.warn('failed to parse baseline meta', error);
+    }
+    return { ...row, coverage, drift };
+  });
   const isClientOnly =
     auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
   const out = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
@@ -6005,6 +6030,7 @@ export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: E
         }>();
       const derived: Derived = latest ?? { deltaT: null, thermalKW: null, cop: null, copQuality: null };
       await evaluateTelemetryAlerts(env, telemetry, derived);
+      await evaluateBaselineAlerts(env, telemetry.deviceId, Date.now());
     } catch (error) {
       console.error('alert evaluation error', error);
     }

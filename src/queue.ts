@@ -161,12 +161,26 @@ async function dispatchTelemetry(
   const id = env.DeviceState.idFromName(telemetry.deviceId);
   const stub = env.DeviceState.get(id);
 
+  const appendBody = {
+    t: Date.now(),
+    delta_t: derived.deltaT,
+    cop: derived.cop,
+    current: telemetry.metrics.compCurrentA ?? null,
+  };
+
   ctx.waitUntil(
-    stub.fetch('https://do/telemetry', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ telemetry, derived, receivedAt }),
-    }),
+    Promise.all([
+      stub.fetch('https://do/telemetry', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ telemetry, derived, receivedAt }),
+      }),
+      stub.fetch('https://do/append', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(appendBody),
+      }),
+    ]).then(() => undefined),
   );
 }
 

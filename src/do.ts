@@ -1,6 +1,14 @@
 import type { Env, DurableObjectState } from './types/env';
 import type { TelemetryPayload } from './types';
 
+type BaselineSample = { t: number; dt?: number; cop?: number; cur?: number };
+type BaselineDeviationState = {
+  buf: BaselineSample[];
+  lastDev: { state: 'ok' | 'warn' | 'crit'; since: number } | null;
+};
+
+const WINDOW_MS = 10 * 60 * 1000;
+
 type AuditPayload = Record<string, unknown>;
 
 interface TelemetrySnapshot {
@@ -44,6 +52,7 @@ export class DeviceStateDO {
   private readonly state: DurableObjectState;
   private readonly env: Env;
   private snapshot: DeviceStateSnapshot = { commands: [] };
+  private baseline: BaselineDeviationState = { buf: [], lastDev: null };
   private readonly ready: Promise<void>;
 
   constructor(state: DurableObjectState, env: Env) {
@@ -71,11 +80,30 @@ export class DeviceStateDO {
       });
     }
 
+    if (request.method === 'GET' && url.pathname === '/window') {
+      return new Response(JSON.stringify(this.baseline.buf), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
     if (request.method === 'POST' && url.pathname === '/telemetry') {
       const body = (await request.json()) as TelemetrySnapshot;
       this.snapshot.telemetry = body;
       await this.persist();
       return new Response(null, { status: 204 });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/append') {
+      const { t, delta_t: deltaT, cop, current } = (await request.json()) as {
+        t: number;
+        delta_t?: number | null;
+        cop?: number | null;
+        current?: number | null;
+      };
+      if (typeof t === 'number' && Number.isFinite(t)) {
+        this.appendSample(t, { delta_t: deltaT, cop, current });
+      }
+      return new Response('ok');
     }
 
     if (request.method === 'POST' && url.pathname === '/heartbeat') {
@@ -153,6 +181,23 @@ export class DeviceStateDO {
 
   private async persist(): Promise<void> {
     await this.state.storage.put('snapshot', this.snapshot);
+  }
+
+  private appendSample(
+    t: number,
+    v: { delta_t?: number | null; cop?: number | null; current?: number | null },
+  ) {
+    const item: BaselineSample = {
+      t,
+      dt: v.delta_t ?? undefined,
+      cop: v.cop ?? undefined,
+      cur: v.current ?? undefined,
+    };
+    this.baseline.buf.push(item);
+    const cutoff = t - WINDOW_MS;
+    while (this.baseline.buf.length && this.baseline.buf[0].t < cutoff) {
+      this.baseline.buf.shift();
+    }
   }
 
   private async getLatestState(deviceId: string): Promise<Record<string, unknown>> {
