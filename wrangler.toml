@@ -1,4 +1,5 @@
 name = "greenbro-heat-pump-app-2025"
+account_id = "0bee3514d14fef8558ccaf0bf2b72eb1"
 main = "dist/app.mjs"
 compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
@@ -54,12 +55,19 @@ bucket_name = "greenbro-archive"
 
 [[kv_namespaces]]
 binding = "CONFIG"
-id = "e9509ebd5bbb487e8e1698db35bfa439"
+id = "14ee885ce1ab45738c2619bd56a11361"
+
+[[queues.producers]]
+binding = "INGEST_Q"
+queue = "ingest-q"
+
+[[queues.consumers]]
+queue = "ingest-q"
 
 [env.staging]
-vars.ACCESS_AUD = "https://access.greenbro.co.za"
-vars.ACCESS_ISS = "https://access.greenbro.co.za"
-vars.ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
+vars.ACCESS_AUD = "ea60442dfdb5aafba9682114c7017423a599f2a829f52c6c613610944e6a6bdd"
+vars.ACCESS_ISS = "https://bradleyayliffl.cloudflareaccess.com"
+vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/cert"
 vars.BUILD_SHA = "__BUILD_SHA__"
 vars.BUILD_DATE = "__BUILD_DATE__"
 vars.BUILD_SOURCE = "__BUILD_SOURCE__"
@@ -71,7 +79,7 @@ database_name = "GREENBRO_DB_STAGING"
 
 [[env.staging.r2_buckets]]
 binding = "REPORTS"
-bucket_name = "greenbro-reports-staging"
+bucket_name = "greenbro-reports"
 
 [[env.staging.r2_buckets]]
 binding = "BRAND"
@@ -92,29 +100,29 @@ bindings = [
 ]
 
 [env.production]
-vars.ACCESS_AUD = "https://access.greenbro.co.za"
-vars.ACCESS_ISS = "https://access.greenbro.co.za"
-vars.ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
+vars.ACCESS_AUD = "ea60442dfdb5aafba9682114c7017423a599f2a829f52c6c613610944e6a6bdd"
+vars.ACCESS_ISS = "https://bradleyayliffl.cloudflareaccess.com"
+vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/cert"
 vars.BUILD_SHA = "__BUILD_SHA__"
 vars.BUILD_DATE = "__BUILD_DATE__"
 vars.BUILD_SOURCE = "__BUILD_SOURCE__"
 
 [[env.production.d1_databases]]
 binding = "DB"
-database_id = "a2b6e0f1-2a3b-4c5d-9e6f-1234567890ab"
-database_name = "greenbro-db-prod"
+database_id = "4e2ddbf4-a12d-4a36-8e10-4a1a57f41d38"
+database_name = "GREENBRO_DB"
 
 [[env.production.r2_buckets]]
 binding = "REPORTS"
-bucket_name = "greenbro-reports-prod"
+bucket_name = "greenbro-reports"
 
 [[env.production.r2_buckets]]
 binding = "BRAND"
-bucket_name = "greenbro-brand-prod"
+bucket_name = "greenbro-brand"
 
 [[env.production.r2_buckets]]
 binding = "ARCHIVE"
-bucket_name = "greenbro-archive-prod"
+bucket_name = "greenbro-archive"
 
 [[env.production.kv_namespaces]]
 binding = "CONFIG"
