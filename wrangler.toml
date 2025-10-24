@@ -66,12 +66,12 @@ vars.BUILD_SOURCE = "__BUILD_SOURCE__"
 
 [[env.staging.d1_databases]]
 binding = "DB"
-database_id = "4e2ddbf4-a12d-4a36-8e10-4a1a57f41d38"
-database_name = "GREENBRO_DB"
+database_id = "9ab01dd1-441c-452c-b439-55d9aa5938ab"
+database_name = "GREENBRO_DB_STAGING"
 
 [[env.staging.r2_buckets]]
 binding = "REPORTS"
-bucket_name = "greenbro-reports"
+bucket_name = "greenbro-reports-staging"
 
 [[env.staging.r2_buckets]]
 binding = "BRAND"
