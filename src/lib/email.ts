@@ -17,7 +17,7 @@ export async function getSignedR2Url(bucket: R2Bucket, key: string, ttlSeconds =
     }
   }
   const encodedKey = encodeURIComponent(key);
-  return `https://reports.local/${encodedKey}`;
+  return `https://reports.greenbro.co.za/${encodedKey}`;
 }
 
 export async function emailCommissioning(

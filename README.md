@@ -41,6 +41,7 @@ wrangler secret put ACCESS_JWKS_URL
 wrangler secret put ACCESS_AUD
 wrangler secret put WRITE_MIN_C
 wrangler secret put WRITE_MAX_C
+wrangler secret put JWT_SECRET
 
 # Start the local dev server
 npm run dev
@@ -54,6 +55,8 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
 * **API Shield** – Once an OpenAPI schema exists for these endpoints, enable schema validation on `/api/*` to reject malformed telemetry before it reaches the worker.
 * **Telemetry precision** – The consumer rounds temperatures to `0.1 °C` and power/COP values to `0.01`. Adjust the rounding logic in `src/queue.ts` if the charts require a different precision.
 * **Rollups & retention** – Consider adding a secondary consumer or a cron-triggered worker to aggregate one-minute rollups and archive telemetry older than 90 days to the `greenbro-reports` R2 bucket. The SQL schema separates `latest_state` (fast reads) from `telemetry` (history) to support this.
+* **Release gate parity** – Use `npm run dev:gate` to start `wrangler dev` alongside the Vite preview server (`npm run -w apps/web preview`) just like the CI release gate workflow. Run Playwright checks from a separate shell once both services report ready.
+* **Worker bundle size** – After `npm run build`, execute `npm run worker:size` to confirm no generated module exceeds Cloudflare's 1&nbsp;MiB limit. The command lists each module's size and fails if a file crosses the threshold, prompting additional code splitting.
 
 
 ## Alerts & Commissioning Enhancements

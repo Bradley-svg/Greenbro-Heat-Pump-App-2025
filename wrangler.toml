@@ -91,4 +91,4 @@ bucket_name = "greenbro-archive-prod"
 
 [[env.production.kv_namespaces]]
 binding = "CONFIG"
-id = "kv_settings_prod_…"
+id = "f8d2c3a4b5e6471c9d0ef123456789ab"

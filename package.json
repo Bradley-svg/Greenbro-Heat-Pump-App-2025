@@ -9,7 +9,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "migrate": "wrangler d1 migrations apply GREENBRO_DB",
-    "build": "esbuild src/app.tsx --bundle --format=esm --outfile=dist/app.mjs --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
+    "build": "esbuild src/app.tsx --bundle --format=esm --outdir=dist --out-extension:.js=.mjs --splitting --chunk-names=chunks/[name]-[hash] --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
     "copy-guard": "node scripts/copy-guard.mjs",
     "brand-audit": "node scripts/brand-audit.mjs",
     "lint": "eslint src apps/web/src apps/web/vite.config.ts",
@@ -23,7 +23,9 @@
     "contrast:budget": "node tools/contrast-budget.mjs",
     "lh:ci": "npx @lhci/cli autorun --config=./lighthouserc.json",
     "quality": "npm run axe:pdf && npm run contrast:budget",
-    "release:gate": "npm run copy-guard && npm run brand-audit && npm run lint && npm run typecheck"
+    "release:gate": "npm run copy-guard && npm run brand-audit && npm run lint && npm run typecheck",
+    "worker:size": "node scripts/check-worker-size.mjs",
+    "dev:gate": "node scripts/preview-stack.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1",

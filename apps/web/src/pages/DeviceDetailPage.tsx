@@ -423,7 +423,6 @@ export function DeviceDetailPage(): JSX.Element {
     ]);
   }, [deviceId, queryClient]);
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineSetGolden = useCallback(
     async (baselineId: string) => {
       setBaselineMutating(baselineId);
@@ -449,7 +448,6 @@ export function DeviceDetailPage(): JSX.Element {
     [authFetch, deviceId, invalidateBaselineQueries],
   );
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineLabelChange = useCallback(
     async (baselineId: string, label: string | null) => {
       const normalized = label?.trim() ?? '';
@@ -481,7 +479,6 @@ export function DeviceDetailPage(): JSX.Element {
     [authFetch, baselines, deviceId, invalidateBaselineQueries],
   );
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineExpiryChange = useCallback(
     async (baselineId: string, expiresAt: string | null) => {
       const current = baselines.find((baseline) => baseline.baseline_id === baselineId);
@@ -511,7 +508,6 @@ export function DeviceDetailPage(): JSX.Element {
     [authFetch, baselines, deviceId, invalidateBaselineQueries],
   );
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- consumed via JSX props
   const handleBaselineDelete = useCallback(
     async (baselineId: string) => {
       setBaselineMutating(baselineId);

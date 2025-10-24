@@ -17,14 +17,14 @@ export async function renderDeviceLabels(
     page.drawText(`Device ID: ${opts.device_id}`, { x: 52, y: y + 76, size: 11, font });
     page.drawText(`Site: ${opts.site_id ?? '—'}`, { x: 52, y: y + 60, size: 10, font });
     page.drawText(`Profile: ${opts.profile ?? '—'}`, { x: 52, y: y + 44, size: 10, font });
-    page.drawText('Support: ops@greenbro.example', {
+    page.drawText('Support: support@greenbro.co.za', {
       x: 52,
       y: y + 28,
       size: 10,
       font,
       color: rgb(0.62, 0.69, 0.75),
     });
-    page.drawText(`View: https://app.greenbro.example/devices/${opts.device_id}`, {
+    page.drawText(`View: https://dash.greenbro.co.za/devices/${opts.device_id}`, {
       x: 52,
       y: y + 12,
       size: 9,
