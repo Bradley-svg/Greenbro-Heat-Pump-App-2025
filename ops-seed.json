@@ -1,0 +1,31 @@
+{
+  "opsWebhookUrl": "https://hooks.slack.com/services/T000/B000/XXXX",
+  "commissioning": {
+    "deltaTMin": 5,
+    "flowMinLpm": 6,
+    "copMin": 2.5,
+    "reportRecipients": [
+      "qa@greenbro.example",
+      "ops@greenbro.example"
+    ]
+  },
+  "sloContacts": [
+    {
+      "clientId": "demo-client",
+      "uptimeTarget": 0.995,
+      "ingestTarget": 0.99,
+      "copTarget": 2.8,
+      "reportRecipients": [
+        "alice@customer.example",
+        "bob@customer.example"
+      ]
+    }
+  ],
+  "accessBindings": [
+    {
+      "subject": "ops-team@example.com",
+      "roles": ["ops"],
+      "clientIds": ["demo-client"]
+    }
+  ]
+}

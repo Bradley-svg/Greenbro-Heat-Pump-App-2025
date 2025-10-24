@@ -460,7 +460,8 @@ test.describe('App flows', () => {
 
     await page.goto(new URL('/commissioning', baseURL!).toString());
     await expect(page.getByRole('heading', { name: 'Commissioning' })).toBeVisible();
-    await expect(page.getByText('Device HP-500')).toBeVisible();
+    // Check the device ID in the session list
+    await expect(page.getByRole('button', { name: /HP-500.*/ })).toBeVisible();
 
     const reqPromise = page.waitForRequest('**/api/commissioning/finalise');
     await page.getByRole('button', { name: 'Finalise – Passed' }).click();
@@ -479,7 +480,7 @@ test.describe('App flows', () => {
     const downloadLink = page.getByRole('link', { name: 'Download' }).first();
     await expect(downloadLink).toHaveAttribute(
       'href',
-      /api\/admin\/archive\/download\?key=archive%2Ftelemetry-2024-01-01\.ndjson.*gz=1.*gzl=6/,
+      /api\/admin\/archive\/export\?table=telemetry.*format=ndjson.*gz=1.*gzl=6/,
     );
   });
 

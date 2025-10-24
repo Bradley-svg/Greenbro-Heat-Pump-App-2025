@@ -13,7 +13,6 @@ routes = [
 command = "npm run build"
 
 [vars]
-# Place default dev/test vars here (do not store secrets).
 BUILD_SHA = "__BUILD_SHA__"
 BUILD_DATE = "__BUILD_DATE__"
 BUILD_SOURCE = "__BUILD_SOURCE__"
@@ -47,7 +46,7 @@ new_classes = ["DeviceDO"]
 [[d1_databases]]
 binding = "DB"
 database_name = "GREENBRO_DB"
-database_id = "97f4f0bb-6f9f-4a47-9ca3-bf1f9601b111"
+database_id = "4e2ddbf4-a12d-4a36-8e10-4a1a57f41d38"
 
 [[r2_buckets]]
 binding = "REPORTS"
@@ -66,11 +65,9 @@ binding = "CONFIG"
 id = "01ab23cd4567890efabc1234567890de"
 
 [env.production]
-vars = {
-  ACCESS_AUD = "https://access.greenbro.co.za",
-  ACCESS_ISS = "https://access.greenbro.co.za",
-  ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
-}
+vars.ACCESS_AUD = "https://access.greenbro.co.za"
+vars.ACCESS_ISS = "https://access.greenbro.co.za"
+vars.ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
 
 [[env.production.d1_databases]]
 binding = "DB"
