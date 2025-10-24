@@ -10,7 +10,7 @@ import type {
   CommissioningPayload,
   IncidentReportV2Payload,
 } from './pdf';
-import type { IngestMessage, TelemetryPayload, Role } from './types';
+import type { HeartbeatPayload, IngestMessage, TelemetryPayload, Role } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO, DeviceDO } from './do';
 import {
@@ -115,6 +115,25 @@ const DEV_ALLOWED_ORIGINS = Object.freeze([
 
 const DEV_BYPASS_AUTH: AccessContext = { sub: 'dev-bypass', roles: ['admin', 'ops'], clientIds: [] };
 
+function parseWriteLimit(value: string, key: 'WRITE_MIN_C' | 'WRITE_MAX_C'): number {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${key} is not configured`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${key} is invalid`);
+  }
+  return parsed;
+}
+
+function getWriteLimits(env: Env): { minC: number; maxC: number } {
+  return {
+    minC: parseWriteLimit(env.WRITE_MIN_C, 'WRITE_MIN_C'),
+    maxC: parseWriteLimit(env.WRITE_MAX_C, 'WRITE_MAX_C'),
+  };
+}
+
 type NormalizedAuthUser = {
   id: string;
   email: string;
@@ -205,68 +224,69 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function normalizeAuthUser(entry: unknown): Promise<NormalizedAuthUser | null> {
-  if (!entry || typeof entry !== 'object') {
+type AuthUserRow = {
+  user_id: string;
+  email: string;
+  name: string | null;
+  password_hash: string;
+  roles_json: string | null;
+  client_ids_json: string | null;
+  disabled_at: string | null;
+};
+
+function parseJsonArray(raw: string | null): unknown {
+  if (!raw || raw.trim().length === 0) {
+    return [];
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (error) {
+    console.warn('Failed to parse auth_users JSON', error);
+    return [];
+  }
+}
+
+function mapAuthUserRow(row: AuthUserRow): NormalizedAuthUser | null {
+  const id = typeof row.user_id === 'string' ? row.user_id.trim() : '';
+  const email = typeof row.email === 'string' ? row.email.trim().toLowerCase() : '';
+  if (!id || !email || row.disabled_at) {
     return null;
   }
 
-  const record = entry as Record<string, unknown>;
-  const idRaw = record.id ?? record.userId ?? record.uid;
-  const emailRaw = record.email;
-  const nameRaw = record.name;
-  const rolesRaw = record.roles ?? record.role;
-  const clientsRaw = record.clientIds ?? record.clients;
-  const passHashRaw = record.password_hash ?? record.passwordHash;
-  const passRaw = record.password;
-
-  const id = typeof idRaw === 'string' && idRaw.trim().length > 0 ? idRaw.trim() : null;
-  const email = typeof emailRaw === 'string' && emailRaw.trim().length > 0 ? emailRaw.trim().toLowerCase() : null;
-  if (!id || !email) {
-    return null;
-  }
-
-  let passwordHash: string | null = typeof passHashRaw === 'string' && passHashRaw ? passHashRaw : null;
-  if (!passwordHash && typeof passRaw === 'string' && passRaw) {
-    passwordHash = await hashPassword(passRaw);
-  }
+  const passwordHash = typeof row.password_hash === 'string' ? row.password_hash.trim().toLowerCase() : '';
   if (!passwordHash) {
     return null;
   }
 
-  const roles = normalizeRoleList(rolesRaw);
+  const roles = normalizeRoleList(parseJsonArray(row.roles_json));
   if (roles.length === 0) {
     return null;
   }
 
-  const name = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : undefined;
-  const clientIds = normalizeClientIds(clientsRaw);
+  const clientIds = normalizeClientIds(parseJsonArray(row.client_ids_json));
+  const name = typeof row.name === 'string' && row.name.trim().length > 0 ? row.name.trim() : undefined;
 
   return {
     id,
     email,
     name,
-    passwordHash: passwordHash.toLowerCase(),
+    passwordHash,
     roles,
     clientIds,
   };
 }
 
 async function loadAuthUsers(DB: D1Database): Promise<NormalizedAuthUser[]> {
-  const raw = await getSetting(DB, 'auth_users');
-  if (!raw) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    const resolved = await Promise.all(parsed.map((entry) => normalizeAuthUser(entry)));
-    return resolved.filter((user): user is NormalizedAuthUser => user !== null);
-  } catch (error) {
-    console.warn('Failed to parse auth_users setting', error);
-    return [];
-  }
+  const rows = await DB.prepare(
+    `SELECT user_id, email, name, password_hash, roles_json, client_ids_json, disabled_at
+     FROM auth_users
+     WHERE disabled_at IS NULL`,
+  ).all<AuthUserRow>();
+
+  const entries = rows.results ?? [];
+  return entries
+    .map((row) => mapAuthUserRow(row))
+    .filter((user): user is NormalizedAuthUser => user !== null);
 }
 
 async function authenticateUser(DB: D1Database, email: string, password: string): Promise<NormalizedAuthUser | null> {
@@ -1131,8 +1151,7 @@ async function dispatchDeviceCommand(
     actor,
     command: commandBody,
     limits: {
-      minC: Number(c.env.WRITE_MIN_C ?? '40'),
-      maxC: Number(c.env.WRITE_MAX_C ?? '60'),
+      ...getWriteLimits(c.env),
     },
   };
   const payload = JSON.stringify(envelope);
@@ -2778,15 +2797,12 @@ app.post('/api/heartbeat/:profileId', async (c) => {
   const ok = await verifyDeviceKey(c.env.DB, deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
   if (!ok) return c.text('Forbidden', 403);
 
-  await c.env.DB.prepare('INSERT INTO heartbeat (ts, device_id, rssi) VALUES (?, ?, ?)')
-    .bind(timestamp, deviceId, rssi)
-    .run();
-  await c.env.DB.prepare('UPDATE devices SET last_seen_at=?, online=1 WHERE device_id=?')
-    .bind(timestamp, deviceId)
-    .run();
+  const profileId = c.req.param('profileId');
+  const heartbeat: HeartbeatPayload = { deviceId, ts: timestamp, rssi: rssi ?? undefined };
 
-  // Let the scheduled job handle “no heartbeat” open/close; we’re only refreshing last_seen_at here.
-  return c.json({ ok: true });
+  await c.env.INGEST_Q.send({ type: 'heartbeat', profileId, body: heartbeat });
+
+  return c.json({ ok: true, queued: true });
 });
 
 app.get('/api/commissioning/settings', async (c) => {
@@ -6219,7 +6235,6 @@ async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | n
 }
 
 async function isDuplicate(DB: D1Database, key: string) {
-  await DB.exec(`CREATE TABLE IF NOT EXISTS idem (k TEXT PRIMARY KEY, ts TEXT)`);
   const hit = await DB.prepare('SELECT k FROM idem WHERE k=?').bind(key).first();
   if (hit) return true;
   await DB.prepare("INSERT OR IGNORE INTO idem (k, ts) VALUES (?, datetime('now'))").bind(key).run();

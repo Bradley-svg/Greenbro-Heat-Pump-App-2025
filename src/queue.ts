@@ -191,6 +191,8 @@ async function handleHeartbeat(
   receivedAt: string,
 ) {
   await env.DB.batch([
+    env.DB.prepare('INSERT INTO heartbeat (ts, device_id, rssi) VALUES (?, ?, ?)')
+      .bind(heartbeat.ts, heartbeat.deviceId, heartbeat.rssi ?? null),
     env.DB.prepare('UPDATE devices SET online = 1, last_seen_at = ? WHERE device_id = ?').bind(
       heartbeat.ts,
       heartbeat.deviceId,

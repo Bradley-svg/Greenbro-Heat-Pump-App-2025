@@ -521,6 +521,8 @@ function createEnv(): Env & { REPORTS: MockR2Bucket; DB: MockD1Database } {
     ACCESS_JWKS: 'https://example.com/jwks',
     JWT_SECRET: 'secret',
     DEV_AUTH_BYPASS: '1',
+    WRITE_MIN_C: '40',
+    WRITE_MAX_C: '60',
   } satisfies Env;
   return Object.assign(env, { REPORTS: bucket, BRAND: bucket, ARCHIVE: bucket, DB: db }) as Env & {
     REPORTS: MockR2Bucket;

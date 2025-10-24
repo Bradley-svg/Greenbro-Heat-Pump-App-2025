@@ -52,6 +52,18 @@ export function preflight(env: EnvRecord | Env): void {
     }
   }
 
+  for (const key of ['WRITE_MIN_C', 'WRITE_MAX_C'] as const) {
+    const raw = record[key];
+    if (raw === undefined || raw === null || raw === '') {
+      miss.push(`VAR:${key}`);
+      continue;
+    }
+    const value = typeof raw === 'number' ? raw : Number(String(raw));
+    if (!Number.isFinite(value)) {
+      miss.push(`VAR:${key}`);
+    }
+  }
+
   if (miss.length > 0) {
     const why = `Preflight failed: missing ${miss.join(', ')}`;
     throw new Response(why, { status: 503 });

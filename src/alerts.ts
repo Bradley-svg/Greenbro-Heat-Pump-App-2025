@@ -158,7 +158,6 @@ async function trackShortCycling(env: Env, deviceId: string, tsISO: string, comp
   const now = Date.parse(tsISO);
   const windowMs = THRESH.shortCycleWindowSec * 1000;
 
-  await env.DB.exec('CREATE TABLE IF NOT EXISTS short_cycle_buf (device_id TEXT PRIMARY KEY, data TEXT)');
   const row = await env.DB.prepare('SELECT data FROM short_cycle_buf WHERE device_id=?')
     .bind(deviceId)
     .first<{ data: string }>();

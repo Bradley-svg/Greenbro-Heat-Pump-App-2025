@@ -34,8 +34,8 @@ export interface Env {
   ACCESS_JWKS?: string;
   ACCESS_JWKS_URL?: string;
   JWT_SECRET: string;
-  WRITE_MIN_C?: string;
-  WRITE_MAX_C?: string;
+  WRITE_MIN_C: string;
+  WRITE_MAX_C: string;
   DEV_AUTH_BYPASS?: string;
   CORS_ALLOWED_ORIGINS?: string;
   REPORTS_PUBLIC_BASE_URL?: string;

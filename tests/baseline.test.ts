@@ -429,6 +429,8 @@ function createEnv(
     ACCESS_JWKS: 'https://example.com/jwks.json',
     JWT_SECRET: 'secret',
     DEV_AUTH_BYPASS: '1',
+    WRITE_MIN_C: '40',
+    WRITE_MAX_C: '60',
   } satisfies Env;
 }
 
