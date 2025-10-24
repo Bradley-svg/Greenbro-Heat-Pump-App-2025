@@ -31,7 +31,7 @@ export interface Env {
   // Configuration
   ACCESS_AUD: string;
   ACCESS_ISS: string;
-  ACCESS_JWKS?: string;
+  ACCESS_JWKS: string;
   ACCESS_JWKS_URL?: string;
   JWT_SECRET: string;
   WRITE_MIN_C: string;

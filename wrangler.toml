@@ -38,8 +38,8 @@ new_classes = ["DeviceDO"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "GREENBRO_DB"
-database_id = "4e2ddbf4-a12d-4a36-8e10-4a1a57f41d38"
+database_name = "GREENBRO_DB_STAGING"
+database_id = "9ab01dd1-441c-452c-b439-55d9aa5938ab"
 
 [[r2_buckets]]
 binding = "REPORTS"
@@ -91,7 +91,7 @@ bucket_name = "greenbro-archive"
 
 [[env.staging.kv_namespaces]]
 binding = "CONFIG"
-id = "e9509ebd5bbb487e8e1698db35bfa439"
+id = "14ee885ce1ab45738c2619bd56a11361"
 
 [env.staging.durable_objects]
 bindings = [
@@ -100,7 +100,7 @@ bindings = [
 ]
 
 [env.production]
-vars.ACCESS_AUD = "ea60442dfdb5aafba9682114c7017423a599f2a829f52c6c613610944e6a6bdd"
+vars.ACCESS_AUD = "965324499988b497906c949af33be0c457edff0b9ac3edf8d287825b7d7af78d"
 vars.ACCESS_ISS = "https://bradleyayliffl.cloudflareaccess.com"
 vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/cert"
 vars.BUILD_SHA = "__BUILD_SHA__"
@@ -126,7 +126,7 @@ bucket_name = "greenbro-archive"
 
 [[env.production.kv_namespaces]]
 binding = "CONFIG"
-id = "14ee885ce1ab45738c2619bd56a11361"
+id = "e9509ebd5bbb487e8e1698db35bfa439"
 
 [env.production.durable_objects]
 bindings = [

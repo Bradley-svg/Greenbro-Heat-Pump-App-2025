@@ -2,9 +2,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from '@iarna/toml';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WRANGLER_PATH = path.join(ROOT, 'wrangler.toml');
 const ENV_TYPES_PATH = path.join(ROOT, 'src/types/env.ts');
 

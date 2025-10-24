@@ -36,6 +36,7 @@ function createEnv(): Env {
     DEVICE_DO: {} as unknown as Env['DEVICE_DO'],
     ACCESS_AUD: 'greenbro-app',
     ACCESS_ISS: 'greenbro-app',
+    ACCESS_JWKS: 'https://example.test/jwks.json',
     ACCESS_JWKS_URL: 'https://example.test/jwks.json',
     JWT_SECRET: 'rbac-secret',
     WRITE_MIN_C: undefined,
