@@ -688,6 +688,33 @@ svg.spark.crit {
   background: rgba(254, 226, 226, 0.75);
 }
 
+.menu-section {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.menu-section button {
+  border: 1px solid color-mix(in srgb, var(--gb-muted-soft) 45%, transparent);
+  background: color-mix(in srgb, var(--gb-surface, #0f1420) 20%, transparent);
+  color: color-mix(in srgb, var(--gb-muted-soft) 70%, #ffffff 10%);
+  border-radius: 9px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.menu-section button:hover {
+  background: color-mix(in srgb, var(--gb-primary-300) 18%, transparent);
+  color: #ffffff;
+}
+
+.menu-section button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .chip {
   background: var(--gb-chip-bg);
   color: var(--gb-chip-text);
@@ -711,6 +738,12 @@ svg.spark.crit {
   background: rgba(242, 95, 92, 0.18);
   color: #b4231a;
   border-color: rgba(242, 95, 92, 0.45);
+}
+
+.chip.chip-ghost {
+  background: color-mix(in srgb, var(--gb-muted-soft) 18%, transparent);
+  color: color-mix(in srgb, var(--gb-muted) 72%, #ffffff 8%);
+  border-color: color-mix(in srgb, var(--gb-muted-soft) 45%, transparent);
 }
 
 .chip--active {
@@ -973,6 +1006,41 @@ svg.spark.crit {
   border-radius: 2px;
   border: 1px solid var(--gb-border);
   display: inline-block;
+}
+
+.hotlist {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+.hotlist a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--gb-surface, #0f1420) 86%, transparent);
+  color: inherit;
+  border: 1px solid color-mix(in srgb, var(--gb-border) 45%, transparent);
+}
+
+.hotlist a:hover {
+  background: color-mix(in srgb, var(--gb-primary-500) 14%, var(--gb-surface, #0f1420));
+  border-color: color-mix(in srgb, var(--gb-primary-500) 38%, transparent);
+}
+
+.hotlist .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--gb-chart-warn);
+}
+
+.hotlist .dot.crit {
+  background: var(--gb-chart-crit);
 }
 
 /* Neon toast notifications (matches chart palette + brand tokens) */

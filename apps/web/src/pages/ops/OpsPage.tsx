@@ -4,6 +4,18 @@ import { useBurnNotifier } from '@hooks/useBurnNotifier';
 
 type DeviationCounters = Record<'delta_t' | 'cop' | 'current', { warning: number; critical: number }>;
 
+type DeviationHotlistEntry = {
+  device_id: string;
+  kind: 'delta_t' | 'cop' | 'current';
+  any_crit: number;
+  since: string;
+  coverage: number | null;
+  drift: number | null;
+  site_id: string | null;
+  site_name: string | null;
+  region: string | null;
+};
+
 function useDeviationCounters() {
   return useQuery<DeviationCounters>({
     queryKey: ['ops:dev-counters'],
@@ -17,6 +29,62 @@ function useDeviationCounters() {
     refetchInterval: 15_000,
     staleTime: 10_000,
   });
+}
+
+function useDeviationHotlist() {
+  return useQuery<DeviationHotlistEntry[]>({
+    queryKey: ['ops:dev-hotlist'],
+    queryFn: async () => {
+      const response = await fetch('/api/ops/deviation-hotlist?limit=5');
+      if (!response.ok) {
+        throw new Error('Failed to load deviation hotlist');
+      }
+      return (await response.json()) as DeviationHotlistEntry[];
+    },
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  });
+}
+
+function DeviationHotlistCard() {
+  const { data } = useDeviationHotlist();
+  if (!data?.length) {
+    return null;
+  }
+
+  return (
+    <div className="card">
+      <h3>Deviation hotlist (60 min)</h3>
+      <ul className="hotlist">
+        {data.map((entry) => {
+          const key = `${entry.device_id}:${entry.kind}`;
+          const label = entry.site_name ?? entry.site_id ?? entry.device_id;
+          const coverage = typeof entry.coverage === 'number' ? Math.round(entry.coverage * 100) : null;
+          const drift = typeof entry.drift === 'number' ? entry.drift : null;
+          const driftSuffix = entry.kind === 'cop' ? '' : entry.kind === 'current' ? 'A' : '°C';
+          const driftDigits = entry.kind === 'current' ? 1 : 2;
+          return (
+            <li key={key}>
+              <a href={`/devices/${encodeURIComponent(entry.device_id)}?range=1h`}>
+                <span className={`dot ${entry.any_crit ? 'crit' : 'warn'}`} />
+                <strong>{label}</strong>
+                <span className="muted"> · {entry.region ?? '—'}</span>
+                <span className="pill">{entry.kind === 'delta_t' ? 'ΔT' : entry.kind.toUpperCase()}</span>
+                {coverage != null && <span className="chip chip-ghost">{coverage}% in-range</span>}
+                {drift != null && (
+                  <span className="chip chip-ghost">
+                    drift {drift >= 0 ? '+' : ''}
+                    {drift.toFixed(driftDigits)}
+                    {driftSuffix}
+                  </span>
+                )}
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 function DeviationCountersCard() {
@@ -105,6 +173,7 @@ export default function OpsPage(){
           </div>
         </div>
         <DeviationCountersCard />
+        <DeviationHotlistCard />
       </div>
 
       <div className="card">

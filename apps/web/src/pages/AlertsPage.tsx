@@ -106,6 +106,37 @@ export function AlertsPage(): JSX.Element {
     },
   });
 
+  const snoozeMutation = useMutation({
+    mutationFn: async ({ alert, minutes, reason }: { alert: Alert; minutes: number; reason?: string }) => {
+      if (ro) {
+        throw new Error('Read-only mode is active');
+      }
+      return apiFetch<{ ok: boolean; until?: string }>(
+        `/api/alerts/${alert.id}/snooze`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ minutes, reason }),
+        },
+        authFetch,
+      );
+    },
+    onSuccess: (_result, variables) => {
+      toast.success(`Snoozed for ${variables.minutes} min`);
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(
+        message.includes('Read-only')
+          ? 'Read-only mode: writes are temporarily disabled.'
+          : 'Could not snooze alert.',
+      );
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['alerts'] });
+    },
+  });
+
   const alerts = alertsQuery.data ?? [];
   const canPromote = Boolean(user?.roles?.some((role) => role === 'admin' || role === 'ops'));
 
@@ -154,6 +185,10 @@ export function AlertsPage(): JSX.Element {
     },
   });
 
+  const handleSnooze = (alert: Alert, minutes: number) => {
+    snoozeMutation.mutate({ alert, minutes });
+  };
+
   return (
     <div className="page">
       <header className="page__header">
@@ -179,8 +214,11 @@ export function AlertsPage(): JSX.Element {
               </header>
               <p className="alert-card__description">{alert.description ?? 'No description provided.'}</p>
               <footer className="alert-card__footer">
-                <span className="alert-card__meta">{formatAlertMeta(alert)}</span>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span className="alert-card__meta">{formatAlertMeta(alert)}</span>
+                  {renderSnoozedBadge(alert)}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   {canPromote && alert.type === 'baseline_deviation' ? (
                     <button
                       className="app-button app-button--ghost"
@@ -203,6 +241,29 @@ export function AlertsPage(): JSX.Element {
                       {ro ? 'Ack (disabled)' : 'Ack'}
                     </button>
                   )}
+                  <div className="menu-section">
+                    <button
+                      type="button"
+                      onClick={() => handleSnooze(alert, 60)}
+                      disabled={ro || snoozeMutation.isPending}
+                    >
+                      Snooze 1 h
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSnooze(alert, 6 * 60)}
+                      disabled={ro || snoozeMutation.isPending}
+                    >
+                      Snooze 6 h
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSnooze(alert, 24 * 60)}
+                      disabled={ro || snoozeMutation.isPending}
+                    >
+                      Snooze 24 h
+                    </button>
+                  </div>
                 </div>
               </footer>
             </li>
@@ -252,6 +313,23 @@ function mapAlertRow(row: Partial<AlertRow>): Alert {
   };
 }
 
+function renderSnoozedBadge(alert: Alert): JSX.Element | null {
+  const snoozedUntil = alert.meta?.snoozed_until;
+  if (!snoozedUntil) {
+    return null;
+  }
+  const parsed = new Date(snoozedUntil);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  const time = parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return (
+    <span className="chip chip-ghost" title="Snoozed until">
+      Snoozed · {time}
+    </span>
+  );
+}
+
 function formatAlertTitle(type?: string | null): string {
   if (!type) {
     return 'Alert';
@@ -268,11 +346,13 @@ function parseMetaFromRow(row: Partial<AlertRow>): {
   drift: number | null;
   kind: string;
   units: string;
+  snoozed_until: string | null;
 } {
   let coverage: number | null = typeof row.coverage === 'number' && Number.isFinite(row.coverage) ? row.coverage : null;
   let drift: number | null = typeof row.drift === 'number' && Number.isFinite(row.drift) ? row.drift : null;
   let kind = typeof row.meta_kind === 'string' && row.meta_kind ? row.meta_kind : 'delta_t';
   let units = typeof row.meta_units === 'string' ? row.meta_units ?? '' : '';
+  let snoozedUntil: string | null = null;
 
   try {
     const meta = row.meta_json ? JSON.parse(row.meta_json) : null;
@@ -289,6 +369,9 @@ function parseMetaFromRow(row: Partial<AlertRow>): {
       if (typeof meta.units === 'string') {
         units = meta.units;
       }
+      if (typeof meta.snoozed_until === 'string' && meta.snoozed_until) {
+        snoozedUntil = meta.snoozed_until;
+      }
     }
   } catch (error) {
     console.warn('failed to parse alert meta', error);
@@ -300,7 +383,7 @@ function parseMetaFromRow(row: Partial<AlertRow>): {
     units = kind === 'cop' ? '' : kind === 'current' ? 'A' : '°C';
   }
 
-  return { coverage, drift, kind, units };
+  return { coverage, drift, kind, units, snoozed_until: snoozedUntil };
 }
 
 function formatAlertMeta(alert: Alert): string {

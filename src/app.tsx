@@ -1973,6 +1973,51 @@ app.get('/api/ops/deviation-counters', async (c) => {
   return c.json(counters);
 });
 
+app.get('/api/ops/deviation-hotlist', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const rawLimit = Number(c.req.query('limit') ?? 5);
+  const limit = Number.isFinite(rawLimit) ? Math.min(10, Math.max(1, rawLimit)) : 5;
+  const rows = await c.env.DB.prepare(
+    `WITH last_hour AS (
+       SELECT a.device_id,
+              COALESCE(json_extract(a.meta_json,'$.kind'),'delta_t') AS kind,
+              MAX(CASE WHEN a.severity='critical' THEN 1 ELSE 0 END) AS any_crit,
+              MIN(a.opened_at) AS since,
+              json_extract(a.meta_json,'$.coverage') AS coverage,
+              json_extract(a.meta_json,'$.drift') AS drift
+         FROM alerts a
+        WHERE a.type='baseline_deviation'
+          AND a.state IN ('open','ack')
+          AND a.opened_at >= datetime('now','-60 minutes')
+        GROUP BY a.device_id, kind
+     )
+     SELECT lh.device_id, lh.kind, lh.any_crit, lh.since, lh.coverage, lh.drift,
+            s.site_id, s.name AS site_name, s.region
+       FROM last_hour lh
+       LEFT JOIN devices d ON d.device_id = lh.device_id
+       LEFT JOIN sites s ON s.site_id = d.site_id
+      ORDER BY lh.any_crit DESC,
+               (1.0 - COALESCE(lh.coverage, 0.0)) DESC,
+               lh.since ASC
+      LIMIT ?`,
+  )
+    .bind(limit)
+    .all<{
+      device_id: string;
+      kind: 'delta_t' | 'cop' | 'current';
+      any_crit: number;
+      since: string;
+      coverage: number | null;
+      drift: number | null;
+      site_id: string | null;
+      site_name: string | null;
+      region: string | null;
+    }>();
+
+  return c.json(rows.results ?? []);
+});
+
 app.post('/api/ops/recompute-baselines', async (c) => {
   const blocked = await guardWrite(c);
   if (blocked) {
@@ -2723,6 +2768,74 @@ app.post('/api/commissioning/email-report', async (c) => {
     row.r2_key,
   );
   return c.json(res);
+});
+
+app.post('/api/alerts/:id/snooze', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const blocked = await guardWrite(c);
+  if (blocked) {
+    return blocked;
+  }
+  const { id } = c.req.param();
+  const payload = await c.req.json<{ minutes?: number; reason?: string }>().catch(() => null);
+  const minutes = Number(payload?.minutes ?? 60);
+  const reasonRaw = payload?.reason;
+  const reason = typeof reasonRaw === 'string' && reasonRaw.trim().length > 0 ? reasonRaw.trim() : null;
+
+  const alertRow = await c.env.DB.prepare(
+    `SELECT alert_id, device_id, type, meta_json FROM alerts WHERE alert_id=? LIMIT 1`,
+  )
+    .bind(id)
+    .first<{ alert_id: string; device_id: string; type: string; meta_json: string | null }>();
+
+  if (!alertRow) {
+    return c.text('Not Found', 404);
+  }
+
+  const meta = alertRow.meta_json ? JSON.parse(alertRow.meta_json) : {};
+  const kind = typeof meta?.kind === 'string' ? meta.kind : null;
+  const durationMinutes = Number.isFinite(minutes) ? Math.max(5, minutes) : 60;
+  const untilISO = new Date(Date.now() + durationMinutes * 60_000).toISOString();
+
+  await c.env.DB.prepare(
+    `INSERT INTO alert_snoozes(id, device_id, type, kind, until_ts, reason, created_by)
+     VALUES(?,?,?,?,?,?,?)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      alertRow.device_id,
+      alertRow.type,
+      kind,
+      untilISO,
+      reason,
+      auth?.sub ?? auth?.email ?? 'ops',
+    )
+    .run();
+
+  await c.env.DB.prepare(
+    `UPDATE alerts
+        SET state='ack',
+            meta_json = json_set(COALESCE(meta_json,'{}'), '$.snoozed_until', ?)
+      WHERE alert_id=?`,
+  )
+    .bind(untilISO, alertRow.alert_id)
+    .run();
+
+  return c.json({ ok: true, until: untilISO });
+});
+
+app.get('/api/alerts/snoozes', async (c) => {
+  const auth = c.get('auth');
+  requireRole(auth, ['admin', 'ops']);
+  const deviceId = c.req.query('device_id') ?? null;
+  const sql = deviceId
+    ? `SELECT * FROM alert_snoozes WHERE device_id=? AND until_ts > datetime('now') ORDER BY until_ts ASC`
+    : `SELECT * FROM alert_snoozes WHERE until_ts > datetime('now') ORDER BY until_ts ASC LIMIT 100`;
+  const rows = deviceId
+    ? await c.env.DB.prepare(sql).bind(deviceId).all()
+    : await c.env.DB.prepare(sql).all();
+  return c.json(rows.results ?? []);
 });
 
 app.get('/api/alerts', async (c) => {

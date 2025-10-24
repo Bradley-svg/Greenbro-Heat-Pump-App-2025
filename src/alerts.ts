@@ -1,6 +1,7 @@
 import type { Env } from './types/env';
 import type { TelemetryPayload } from './types';
 import { evaluateBaselineDeviation } from './lib/baseline-eval';
+import { isSnoozed } from './lib/snooze';
 
 export type Severity = 'minor' | 'major' | 'critical';
 
@@ -99,6 +100,11 @@ export async function evaluateBaselineAlerts(env: Env, deviceId: string, now = D
     const meta = { kind, coverage: result.coverage, drift: result.drift, units } as const;
 
     if (await isMaintenanceActive(env, deviceId, tsISO)) {
+      await resetDwell(env, deviceId, ruleKey);
+      continue;
+    }
+
+    if (await isSnoozed(env.DB, deviceId, type, kind)) {
       await resetDwell(env, deviceId, ruleKey);
       continue;
     }

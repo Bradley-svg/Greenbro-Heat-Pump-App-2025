@@ -89,6 +89,7 @@ export interface Alert {
     coverage: number | null;
     drift: number | null;
     units: string;
+    snoozed_until?: string | null;
   };
   summary?: string;
 }
