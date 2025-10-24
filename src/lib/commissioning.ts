@@ -3,7 +3,7 @@ import { median } from './stats';
 
 export async function getLatestTelemetry(DB: D1Database, deviceId: string) {
   const latest = await DB.prepare(
-    'SELECT ts, metrics_json, delta_t, cop FROM latest_state WHERE device_id=?',
+    'SELECT ts, metrics_json, deltaT AS delta_t, cop FROM latest_state WHERE device_id=?',
   )
     .bind(deviceId)
     .first<{
@@ -26,7 +26,7 @@ export async function getLatestTelemetry(DB: D1Database, deviceId: string) {
   }
 
   const hist = await DB.prepare(
-    'SELECT ts, metrics_json, delta_t, cop FROM telemetry WHERE device_id=? ORDER BY ts DESC LIMIT 1',
+    'SELECT ts, metrics_json, deltaT AS delta_t, cop FROM telemetry WHERE device_id=? ORDER BY ts DESC LIMIT 1',
   )
     .bind(deviceId)
     .first<{
@@ -55,7 +55,7 @@ export async function getWindowSample(DB: D1Database, device_id: string, seconds
   const since = `-${seconds} seconds`;
   const rows = await DB.prepare(
     `
-      SELECT ts, metrics_json, delta_t, cop
+      SELECT ts, metrics_json, deltaT AS delta_t, cop
       FROM telemetry
       WHERE device_id=? AND ts >= datetime('now', ?)
       ORDER BY ts ASC

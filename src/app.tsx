@@ -9,7 +9,7 @@ import type {
   CommissioningPayload,
   IncidentReportV2Payload,
 } from './pdf';
-import type { IngestMessage, TelemetryPayload } from './types';
+import type { IngestMessage, TelemetryPayload, Role } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 import { DeviceStateDO, DeviceDO } from './do';
 import {
@@ -100,6 +100,77 @@ function numberFromSetting(value: string | null, fallback = 0): number {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const DEFAULT_ALLOWED_ORIGINS = Object.freeze(['https://dash.greenbro.co.za', 'https://ops.greenbro.co.za']);
+const DEV_ALLOWED_ORIGINS = Object.freeze([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+  'http://localhost:8787',
+  'http://127.0.0.1:8787',
+]);
+
+const DEV_BYPASS_AUTH: AccessContext = { sub: 'dev-bypass', roles: ['admin', 'ops'], clientIds: [] };
+
+function getAllowedOrigins(env: Env): string[] {
+  const configured = (env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+  const origins = new Set<string>(configured);
+  if (origins.size === 0) {
+    for (const origin of DEFAULT_ALLOWED_ORIGINS) {
+      origins.add(origin);
+    }
+  }
+  if (env.DEV_AUTH_BYPASS === '1') {
+    for (const origin of DEV_ALLOWED_ORIGINS) {
+      origins.add(origin);
+    }
+  }
+  return [...origins];
+}
+
+function enforceRoles(auth: AccessContext | null | undefined, allowed: Role[]): Response | null {
+  try {
+    requireRole(auth, allowed);
+    return null;
+  } catch (error) {
+    if (error instanceof Response) {
+      return error;
+    }
+    throw error;
+  }
+}
+
+async function getAccessContext(c: Context<Ctx>, jwt?: string): Promise<AccessContext | null> {
+  const token = jwt ?? c.req.header('Cf-Access-Jwt-Assertion');
+  if (!token) {
+    return null;
+  }
+  try {
+    return await verifyAccessJWT(c.env, token);
+  } catch (error) {
+    console.warn('Invalid Access JWT', error);
+    return null;
+  }
+}
+
+async function requirePageAuth(c: Context<Ctx>, roles: Role[]): Promise<AccessContext | Response> {
+  if (c.env.DEV_AUTH_BYPASS === '1') {
+    return { ...DEV_BYPASS_AUTH, roles: [...DEV_BYPASS_AUTH.roles], clientIds: [...(DEV_BYPASS_AUTH.clientIds ?? [])] };
+  }
+  const auth = await getAccessContext(c);
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const failure = enforceRoles(auth, roles);
+  if (failure) {
+    return failure;
+  }
+  return auth;
 }
 
 export async function getDeploySettings(DB: D1Database) {
@@ -347,7 +418,9 @@ async function notifyOps(env: Env, message: string) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: message }),
     });
-  } catch {}
+  } catch (error) {
+    console.error('notifyOps failed', error);
+  }
 }
 
 async function collectSiteRecipients(DB: D1Database, siteId: string) {
@@ -813,7 +886,20 @@ type Ctx = {
 
 const app = new Hono<Ctx>();
 
-app.use('*', cors());
+app.use('*', (c, next) => {
+  const allowedOrigins = new Set(getAllowedOrigins(c.env));
+  return cors({
+    origin: (origin) => {
+      if (!origin) {
+        return null;
+      }
+      return allowedOrigins.has(origin) ? origin : null;
+    },
+    allowMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'Cf-Access-Jwt-Assertion'],
+    credentials: true,
+  })(c, next);
+});
 
 app.use('*', async (c, next) => {
   const nonce = crypto.randomUUID().replace(/-/g, '');
@@ -1046,7 +1132,7 @@ app.get('/brand/logo-mono.svg', async (c) => {
 
 app.use('/api/*', async (c, next) => {
   if (c.env.DEV_AUTH_BYPASS === '1') {
-    c.set('auth', { sub: 'dev-bypass', roles: ['admin', 'ops'] });
+    c.set('auth', { ...DEV_BYPASS_AUTH, roles: [...DEV_BYPASS_AUTH.roles], clientIds: [...(DEV_BYPASS_AUTH.clientIds ?? [])] });
     await next();
     return;
   }
@@ -1056,22 +1142,30 @@ app.use('/api/*', async (c, next) => {
     return c.text('Unauthorized (missing Access JWT)', 401);
   }
 
-  try {
-    const auth = await verifyAccessJWT(c.env, jwt);
-    if (auth.roles.length === 0) {
-      return c.text('Forbidden (no role)', 403);
-    }
-    c.set('auth', auth);
-    await next();
-  } catch (error) {
-    console.warn('Invalid Access JWT', error);
+  const auth = await getAccessContext(c, jwt);
+  if (!auth) {
     return c.text('Unauthorized (invalid Access JWT)', 401);
   }
+  if (auth.roles.length === 0) {
+    return c.text('Forbidden (no role)', 403);
+  }
+  c.set('auth', auth);
+  await next();
 });
 
 app.use('/*', renderer);
 
-app.get('/health', (c) => c.json({ ok: true, ts: new Date().toISOString() }));
+app.get('/health', async (c) => {
+  const ts = new Date().toISOString();
+  try {
+    await c.env.DB.prepare('SELECT 1').first();
+    return c.json({ ok: true, ts });
+  } catch (error) {
+    console.error('health db probe failed', error);
+    const message = error instanceof Error ? error.message : 'db probe failed';
+    return c.json({ ok: false, ts, db: 'error', error: message }, 503);
+  }
+});
 
 app.get('/api/devices/:id/latest', async (c) => {
   const { DB } = c.env;
@@ -1079,14 +1173,10 @@ app.get('/api/devices/:id/latest', async (c) => {
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
-
-  if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
-    if (!auth.clientIds || auth.clientIds.length === 0) {
-      return c.text('Forbidden', 403);
-    }
-  }
-
   const id = c.req.param('id');
+  if (!(await canAccessDevice(DB, auth, id))) {
+    return c.text('Forbidden', 403);
+  }
   const row = await DB.prepare('SELECT * FROM latest_state WHERE device_id=?').bind(id).first();
 
   return row ? c.json(row) : c.text('Not found', 404);
@@ -1098,14 +1188,10 @@ app.get('/api/devices/:id/commissioning/window', async (c) => {
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
-
-  if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
-    if (!auth.clientIds || auth.clientIds.length === 0) {
-      return c.text('Forbidden', 403);
-    }
-  }
-
   const deviceId = c.req.param('id');
+  if (!(await canAccessDevice(DB, auth, deviceId))) {
+    return c.text('Forbidden', 403);
+  }
   const row = await DB.prepare(
     `
       SELECT cs.readings_json, cs.updated_at
@@ -1153,6 +1239,9 @@ app.get('/api/devices/:id/commissioning/windows', async (c) => {
   const auth = c.get('auth');
   requireRole(auth, ['admin', 'ops', 'contractor']);
   const deviceId = c.req.param('id');
+  if (!(await canAccessDevice(c.env.DB, auth, deviceId))) {
+    return c.text('Forbidden', 403);
+  }
   const limitRaw = Number(c.req.query('limit') ?? 10);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(50, Math.floor(limitRaw)) : 10;
 
@@ -4581,11 +4670,14 @@ app.get('/api/reports/*', async (c) => {
 });
 
 app.get('/', async (c) => {
-  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
-  const auth = jwt ? await verifyAccessJWT(c.env, jwt).catch(() => null) : null;
+  const authResult = await requirePageAuth(c, ['admin', 'ops', 'client', 'contractor']);
+  if (authResult instanceof Response) {
+    return authResult;
+  }
+  const auth = authResult;
   await attachDeployRibbon(c, auth);
   await attachVersionInfo(c, auth);
-  const data = await buildOverviewData(c.env.DB, auth ?? undefined);
+  const data = await buildOverviewData(c.env.DB, auth);
   return c.render(<OverviewPage data={data} />);
 });
 
@@ -4796,15 +4888,11 @@ app.get('/ops', async (c) => {
 
 app.get('/alerts', async (c) => {
   const { DB } = c.env;
-  const auth = await (async () => {
-    const jwt = c.req.header('Cf-Access-Jwt-Assertion');
-    if (!jwt) return null;
-    try {
-      return await verifyAccessJWT(c.env, jwt);
-    } catch {
-      return null;
-    }
-  })();
+  const authResult = await requirePageAuth(c, ['admin', 'ops', 'client', 'contractor']);
+  if (authResult instanceof Response) {
+    return authResult;
+  }
+  const auth = authResult;
   await attachDeployRibbon(c, auth);
   await attachVersionInfo(c, auth);
 
@@ -4837,7 +4925,7 @@ app.get('/alerts', async (c) => {
     bind.push(deviceId);
   }
 
-  if (auth && (auth.roles.includes('client') || auth.roles.includes('contractor'))) {
+  if (auth.roles.includes('client') || auth.roles.includes('contractor')) {
     const clientIds = auth.clientIds ?? [];
     if (clientIds.length === 0) {
       return c.render(<AlertsPage alerts={[]} filters={{ state, severity, type, deviceId }} />);
@@ -4850,8 +4938,7 @@ app.get('/alerts', async (c) => {
   sql += ' GROUP BY a.alert_id ORDER BY a.opened_at DESC LIMIT 100';
   const rows = await DB.prepare(sql).bind(...bind).all();
   const results = rows.results ?? [];
-  const isClientOnly =
-    auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
+  const isClientOnly = auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
   const alerts = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
   return c.render(<AlertsPage alerts={alerts} filters={{ state, severity, type, deviceId }} />);
 });
@@ -5494,6 +5581,26 @@ async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<
   };
 }
 
+const RESTRICTED_DEVICE_ROLES = new Set<Role>(['client', 'contractor']);
+
+async function canAccessDevice(DB: D1Database, auth: AccessContext, deviceId: string): Promise<boolean> {
+  const restricted = auth.roles.some((role) => RESTRICTED_DEVICE_ROLES.has(role));
+  if (!restricted) {
+    return true;
+  }
+  const clientIds = auth.clientIds ?? [];
+  if (clientIds.length === 0) {
+    return false;
+  }
+  const placeholders = clientIds.map(() => '?').join(',');
+  const row = await DB.prepare(
+    `SELECT 1 FROM devices d JOIN site_clients sc ON sc.site_id = d.site_id WHERE d.device_id=? AND sc.client_id IN (${placeholders}) LIMIT 1`,
+  )
+    .bind(deviceId, ...clientIds)
+    .first();
+  return !!row;
+}
+
 async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | null | undefined) {
   if (!key) return false;
   const row = await DB.prepare('SELECT key_hash, device_key_hash FROM devices WHERE device_id=?')
@@ -5512,6 +5619,7 @@ async function isDuplicate(DB: D1Database, key: string) {
   const hit = await DB.prepare('SELECT k FROM idem WHERE k=?').bind(key).first();
   if (hit) return true;
   await DB.prepare("INSERT OR IGNORE INTO idem (k, ts) VALUES (?, datetime('now'))").bind(key).run();
+  await DB.prepare("DELETE FROM idem WHERE ts < datetime('now','-1 day')").run();
   return false;
 }
 

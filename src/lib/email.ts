@@ -1,8 +1,17 @@
 import type { Env, R2Bucket } from '../types/env';
 import { getSetting } from './settings';
 
-export async function getSignedR2Url(bucket: R2Bucket, key: string, ttlSeconds = 3600): Promise<string> {
-  const maybeSign = (bucket as unknown as { createSignedUrl?: (opts: { key: string; expiration: Date }) => Promise<URL | string | { url: string }> }).createSignedUrl;
+type SignedUrlOptions = { baseUrl?: string };
+
+export async function getSignedR2Url(
+  bucket: R2Bucket,
+  key: string,
+  ttlSeconds = 3600,
+  options: SignedUrlOptions = {},
+): Promise<string> {
+  const maybeSign = (bucket as unknown as {
+    createSignedUrl?: (opts: { key: string; expiration: Date }) => Promise<URL | string | { url: string }>;
+  }).createSignedUrl;
   if (typeof maybeSign === 'function') {
     const expiration = new Date(Date.now() + ttlSeconds * 1000);
     const result = await maybeSign.call(bucket, { key, expiration });
@@ -17,6 +26,10 @@ export async function getSignedR2Url(bucket: R2Bucket, key: string, ttlSeconds =
     }
   }
   const encodedKey = encodeURIComponent(key);
+  const inferred = normalizeBaseUrl(options.baseUrl ?? inferBucketHostname(bucket));
+  if (inferred) {
+    return `${inferred}/${encodedKey}`;
+  }
   return `https://reports.greenbro.co.za/${encodedKey}`;
 }
 
@@ -27,7 +40,7 @@ export async function emailCommissioning(
   message: string,
   r2Key: string,
 ) {
-  const url = await getSignedR2Url(env.REPORTS, r2Key);
+  const url = await getSignedR2Url(env.REPORTS, r2Key, 3600, { baseUrl: env.REPORTS_PUBLIC_BASE_URL });
   const hook = await getSetting(env.DB, 'ops_webhook_url');
   if (!hook) {
     return { ok: false as const, reason: 'no webhook configured' };
@@ -56,8 +69,10 @@ export async function emailCommissioningWithZip(env: Env, toCsv: string, session
     return { ok: false as const, reason: 'no_pdf' };
   }
 
-  const pdfUrl = await getSignedR2Url(env.REPORTS, pdf.r2_key);
-  const zipUrl = zip ? await getSignedR2Url(env.REPORTS, zip.r2_key) : null;
+  const pdfUrl = await getSignedR2Url(env.REPORTS, pdf.r2_key, 3600, { baseUrl: env.REPORTS_PUBLIC_BASE_URL });
+  const zipUrl = zip
+    ? await getSignedR2Url(env.REPORTS, zip.r2_key, 3600, { baseUrl: env.REPORTS_PUBLIC_BASE_URL })
+    : null;
 
   const hook = await getSetting(env.DB, 'ops_webhook_url');
   if (!hook) {
@@ -77,4 +92,32 @@ export async function emailCommissioningWithZip(env: Env, toCsv: string, session
     body: JSON.stringify({ text }),
   });
   return { ok: true as const };
+}
+
+function normalizeBaseUrl(value?: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  return withProtocol.replace(/\/+$/, '');
+}
+
+function inferBucketHostname(bucket: R2Bucket): string | null {
+  const anyBucket = bucket as unknown as Record<string, unknown>;
+  const candidates = [
+    anyBucket?.customDomain,
+    anyBucket?.domain,
+    anyBucket?.bucketDomain,
+    anyBucket?.publicDomain,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return null;
 }

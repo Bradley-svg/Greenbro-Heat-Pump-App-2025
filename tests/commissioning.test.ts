@@ -405,12 +405,12 @@ class MockD1Database {
           ? ((rows[0] ? (rows[0] as unknown as T) : null) as T | null)
           : ({ results: rows as unknown as T[] });
       }
-      case 'SELECT ts, metrics_json, delta_t, cop FROM latest_state WHERE device_id=?': {
+      case 'SELECT ts, metrics_json, deltaT AS delta_t, cop FROM latest_state WHERE device_id=?': {
         const id = String(args[0] ?? '');
         const row = this.#latest.get(id) ?? null;
         return row ? ({ ...row } as unknown as T) : null;
       }
-      case 'SELECT ts, metrics_json, delta_t, cop FROM telemetry WHERE device_id=? ORDER BY ts DESC LIMIT 1': {
+      case 'SELECT ts, metrics_json, deltaT AS delta_t, cop FROM telemetry WHERE device_id=? ORDER BY ts DESC LIMIT 1': {
         const id = String(args[0] ?? '');
         const rows = this.#telemetry.get(id) ?? [];
         const row = rows.length > 0 ? rows[rows.length - 1] : null;
