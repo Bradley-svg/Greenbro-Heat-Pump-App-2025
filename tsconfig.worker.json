@@ -18,6 +18,7 @@
   "exclude": [
     "tests/**",
     "**/*.spec.ts",
+    "**/*.test.ts",
     "scripts/**",
     "tools/**"
   ]
