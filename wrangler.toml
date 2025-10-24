@@ -5,8 +5,8 @@ compatibility_flags = ["nodejs_compat"]
 minify = true
 
 routes = [
-  { pattern = "api.greenbro.co.za/*", custom_domain = true },
-  { pattern = "dash.greenbro.co.za/*", custom_domain = true }
+  { pattern = "api.greenbro.co.za", custom_domain = true },
+  { pattern = "dash.greenbro.co.za", custom_domain = true }
 ]
 
 [build]
@@ -60,6 +60,9 @@ id = "01ab23cd4567890efabc1234567890de"
 vars.ACCESS_AUD = "https://access.greenbro.co.za"
 vars.ACCESS_ISS = "https://access.greenbro.co.za"
 vars.ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
+vars.BUILD_SHA = "__BUILD_SHA__"
+vars.BUILD_DATE = "__BUILD_DATE__"
+vars.BUILD_SOURCE = "__BUILD_SOURCE__"
 
 [[env.staging.d1_databases]]
 binding = "DB"
@@ -82,10 +85,19 @@ bucket_name = "greenbro-archive"
 binding = "CONFIG"
 id = "01ab23cd4567890efabc1234567890de"
 
+[env.staging.durable_objects]
+bindings = [
+  { name = "DeviceState", class_name = "DeviceStateDO" },
+  { name = "DEVICE_DO", class_name = "DeviceDO" }
+]
+
 [env.production]
 vars.ACCESS_AUD = "https://access.greenbro.co.za"
 vars.ACCESS_ISS = "https://access.greenbro.co.za"
 vars.ACCESS_JWKS = "https://access.greenbro.co.za/cdn-cgi/access/certs"
+vars.BUILD_SHA = "__BUILD_SHA__"
+vars.BUILD_DATE = "__BUILD_DATE__"
+vars.BUILD_SOURCE = "__BUILD_SOURCE__"
 
 [[env.production.d1_databases]]
 binding = "DB"
@@ -107,3 +119,9 @@ bucket_name = "greenbro-archive-prod"
 [[env.production.kv_namespaces]]
 binding = "CONFIG"
 id = "f8d2c3a4b5e6471c9d0ef123456789ab"
+
+[env.production.durable_objects]
+bindings = [
+  { name = "DeviceState", class_name = "DeviceStateDO" },
+  { name = "DEVICE_DO", class_name = "DeviceDO" }
+]
