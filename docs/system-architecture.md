@@ -4,19 +4,31 @@ The Greenbro Heat Pump monitoring platform ingests telemetry from field devices,
 
 ## Data Flow Summary
 
-```
-Devices ──(MQTT or HTTPS)──▶ Edge (WAF + API Shield + Access)
-                               │
-                               ├─► Ingest Worker  ──► Queues (buffer + fan-out)
-                               │        │                ├─► Rollup Worker → D1 (hot) + R2 (cold)
-                               │        │                └─► Alert Engine Worker → D1 alerts
-                               │        └─► Durable Object (per-device session/state)
-                               │
-Frontend (Pages/Workers) ──────┴─► App/API Worker (RBAC, charts) → D1 (config + latest) + KV (flags)
-                                           │
-                                           └─► Analytics Engine (ops/SLOs)
-Logs/metrics → Logpush → R2 (cheap retention)
-Cron Triggers → housekeeping, JWT rotation, alert escalations
+```mermaid
+flowchart LR
+  Devices[["Field Devices"]] -- "MQTT / HTTPS" --> Edge
+  subgraph Edge ["Edge Protection"]
+    WAF["WAF + API Shield + Access"]
+  end
+  Edge --> Ingest["Ingest Worker"]
+  Ingest --> Queues["Queues<br/>(buffer + fan-out)"]
+  Ingest --> Durable["Durable Object<br/>(per-device session/state)"]
+  Queues --> Rollup["Rollup Worker"]
+  Queues --> Alerts["Alert Engine Worker"]
+  Rollup --> D1Hot["D1<br/>(hot telemetry + alerts)"]
+  Rollup --> R2Cold["R2<br/>(cold history)"]
+  Alerts --> D1Hot
+  Frontend["Frontend Pages/Workers"] --> App["App/API Worker"]
+  App --> D1Hot
+  App --> KV["KV<br/>(feature flags)"]
+  App --> Analytics["Analytics Engine"]
+  Logs["Logpush"] --> R2Cold
+  Cron["Cron Triggers"] --> Alerts
+  Cron --> Rollup
+  Cron --> App
+  App --> Reports["Reports & Ops Dashboards"]
+  D1Hot --> Reports
+  Analytics --> Reports
 ```
 
 ## Key Components
