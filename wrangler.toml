@@ -14,9 +14,9 @@ command = "npm run build"
 
 [vars]
 # Place default dev/test vars here (do not store secrets).
-BUILD_SHA = "dev"
-BUILD_DATE = "2025-10-23"
-BUILD_SOURCE = "local"
+BUILD_SHA = "__BUILD_SHA__"
+BUILD_DATE = "__BUILD_DATE__"
+BUILD_SOURCE = "__BUILD_SOURCE__"
 
 [triggers]
 crons = ["0 2 * * *", "*/5 * * * *", "15 2 1 * *"]

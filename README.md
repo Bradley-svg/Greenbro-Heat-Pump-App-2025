@@ -57,6 +57,7 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
 * **Rollups & retention** - Consider adding a secondary consumer or a cron-triggered worker to aggregate one-minute rollups and archive telemetry older than 90 days to the `greenbro-reports` R2 bucket. The SQL schema separates `latest_state` (fast reads) from `telemetry` (history) to support this.
 * **Release gate parity** - Use `npm run dev:gate` to start `wrangler dev` alongside the Vite preview server (`npm run -w apps/web preview`) just like the CI release gate workflow. Run Playwright checks from a separate shell once both services report ready.
 * **Worker bundle size** - After `npm run build`, execute `npm run worker:size` to confirm no generated module exceeds Cloudflare's 1&nbsp;MiB limit. The command lists each module's size and fails if a file crosses the threshold, prompting additional code splitting.
+* **Post-migration seeding** - Immediately after `wrangler d1 migrations apply`, run `npm run seed:ops -- --database GREENBRO_DB --config ops-seed.json` (see [docs/post-migration-seed.md](docs/post-migration-seed.md)) to hydrate alert webhooks, commissioning thresholds, SLO contacts, and Access bindings.
 
 
 ## Alerts & Commissioning Enhancements

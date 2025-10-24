@@ -7065,6 +7065,77 @@ export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: E
   }
 }
 
+const CRON_FAST = '*/5 * * * *';
+const CRON_NIGHTLY = '0 2 * * *';
+const CRON_MONTHLY = '15 2 1 * *';
+
+async function runFastBurnJob(env: Env) {
+  try {
+    await fastBurnMonitor(env);
+  } catch (error) {
+    console.error('fast burn monitor error', error);
+  }
+}
+
+async function runNightlyJobs(env: Env) {
+  await evaluateHeartbeatAlerts(env, new Date().toISOString()).catch((error) => {
+    console.error('heartbeat sweep error', error);
+  });
+  await recomputeBaselines(env.DB).catch((error) => {
+    console.error('baseline recompute error', error);
+  });
+  await env.DB
+    .prepare("DELETE FROM device_baselines WHERE expires_at IS NOT NULL AND expires_at < datetime('now')")
+    .run()
+    .catch((error) => {
+      console.error('baseline prune error', error);
+    });
+  await sweepIncidents(env.DB).catch((error) => {
+    console.error('incident sweep error', error);
+  });
+}
+
+async function runMonthlyJobs(env: Env, evt: ScheduledEvent) {
+  const reference = evt.scheduledTime ? new Date(evt.scheduledTime) : new Date();
+  const monthKey = previousMonthKey(reference);
+  const sloRows = await env.DB.prepare('SELECT client_id FROM client_slos').all<{ client_id: string }>();
+  const { generateClientMonthlyReport } = await getPdfModule();
+  for (const row of sloRows.results ?? []) {
+    try {
+      const { payload } = await buildClientMonthlyReportPayload(env, row.client_id, monthKey);
+      await generateClientMonthlyReport(env, payload);
+    } catch (error) {
+      console.error('monthly report generation failed', row.client_id, error);
+    }
+  }
+}
+
+async function runHousekeepingJobs(env: Env) {
+  try {
+    await pruneStaged(env, 14);
+  } catch {}
+  try {
+    await pruneR2Prefix(env.REPORTS, 'provisioning/', 180);
+  } catch {}
+}
+
+type CronHandler = (env: Env, evt: ScheduledEvent) => Promise<void>;
+
+const CRON_HANDLERS: Record<string, CronHandler> = {
+  [CRON_FAST]: async (env) => {
+    await runFastBurnJob(env);
+  },
+  [CRON_NIGHTLY]: async (env) => {
+    await runFastBurnJob(env);
+    await runNightlyJobs(env);
+  },
+  [CRON_MONTHLY]: async (env, evt) => {
+    await runFastBurnJob(env);
+    await runNightlyJobs(env);
+    await runMonthlyJobs(env, evt);
+  },
+};
+
 export default {
   fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
     preflight(env);
@@ -7073,51 +7144,22 @@ export default {
   queue,
   scheduled: async (evt: ScheduledEvent, env: Env) => {
     const cron = evt.cron ?? '';
-    try {
-      await fastBurnMonitor(env);
-    } catch (error) {
-      console.error('fast burn monitor error', error);
-    }
-    const shouldRunNightly = !cron || cron === '0 2 * * *' || cron === '15 2 1 * *';
-    if (shouldRunNightly) {
-      await evaluateHeartbeatAlerts(env, new Date().toISOString()).catch((error) => {
-        console.error('heartbeat sweep error', error);
-      });
-      await recomputeBaselines(env.DB).catch((error) => {
-        console.error('baseline recompute error', error);
-      });
-      await env.DB.prepare(
-        "DELETE FROM device_baselines WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-      )
-        .run()
-        .catch((error) => {
-          console.error('baseline prune error', error);
-        });
-      await sweepIncidents(env.DB).catch((error) => {
-        console.error('incident sweep error', error);
-      });
+    if (!cron) {
+      await runFastBurnJob(env);
+      await runNightlyJobs(env);
+      await runMonthlyJobs(env, evt);
+      await runHousekeepingJobs(env);
+      return;
     }
 
-    if (!cron || cron === '15 2 1 * *') {
-      const reference = evt.scheduledTime ? new Date(evt.scheduledTime) : new Date();
-      const monthKey = previousMonthKey(reference);
-      const sloRows = await env.DB.prepare('SELECT client_id FROM client_slos').all<{ client_id: string }>();
-      const { generateClientMonthlyReport } = await getPdfModule();
-      for (const row of sloRows.results ?? []) {
-        try {
-          const { payload } = await buildClientMonthlyReportPayload(env, row.client_id, monthKey);
-          await generateClientMonthlyReport(env, payload);
-        } catch (error) {
-          console.error('monthly report generation failed', row.client_id, error);
-        }
-      }
+    const handler = CRON_HANDLERS[cron];
+    if (!handler) {
+      console.warn('No scheduled handler registered for cron expression', cron);
+      await runHousekeepingJobs(env);
+      return;
     }
 
-    try {
-      await pruneStaged(env, 14);
-    } catch {}
-    try {
-      await pruneR2Prefix(env.REPORTS, 'provisioning/', 180);
-    } catch {}
+    await handler(env, evt);
+    await runHousekeepingJobs(env);
   },
 };
