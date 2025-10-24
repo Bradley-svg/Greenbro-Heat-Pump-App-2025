@@ -54,7 +54,7 @@ bucket_name = "greenbro-archive"
 
 [[kv_namespaces]]
 binding = "CONFIG"
-id = "01ab23cd4567890efabc1234567890de"
+id = "e9509ebd5bbb487e8e1698db35bfa439"
 
 [env.staging]
 vars.ACCESS_AUD = "https://access.greenbro.co.za"
@@ -83,7 +83,7 @@ bucket_name = "greenbro-archive"
 
 [[env.staging.kv_namespaces]]
 binding = "CONFIG"
-id = "01ab23cd4567890efabc1234567890de"
+id = "e9509ebd5bbb487e8e1698db35bfa439"
 
 [env.staging.durable_objects]
 bindings = [
@@ -118,7 +118,7 @@ bucket_name = "greenbro-archive-prod"
 
 [[env.production.kv_namespaces]]
 binding = "CONFIG"
-id = "f8d2c3a4b5e6471c9d0ef123456789ab"
+id = "14ee885ce1ab45738c2619bd56a11361"
 
 [env.production.durable_objects]
 bindings = [
