@@ -2934,7 +2934,11 @@ app.post('/api/ingest/:profileId', async (c) => {
       status: telemetryStatus,
     };
 
-    await c.env.INGEST_Q.send({ type: 'telemetry', profileId, body: telemetry });
+    if (c.env.INGEST_Q) {
+      await c.env.INGEST_Q.send({ type: 'telemetry', profileId, body: telemetry });
+    } else {
+      await processTelemetryInline(c.env, telemetry, payload.ts);
+    }
 
     status = 200;
     return c.json({ ok: true, queued: true });
@@ -3185,7 +3189,11 @@ app.post('/api/heartbeat/:profileId', async (c) => {
   const profileId = c.req.param('profileId');
   const heartbeat: HeartbeatPayload = { deviceId, ts: timestamp, rssi: rssi ?? undefined };
 
-  await c.env.INGEST_Q.send({ type: 'heartbeat', profileId, body: heartbeat });
+  if (c.env.INGEST_Q) {
+    await c.env.INGEST_Q.send({ type: 'heartbeat', profileId, body: heartbeat });
+  } else {
+    await processHeartbeatInline(c.env, heartbeat, timestamp);
+  }
 
   return c.json({ ok: true, queued: true });
 });
@@ -7448,6 +7456,54 @@ async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
     canary,
     baselineDeviation,
   };
+}
+
+async function processTelemetryInline(
+  env: Env,
+  telemetry: TelemetryPayload,
+  receivedAt: string,
+): Promise<void> {
+  void receivedAt;
+  await baseQueueHandler(
+    {
+      messages: [
+        {
+          body: { type: 'telemetry', profileId: telemetry.deviceId, body: telemetry },
+          ack: () => {},
+          retry: () => {},
+        },
+      ],
+    } as unknown as MessageBatch<IngestMessage>,
+    env,
+    {
+      waitUntil: (promise: Promise<unknown>) => promise,
+      passThroughOnException: () => {},
+    } as ExecutionContext,
+  );
+}
+
+async function processHeartbeatInline(
+  env: Env,
+  heartbeat: HeartbeatPayload,
+  receivedAt: string,
+): Promise<void> {
+  void receivedAt;
+  await baseQueueHandler(
+    {
+      messages: [
+        {
+          body: { type: 'heartbeat', profileId: heartbeat.deviceId, body: heartbeat },
+          ack: () => {},
+          retry: () => {},
+        },
+      ],
+    } as unknown as MessageBatch<IngestMessage>,
+    env,
+    {
+      waitUntil: (promise: Promise<unknown>) => promise,
+      passThroughOnException: () => {},
+    } as ExecutionContext,
+  );
 }
 
 export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: ExecutionContext) {
