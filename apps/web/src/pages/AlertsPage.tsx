@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '@api/client';
 import type { AcknowledgeAlertResponse, Alert } from '@api/types';
+import { useAuth } from '@app/providers/AuthProvider';
 import { useAuthFetch } from '@hooks/useAuthFetch';
 import { useToast } from '@app/providers/ToastProvider';
 import { useReadOnly } from '@hooks/useReadOnly';
@@ -21,6 +22,9 @@ type AlertRow = {
   meta_json?: string | null;
   coverage?: number | null;
   drift?: number | null;
+  meta_kind?: string | null;
+  meta_units?: string | null;
+  summary?: string | null;
 };
 
 function FocusIncidentsPill(): JSX.Element {
@@ -53,6 +57,7 @@ export function AlertsPage(): JSX.Element {
   const queryClient = useQueryClient();
   const toast = useToast();
   const { ro } = useReadOnly();
+  const { user } = useAuth();
   const alertsQuery = useQuery({
     queryKey: ['alerts'],
     queryFn: async () => {
@@ -102,6 +107,52 @@ export function AlertsPage(): JSX.Element {
   });
 
   const alerts = alertsQuery.data ?? [];
+  const canPromote = Boolean(user?.roles?.some((role) => role === 'admin' || role === 'ops'));
+
+  const promoteBaselineMutation = useMutation({
+    mutationFn: async (alert: Alert) => {
+      if (ro) {
+        throw new Error('Read-only mode is active');
+      }
+      const kind = alert.meta?.kind ?? 'delta_t';
+      const body = {
+        kind,
+        sample: {
+          median: null,
+          p25: null,
+          p75: null,
+          window_s: 90,
+          captured_at: new Date().toISOString(),
+        },
+        thresholds: null,
+        label: `Promoted ${kind} @ ${new Date().toLocaleString()}`,
+        is_golden: false,
+      };
+      await apiFetch(
+        `/api/devices/${alert.deviceId}/baselines`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+        authFetch,
+      );
+    },
+    onSuccess: () => {
+      toast.push('Baseline saved.');
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.push(
+        message.includes('Read-only')
+          ? 'Read-only mode: writes are temporarily disabled.'
+          : 'Could not save baseline.',
+      );
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['alerts'] });
+    },
+  });
 
   return (
     <div className="page">
@@ -129,18 +180,30 @@ export function AlertsPage(): JSX.Element {
               <p className="alert-card__description">{alert.description ?? 'No description provided.'}</p>
               <footer className="alert-card__footer">
                 <span className="alert-card__meta">{formatAlertMeta(alert)}</span>
-                {alert.state === 'acknowledged' ? (
-                  <span className="alert-card__ack">Acked</span>
-                ) : (
-                  <button
-                    className="app-button"
-                    type="button"
-                    onClick={() => acknowledgeMutation.mutate(alert.id)}
-                    disabled={ro || acknowledgeMutation.isPending}
-                  >
-                    {ro ? 'Ack (disabled)' : 'Ack'}
-                  </button>
-                )}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  {canPromote && alert.type === 'baseline_deviation' ? (
+                    <button
+                      className="app-button app-button--ghost"
+                      type="button"
+                      onClick={() => promoteBaselineMutation.mutate(alert)}
+                      disabled={ro || promoteBaselineMutation.isPending}
+                    >
+                      Promote to baseline
+                    </button>
+                  ) : null}
+                  {alert.state === 'acknowledged' ? (
+                    <span className="alert-card__ack">Acked</span>
+                  ) : (
+                    <button
+                      className="app-button"
+                      type="button"
+                      onClick={() => acknowledgeMutation.mutate(alert.id)}
+                      disabled={ro || acknowledgeMutation.isPending}
+                    >
+                      {ro ? 'Ack (disabled)' : 'Ack'}
+                    </button>
+                  )}
+                </div>
               </footer>
             </li>
           ))}
@@ -165,7 +228,10 @@ function mapAlertRow(row: Partial<AlertRow>): Alert {
 
   const createdAt = row.opened_at ?? row.closed_at ?? new Date().toISOString();
   const id = row.alert_id ?? `${row.device_id ?? 'alert'}-${createdAt}`;
-  const description = row.description ?? (row.type === 'baseline_deviation' ? 'Deviation from baseline coverage thresholds.' : undefined);
+  const description =
+    row.description ??
+    row.summary ??
+    (row.type === 'baseline_deviation' ? 'Deviation from baseline coverage thresholds.' : undefined);
   const meta = parseMetaFromRow(row);
 
   return {
@@ -181,6 +247,8 @@ function mapAlertRow(row: Partial<AlertRow>): Alert {
     type: row.type ?? undefined,
     coverage: meta.coverage,
     drift: meta.drift,
+    meta,
+    summary: row.summary ?? undefined,
   };
 }
 
@@ -195,46 +263,61 @@ function formatAlertTitle(type?: string | null): string {
     .join(' ');
 }
 
-function parseMetaFromRow(row: Partial<AlertRow>): { coverage: number | null; drift: number | null } {
+function parseMetaFromRow(row: Partial<AlertRow>): {
+  coverage: number | null;
+  drift: number | null;
+  kind: string;
+  units: string;
+} {
   let coverage: number | null = typeof row.coverage === 'number' && Number.isFinite(row.coverage) ? row.coverage : null;
   let drift: number | null = typeof row.drift === 'number' && Number.isFinite(row.drift) ? row.drift : null;
+  let kind = typeof row.meta_kind === 'string' && row.meta_kind ? row.meta_kind : 'delta_t';
+  let units = typeof row.meta_units === 'string' ? row.meta_units ?? '' : '';
 
-  if ((coverage == null || !Number.isFinite(coverage)) || (drift == null || !Number.isFinite(drift))) {
-    try {
-      const meta = row.meta_json ? JSON.parse(row.meta_json) : null;
-      if (meta) {
-        if (coverage == null && typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
-          coverage = meta.coverage;
-        }
-        if (drift == null && typeof meta.drift === 'number' && Number.isFinite(meta.drift)) {
-          drift = meta.drift;
-        }
+  try {
+    const meta = row.meta_json ? JSON.parse(row.meta_json) : null;
+    if (meta && typeof meta === 'object') {
+      if (coverage == null && typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
+        coverage = meta.coverage;
       }
-    } catch (error) {
-      console.warn('failed to parse alert meta', error);
+      if (drift == null && typeof meta.drift === 'number' && Number.isFinite(meta.drift)) {
+        drift = meta.drift;
+      }
+      if (typeof meta.kind === 'string' && meta.kind) {
+        kind = meta.kind;
+      }
+      if (typeof meta.units === 'string') {
+        units = meta.units;
+      }
     }
+  } catch (error) {
+    console.warn('failed to parse alert meta', error);
   }
 
-  coverage =
-    coverage != null && Number.isFinite(coverage) ? Math.min(1, Math.max(0, coverage)) : null;
-
+  coverage = coverage != null && Number.isFinite(coverage) ? Math.min(1, Math.max(0, coverage)) : null;
   drift = drift != null && Number.isFinite(drift) ? drift : null;
+  if (!units) {
+    units = kind === 'cop' ? '' : kind === 'current' ? 'A' : '°C';
+  }
 
-  return { coverage, drift };
+  return { coverage, drift, kind, units };
 }
 
 function formatAlertMeta(alert: Alert): string {
   if (alert.type === 'baseline_deviation') {
-    const parts: string[] = [];
-    if (typeof alert.coverage === 'number' && Number.isFinite(alert.coverage)) {
-      parts.push(`${Math.round(alert.coverage * 100)}% in-range`);
+    const kind = (alert.meta?.kind ?? 'delta_t').toUpperCase();
+    const coverage = typeof alert.meta?.coverage === 'number' && Number.isFinite(alert.meta.coverage)
+      ? `${Math.round(alert.meta.coverage * 100)}% in-range`
+      : 'Coverage n/a';
+    const units = alert.meta?.units ?? (alert.meta?.kind === 'cop' ? '' : alert.meta?.kind === 'current' ? 'A' : '°C');
+    const parts = [`${kind}: ${coverage}`];
+    if (typeof alert.meta?.drift === 'number' && Number.isFinite(alert.meta.drift)) {
+      const drift = alert.meta.drift;
+      parts.push(`drift ${drift >= 0 ? '+' : ''}${drift.toFixed(2)}${units}`);
     }
-    if (typeof alert.drift === 'number' && Number.isFinite(alert.drift)) {
-      const signed = alert.drift >= 0 ? `+${alert.drift.toFixed(1)}` : alert.drift.toFixed(1);
-      parts.push(`drift ${signed}°C`);
-    }
-    const detail = parts.length ? ` — ${parts.join('; ')}` : '';
-    return `Baseline deviation${detail}`;
+    return parts.join(' · ');
   }
   return `Device ${alert.deviceId}`;
 }
+
+export { formatAlertMeta };

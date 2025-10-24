@@ -24,6 +24,7 @@ export default function OpsPage(){
   const burnSeries = burn.data || [];
   const burnLast = burnSeries.at(-1) ?? 0;
   const burnKind = burnLast > 2 ? 'crit' : burnLast > 1 ? 'warn' : 'ok';
+  const baseline = d.baselineDeviation || { window: '24h', warning: 0, critical: 0 };
 
   return (
     <div style={{ display:'grid', gap:12 }}>
@@ -44,6 +45,18 @@ export default function OpsPage(){
           </span>
         </div>
         <small className="muted">Target ≤ 1.0× (SLO 99.9%)</small>
+      </div>
+
+      <div className="card" style={{ padding:12 }}>
+        <h3 style={{ marginTop:0 }}>Baseline deviation (last 24 h)</h3>
+        <div style={{ display:'flex', gap:8 }}>
+          <span className={`chip ${baseline.critical > 0 ? 'crit' : 'ok'}`}>
+            Critical {baseline.critical}
+          </span>
+          <span className={`chip ${baseline.warning > 0 ? 'warn' : 'ok'}`}>
+            Warning {baseline.warning}
+          </span>
+        </div>
       </div>
 
       <div className="card">

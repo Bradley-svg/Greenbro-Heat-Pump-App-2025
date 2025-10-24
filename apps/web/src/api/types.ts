@@ -84,6 +84,13 @@ export interface Alert {
   type?: string;
   coverage?: number | null;
   drift?: number | null;
+  meta?: {
+    kind: string;
+    coverage: number | null;
+    drift: number | null;
+    units: string;
+  };
+  summary?: string;
 }
 
 export interface AcknowledgeAlertInput {
@@ -113,6 +120,7 @@ export interface OpsSloSnapshot {
   p95_ingest_latency_ms: number;
   burn: number;
   updated_at?: string;
+  baselineDeviation?: { window: string; warning: number; critical: number };
 }
 
 export interface PublicSettings {

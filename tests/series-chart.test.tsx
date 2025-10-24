@@ -10,6 +10,9 @@ import {
   SeriesChart,
   type SeriesChartHandle,
 } from '../apps/web/src/components/charts/SeriesChart';
+import { BaselineCompareChips } from '../apps/web/src/pages/DeviceDetailPage';
+import { formatAlertMeta } from '../apps/web/src/pages/AlertsPage';
+import type { Alert } from '../apps/web/src/api/types';
 
 const SAMPLE_DATA = [
   { ts: 0, v: 1 },
@@ -114,4 +117,36 @@ test('SeriesChart exposes setXDomain to control the viewport', async () => {
   } else {
     globalThis.cancelAnimationFrame = previousCancelRaf;
   }
+});
+
+test('formatAlertMeta renders COP baseline details', () => {
+  const alert: Alert = {
+    id: 'a1',
+    deviceId: 'dev-1',
+    title: 'Baseline deviation',
+    severity: 'warning',
+    state: 'open',
+    createdAt: new Date().toISOString(),
+    type: 'baseline_deviation',
+    meta: { kind: 'cop', coverage: 0.68, drift: 0.12, units: '' },
+  };
+  const label = formatAlertMeta(alert);
+  assert.equal(label, 'COP: 68% in-range · drift +0.12');
+});
+
+test('BaselineCompareChips renders coverage chip when baseline exists', () => {
+  const markup = renderToStaticMarkup(
+    <BaselineCompareChips
+      result={{
+        isLoading: false,
+        isError: false,
+        isFetching: false,
+        data: { hasBaseline: true, coverage: 0.82, drift: 0.05 },
+      } as any}
+      unit="×"
+      precision={2}
+    />,
+  );
+  assert.ok(markup.includes('82% in-range'));
+  assert.ok(markup.includes('+0.05×'));
 });

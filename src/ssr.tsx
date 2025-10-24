@@ -48,6 +48,7 @@ export type OpsSnapshot = {
   };
   heartbeat: { total: number; online: number; onlinePct: number };
   canary?: { lastAt: string | null; minutesSince: number | null; status: 'ok' | 'warn' | 'crit' };
+  baselineDeviation?: { window: string; warning: number; critical: number };
 };
 
 export type ReportHistoryRow = {

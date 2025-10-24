@@ -15,3 +15,12 @@ export async function setSetting(DB: D1Database, key: string, value: string): Pr
     .bind(key, value)
     .run();
 }
+
+export async function getNum(DB: D1Database, key: string, fallback: number): Promise<number> {
+  const value = await getSetting(DB, key);
+  if (value == null) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}

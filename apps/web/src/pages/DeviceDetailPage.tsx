@@ -1458,3 +1458,5 @@ function ensureFiniteRange(
   }
   return { start, end };
 }
+
+export { BaselineCompareChips };

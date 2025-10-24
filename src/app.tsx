@@ -2647,22 +2647,46 @@ app.get('/api/alerts', async (c) => {
     if (row?.type !== 'baseline_deviation') {
       return row;
     }
-    let coverage: number | null = null;
-    let drift: number | null = null;
+    let coverage: number | null =
+      typeof row.coverage === 'number' && Number.isFinite(row.coverage) ? row.coverage : null;
+    let drift: number | null = typeof row.drift === 'number' && Number.isFinite(row.drift) ? row.drift : null;
+    let kind = typeof (row as { meta_kind?: string }).meta_kind === 'string' ? row.meta_kind! : 'delta_t';
+    let units = typeof (row as { meta_units?: string }).meta_units === 'string' ? row.meta_units! : '';
     try {
       const meta = row.meta_json ? JSON.parse(row.meta_json) : null;
-      if (meta) {
-        if (typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
+      if (meta && typeof meta === 'object') {
+        if (coverage == null && typeof meta.coverage === 'number' && Number.isFinite(meta.coverage)) {
           coverage = meta.coverage;
         }
-        if (typeof meta.drift === 'number' && Number.isFinite(meta.drift)) {
+        if (drift == null && typeof meta.drift === 'number' && Number.isFinite(meta.drift)) {
           drift = meta.drift;
+        }
+        if (typeof meta.kind === 'string') {
+          kind = meta.kind;
+        }
+        if (typeof meta.units === 'string') {
+          units = meta.units;
         }
       }
     } catch (error) {
       console.warn('failed to parse baseline meta', error);
     }
-    return { ...row, coverage, drift };
+    if (!units) {
+      units = kind === 'cop' ? '' : kind === 'current' ? 'A' : '°C';
+    }
+    const summaryParts = [`Baseline deviation (${kind}) — ${Math.round((coverage ?? 0) * 100)}% in-range`];
+    if (typeof drift === 'number' && Number.isFinite(drift)) {
+      const signed = `${drift >= 0 ? '+' : ''}${drift.toFixed(2)}${units}`;
+      summaryParts.push(`drift ${signed}`);
+    }
+    return {
+      ...row,
+      coverage,
+      drift,
+      meta_kind: kind,
+      meta_units: units,
+      summary: summaryParts.join('; '),
+    };
   });
   const isClientOnly =
     auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
@@ -5985,6 +6009,22 @@ async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
 
   const canary = await fetchLatestCanary(DB);
 
+  const baselineDeviationRow = await DB.prepare(
+    `SELECT
+        SUM(CASE WHEN severity = 'critical' AND state IN ('open','ack') THEN 1 ELSE 0 END) AS critical,
+        SUM(CASE WHEN severity IN ('major','warning') AND state IN ('open','ack') THEN 1 ELSE 0 END) AS warning
+     FROM alerts
+     WHERE type='baseline_deviation' AND opened_at >= datetime('now', '-1 day')`,
+  )
+    .first<{ critical: number | null; warning: number | null }>()
+    .catch(() => null);
+
+  const baselineDeviation = {
+    window: '24h',
+    critical: toNumber(baselineDeviationRow?.critical) ?? 0,
+    warning: toNumber(baselineDeviationRow?.warning) ?? 0,
+  };
+
   return {
     generatedAt: new Date().toISOString(),
     ingest: {
@@ -6008,6 +6048,7 @@ async function computeOpsSnapshot(DB: D1Database): Promise<OpsSnapshot> {
       onlinePct: Number.isFinite(heartbeatPct) ? heartbeatPct : 0,
     },
     canary,
+    baselineDeviation,
   };
 }
 

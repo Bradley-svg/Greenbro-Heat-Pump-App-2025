@@ -81,7 +81,12 @@ export class DeviceStateDO {
     }
 
     if (request.method === 'GET' && url.pathname === '/window') {
-      return new Response(JSON.stringify(this.baseline.buf), {
+      const kind = url.searchParams.get('kind') ?? 'delta_t';
+      const data = this.baseline.buf.map((sample) => ({
+        t: sample.t,
+        v: kind === 'cop' ? sample.cop ?? null : kind === 'current' ? sample.cur ?? null : sample.dt ?? null,
+      }));
+      return new Response(JSON.stringify(data), {
         headers: { 'content-type': 'application/json' },
       });
     }

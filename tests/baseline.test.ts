@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import worker from '../src/app';
 import type { Env, ExecutionContext } from '../src/types/env';
+import { evaluateBaselineAlerts } from '../src/alerts';
 
 type BaselineRow = {
   baseline_id: string;
@@ -23,6 +24,17 @@ type TelemetryRow = {
   delta_t: number | null;
   cop: number | null;
   compressor_current: number | null;
+};
+
+type AlertRow = {
+  alert_id: string;
+  device_id: string;
+  type: string;
+  severity: string;
+  state: string;
+  opened_at: string;
+  closed_at: string | null;
+  meta_json: string | null;
 };
 
 class MockBaselineStatement {
@@ -57,10 +69,25 @@ class MockBaselineDB {
   #settings = new Map<string, string>();
   #baselines: BaselineRow[] = [];
   #telemetry = new Map<string, TelemetryRow[]>();
+  #alerts: AlertRow[] = [];
+  #alertState = new Map<string, { last_trigger_ts: string | null; dwell_start_ts: string | null; cooldown_until_ts: string | null; suppress: number }>();
   #clock = 0;
 
   constructor() {
     this.#settings.set('read_only', '0');
+    this.#settings.set('baseline_cov_warn', '0.60');
+    this.#settings.set('baseline_cov_crit', '0.40');
+    this.#settings.set('baseline_drift_warn', '0.8');
+    this.#settings.set('baseline_drift_crit', '1.5');
+    this.#settings.set('baseline_dwell_s', '600');
+    this.#settings.set('baseline_cov_warn_cop', '0.60');
+    this.#settings.set('baseline_cov_crit_cop', '0.40');
+    this.#settings.set('baseline_drift_warn_cop', '0.15');
+    this.#settings.set('baseline_drift_crit_cop', '0.30');
+    this.#settings.set('baseline_cov_warn_current', '0.60');
+    this.#settings.set('baseline_cov_crit_current', '0.40');
+    this.#settings.set('baseline_drift_warn_current', '1.0');
+    this.#settings.set('baseline_drift_crit_current', '2.0');
   }
 
   prepare(sql: string) {
@@ -91,6 +118,63 @@ class MockBaselineDB {
         return (value == null ? null : { value }) as T | null;
       }
       return { results: value == null ? [] : [{ value }] } as unknown as T;
+    }
+
+    if (sql.startsWith('INSERT INTO alert_state')) {
+      const [deviceId, rule, last, dwell, cooldown, suppress] = args as [string, string, string | null, string | null, string | null, number];
+      this.#alertState.set(`${deviceId}:${rule}`, {
+        last_trigger_ts: last ?? null,
+        dwell_start_ts: dwell ?? null,
+        cooldown_until_ts: cooldown ?? null,
+        suppress: suppress ?? 0,
+      });
+      return { success: true };
+    }
+
+    if (sql.startsWith('SELECT last_trigger_ts')) {
+      const [deviceId, rule] = args as [string, string];
+      const state = this.#alertState.get(`${deviceId}:${rule}`);
+      if (mode === 'first') {
+        return state ? (state as unknown as T) : null;
+      }
+      return { results: state ? ([state] as unknown as T[]) : [] };
+    }
+
+    if (sql.startsWith('UPDATE alerts SET severity=')) {
+      const [severity, metaJson, alertId] = args as [string, string, string];
+      const row = this.#alerts.find((entry) => entry.alert_id === alertId);
+      if (row) {
+        row.severity = severity;
+        row.meta_json = metaJson;
+      }
+      return { success: true };
+    }
+
+    if (sql.startsWith("UPDATE alerts SET state='closed'")) {
+      const [closedAt, metaJson, alertId] = args as [string, string, string];
+      const row = this.#alerts.find((entry) => entry.alert_id === alertId);
+      if (row) {
+        row.state = 'closed';
+        row.closed_at = closedAt;
+        row.meta_json = metaJson;
+      }
+      return { success: true };
+    }
+
+    if (sql.startsWith('INSERT INTO alerts')) {
+      const [alertId, deviceId, type, severity, openedAt, metaJson] = args as [string, string, string, string, string, string | null];
+      const row: AlertRow = {
+        alert_id: alertId,
+        device_id: deviceId,
+        type,
+        severity,
+        state: 'open',
+        opened_at: openedAt,
+        closed_at: null,
+        meta_json: metaJson ?? null,
+      };
+      this.#alerts.push(row);
+      return { success: true };
     }
 
     if (sql.startsWith('INSERT INTO device_baselines')) {
@@ -162,6 +246,53 @@ class MockBaselineDB {
       return { results: row ? ([{ kind: row.kind }] as T[]) : [] };
     }
 
+    if (sql.startsWith('SELECT alert_id') && sql.includes('FROM alerts')) {
+      const [deviceId, type, maybeKind] = args as [string, string, string | undefined];
+      const kind = maybeKind ?? 'delta_t';
+      const rows = this.#alerts
+        .filter((entry) => entry.device_id === deviceId && entry.type === type && (entry.state === 'open' || entry.state === 'ack'))
+        .filter((entry) => {
+          if (!sql.includes('json_extract')) {
+            return true;
+          }
+          try {
+            const meta = entry.meta_json ? JSON.parse(entry.meta_json) : null;
+            const metaKind = typeof meta?.kind === 'string' ? meta.kind : 'delta_t';
+            return metaKind === kind;
+          } catch {
+            return kind === 'delta_t';
+          }
+        })
+        .sort((a, b) => b.opened_at.localeCompare(a.opened_at));
+      const result = rows[0];
+      if (mode === 'first') {
+        if (!result) return null;
+        if (sql.includes('severity')) {
+          return ({ alert_id: result.alert_id, severity: result.severity } as unknown as T) ?? null;
+        }
+        return ({ alert_id: result.alert_id } as unknown as T) ?? null;
+      }
+      return { results: result ? ([result] as unknown as T[]) : [] };
+    }
+
+    if (sql.startsWith('SELECT')) {
+      if (sql.includes('SUM(CASE WHEN severity')) {
+        const warning = this.#alerts.filter(
+          (entry) =>
+            entry.type === 'baseline_deviation' &&
+            (entry.state === 'open' || entry.state === 'ack') &&
+            (entry.severity === 'major' || entry.severity === 'warning'),
+        ).length;
+        const critical = this.#alerts.filter(
+          (entry) => entry.type === 'baseline_deviation' && (entry.state === 'open' || entry.state === 'ack') && entry.severity === 'critical',
+        ).length;
+        if (mode === 'first') {
+          return { warning, critical } as unknown as T;
+        }
+        return { results: [{ warning, critical }] as unknown as T[] };
+      }
+    }
+
     if (sql.startsWith('UPDATE device_baselines SET')) {
       const [labelArg, goldenArg, expiresArg, baselineId, deviceId] = args as [string | null, number | null, string | null, string, string];
       const row = this.#baselines.find((entry) => entry.baseline_id === baselineId && entry.device_id === deviceId);
@@ -205,6 +336,14 @@ class MockBaselineDB {
 
     throw new Error(`Unsupported SQL: ${sql}`);
   }
+
+  listAlerts() {
+    return this.#alerts.map((entry) => ({ ...entry }));
+  }
+
+  setSetting(key: string, value: string) {
+    this.#settings.set(key, value);
+  }
 }
 
 function createCtx(): ExecutionContext {
@@ -214,7 +353,10 @@ function createCtx(): ExecutionContext {
   } as ExecutionContext;
 }
 
-function createEnv(db: MockBaselineDB): Env {
+function createEnv(
+  db: MockBaselineDB,
+  windowData: Record<string, Array<{ t: number; v: number | null }>> = {},
+): Env {
   const bucket = {
     get: async () => null,
     put: async () => undefined,
@@ -223,7 +365,16 @@ function createEnv(db: MockBaselineDB): Env {
   } as unknown as Env['REPORTS'];
   const doStub = {
     idFromName: () => ({ toString: () => 'stub' }),
-    get: () => ({ fetch: async () => new Response(null, { status: 501 }) }),
+    get: () => ({
+      fetch: async (url: string) => {
+        const target = new URL(url);
+        if (target.pathname === '/window') {
+          const kind = target.searchParams.get('kind') ?? 'delta_t';
+          return new Response(JSON.stringify(windowData[kind] ?? []), { status: 200 });
+        }
+        return new Response(null, { status: 501 });
+      },
+    }),
   } as unknown as Env['DeviceState'];
   const config = {
     get: async () => null,
@@ -350,4 +501,91 @@ test('baseline metadata updates enforce a single golden baseline', async () => {
   const formerGolden = list.find((entry) => entry.baseline_id === first.baseline_id);
   assert.ok(formerGolden);
   assert.equal(formerGolden?.is_golden, false);
+});
+
+test('baseline alerts evaluate per kind with independent dwell and severity', async () => {
+  const db = new MockBaselineDB();
+  db.setSetting('baseline_dwell_s', '0');
+  db.setSetting('baseline_cov_warn_cop', '0.75');
+  const baseTs = Date.UTC(2024, 0, 1, 0, 0, 0);
+  const windowData: Record<string, Array<{ t: number; v: number | null }>> = {
+    cop: Array.from({ length: 10 }, (_, index) => ({
+      t: baseTs + index * 1000,
+      v: [2.6, 2.7, 2.9, 3.1, 3.0, 3.3, 3.2, 1.5, 3.8, 4.2][index] ?? 3,
+    })),
+    current: Array.from({ length: 10 }, (_, index) => ({
+      t: baseTs + index * 1000,
+      v: [12, 11, 9, 14, 5, 4, 15, 8, 13, 16][index] ?? 10,
+    })),
+  };
+  const env = createEnv(db, windowData);
+  const ctx = createCtx();
+
+  async function createBaseline(kind: 'cop' | 'current', sample: { median: number; p25: number; p75: number }) {
+    const req = new Request('http://test/api/devices/dev-1/baselines', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind, sample, thresholds: null, label: `${kind} baseline`, is_golden: true }),
+    });
+    const res = await worker.fetch(req, env, ctx);
+    assert.equal(res?.status, 200);
+  }
+
+  await createBaseline('cop', { median: 3, p25: 2.5, p75: 3.5 });
+  await createBaseline('current', { median: 8, p25: 6, p75: 10 });
+
+  const now = Date.UTC(2024, 0, 1, 0, 10, 0);
+  await evaluateBaselineAlerts(env as Env, 'dev-1', now);
+
+  const alerts = db.listAlerts();
+  assert.equal(alerts.length, 2);
+  const copAlert = alerts.find((entry) => {
+    try {
+      const meta = entry.meta_json ? JSON.parse(entry.meta_json) : null;
+      return meta?.kind === 'cop';
+    } catch {
+      return false;
+    }
+  });
+  assert.ok(copAlert, 'expected COP alert');
+  assert.equal(copAlert?.severity, 'major');
+  const copMeta = copAlert?.meta_json ? JSON.parse(copAlert.meta_json) : {};
+  assert.equal(copMeta.units, '');
+
+  const currentAlert = alerts.find((entry) => {
+    try {
+      const meta = entry.meta_json ? JSON.parse(entry.meta_json) : null;
+      return meta?.kind === 'current';
+    } catch {
+      return false;
+    }
+  });
+  assert.ok(currentAlert, 'expected current alert');
+  assert.equal(currentAlert?.severity, 'critical');
+  const currentMeta = currentAlert?.meta_json ? JSON.parse(currentAlert.meta_json) : {};
+  assert.equal(currentMeta.units, 'A');
+
+  windowData.cop = Array.from({ length: 6 }, (_, index) => ({ t: baseTs + 20_000 + index * 1000, v: 3 }));
+  await evaluateBaselineAlerts(env as Env, 'dev-1', now + 60_000);
+
+  const after = db.listAlerts();
+  const copAfter = after.find((entry) => {
+    try {
+      const meta = entry.meta_json ? JSON.parse(entry.meta_json) : null;
+      return meta?.kind === 'cop';
+    } catch {
+      return false;
+    }
+  });
+  const currentAfter = after.find((entry) => {
+    try {
+      const meta = entry.meta_json ? JSON.parse(entry.meta_json) : null;
+      return meta?.kind === 'current';
+    } catch {
+      return false;
+    }
+  });
+
+  assert.equal(copAfter?.state, 'closed');
+  assert.equal(currentAfter?.state, 'open');
 });
