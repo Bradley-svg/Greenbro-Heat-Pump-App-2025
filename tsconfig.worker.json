@@ -3,7 +3,7 @@
   "compilerOptions": {
     "composite": true,
     "lib": ["ES2022", "WebWorker"],
-    "types": ["@cloudflare/workers-types/2025-10-01", "hono/jsx"],
+    "types": ["hono/jsx"],
     "skipLibCheck": true,
     "noEmit": true,
     "strict": true,
@@ -12,7 +12,12 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx",
     "baseUrl": ".",
-    "typeRoots": ["./types", "./node_modules/@types"]
+    "typeRoots": [
+      "./types",
+      "./node_modules/@types",
+      "./node_modules/@cloudflare",
+      "./node_modules/@cloudflare/workers-types"
+    ]
   },
   "include": ["src"],
   "exclude": [

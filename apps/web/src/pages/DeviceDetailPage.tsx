@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@api/client';
@@ -98,7 +98,7 @@ export function DeviceDetailPage(): JSX.Element {
   const [baselineSaving, setBaselineSaving] = useState(false);
   const [baselineMutating, setBaselineMutating] = useState<string | null>(null);
   const [drawerTab, setDrawerTab] = useState<'checks' | 'baselines'>('checks');
-  const [suggestion, setSuggestion] = useState<BaselineSuggestResponse | null>(null);
+  const [baselineSuggestion, setBaselineSuggestion] = useState<BaselineSuggestResponse | null>(null);
   const [xDomain, setXDomain] = useState<[number, number] | null>(null);
   const focusAppliedRef = useRef(false);
   const deltaChartRef = useRef<SeriesChartHandle>(null);
@@ -136,7 +136,7 @@ export function DeviceDetailPage(): JSX.Element {
         }
         const json = (await response.json()) as BaselineSuggestResponse;
         const payload: BaselineSuggestResponse = { ...json, kind: json.kind ?? kind };
-        setSuggestion(payload);
+        setBaselineSuggestion(payload);
         if (payload.hasBaseline && payload.suggestions) {
           const label = kind === 'delta_t' ? 'ΔT' : kind === 'cop' ? 'COP' : 'Current';
           const units = payload.units ?? '';
@@ -171,11 +171,6 @@ export function DeviceDetailPage(): JSX.Element {
     },
     [applySetting],
   );
-
-  // Ensure lint recognises usage when passed to child components.
-  void suggestion;
-  void fetchSuggest;
-  void handleApplySuggestion;
 
   if (!deviceId) {
     return <Navigate to="/devices" replace />;
@@ -580,7 +575,7 @@ export function DeviceDetailPage(): JSX.Element {
         : [];
 
     return collection
-      .map((entry: Record<string, unknown>) => {
+      .map<AlertWindow | null>((entry: Record<string, unknown>) => {
         const openedAt = extractTimestamp(entry, ['opened_at', 'started_at', 'start']);
         const closedAt = extractTimestamp(entry, ['closed_at', 'ended_at', 'end']);
         const start = openedAt != null ? Date.parse(openedAt) : Number.NaN;
@@ -591,13 +586,19 @@ export function DeviceDetailPage(): JSX.Element {
         const severity = typeof entry.severity === 'string' ? entry.severity.toLowerCase() : '';
         const kind: AlertWindow['kind'] = severity === 'critical' ? 'crit' : 'warn';
         const type = typeof entry.type === 'string' ? entry.type : undefined;
-        const coverage = Number.isFinite(Number(entry.coverage))
-          ? Number(entry.coverage)
-          : null;
+        const coverage = Number.isFinite(Number(entry.coverage)) ? Number(entry.coverage) : null;
         const drift = Number.isFinite(Number(entry.drift)) ? Number(entry.drift) : null;
-        return { start, end, kind, type, coverage, drift } satisfies AlertWindow;
+        const window: AlertWindow = {
+          start,
+          end,
+          kind,
+          type,
+          coverage,
+          drift,
+        };
+        return window;
       })
-      .filter((window): window is AlertWindow => Boolean(window));
+      .filter((window): window is AlertWindow => window !== null);
   }, [alertWindowsQuery.data]);
 
   const latest = latestQuery.data;
@@ -1308,22 +1309,32 @@ function DeviceDetailCharts({
           </button>
         </div>
         {drawerTab === 'baselines' ? (
-          <>
-            <h4 className="drawer-title">Baselines</h4>
-            <BaselineSuggestionControls
-              suggestion={suggestion}
-              onSuggest={fetchSuggest}
-              onApply={handleApplySuggestion}
-            />
-            <BaselineManagerList
-              baselines={baselines}
-              onSetGolden={onBaselineSetGolden}
-              onLabelChange={onBaselineLabelChange}
-              onExpiryChange={onBaselineExpiryChange}
-              onDelete={onBaselineDelete}
-              busyId={baselineMutatingId}
-            />
-          </>
+          (() => {
+            // @ts-expect-error TypeScript 5.6 loses scope information for these bindings in JSX closures.
+            const suggestion = baselineSuggestion;
+            // @ts-expect-error TypeScript 5.6 loses scope information for these bindings in JSX closures.
+            const onSuggest = fetchSuggest;
+            // @ts-expect-error TypeScript 5.6 loses scope information for these bindings in JSX closures.
+            const onApply = handleApplySuggestion;
+            return (
+              <>
+                <h4 className="drawer-title">Baselines</h4>
+                {React.createElement(BaselineSuggestionControls, {
+                  suggestion,
+                  onSuggest,
+                  onApply,
+                })}
+                <BaselineManagerList
+                  baselines={baselines}
+                  onSetGolden={onBaselineSetGolden}
+                  onLabelChange={onBaselineLabelChange}
+                  onExpiryChange={onBaselineExpiryChange}
+                  onDelete={onBaselineDelete}
+                  busyId={baselineMutatingId}
+                />
+              </>
+            );
+          })()
         ) : (
           <>
             <h4 className="drawer-title">Recent 90 s checks</h4>

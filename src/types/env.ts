@@ -1,17 +1,17 @@
+/// <reference types="@cloudflare/workers-types" />
+
 import type { IngestMessage } from '../types';
 
-export type {
-  D1Database,
-  R2Bucket,
-  KVNamespace,
-  DurableObjectNamespace,
-  DurableObjectState,
-  MessageBatch,
-  Queue,
-  ExecutionContext,
-  ScheduledEvent,
-  ScheduledController,
-} from '@cloudflare/workers-types';
+export type D1Database = globalThis.D1Database;
+export type R2Bucket = globalThis.R2Bucket;
+export type KVNamespace = globalThis.KVNamespace;
+export type DurableObjectNamespace = globalThis.DurableObjectNamespace;
+export type DurableObjectState = globalThis.DurableObjectState;
+export type MessageBatch<T = unknown> = globalThis.MessageBatch<T>;
+export type Queue<T = unknown> = globalThis.Queue<T>;
+export type ExecutionContext = globalThis.ExecutionContext;
+export type ScheduledEvent = globalThis.ScheduledEvent;
+export type ScheduledController = globalThis.ScheduledController;
 
 export interface Env {
   // Storage
