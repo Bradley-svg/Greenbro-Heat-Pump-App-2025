@@ -110,7 +110,8 @@ export async function generateCommissioningPDF(
   drawText('Checklist:', 40, y, 14);
   y -= 18;
   for (const item of payload.checklist) {
-    drawText(`${item.passed ? '[✔]' : '[✖]'} ${item.step}${item.notes ? ` — ${item.notes}` : ''}`, 50, y);
+    const marker = item.passed ? '\u2713' : '\u2717';
+    drawText(`${marker} ${item.step}${item.notes ? ` - ${item.notes}` : ''}`, 50, y);
     y -= 14;
     if (y < 60) {
       y = resetPage();

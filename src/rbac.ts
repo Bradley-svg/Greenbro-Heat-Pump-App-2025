@@ -5,6 +5,7 @@ import type { Role } from './types';
 export type AccessContext = {
   sub: string;
   email?: string;
+  name?: string;
   roles: Role[];
   clientIds?: string[];
 };
@@ -30,7 +31,13 @@ export async function verifyAccessJWT(env: Env, jwt: string): Promise<AccessCont
   const roles = normalizeRoles(payload);
   const clientIds = extractClientIds(payload);
 
-  return { sub: String(payload.sub), email: str(payload, 'email'), roles, clientIds };
+  return {
+    sub: String(payload.sub),
+    email: str(payload, 'email'),
+    name: str(payload, 'name'),
+    roles,
+    clientIds,
+  };
 }
 
 function getCachedJwks(env: Env): ReturnType<typeof createRemoteJWKSet> {

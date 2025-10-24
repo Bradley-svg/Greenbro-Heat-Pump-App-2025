@@ -3,6 +3,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
+import { SignJWT, jwtVerify } from 'jose';
 import type { Env, ExecutionContext, MessageBatch, ScheduledEvent } from './types/env';
 import type {
   ClientMonthlyReportPayload,
@@ -113,6 +114,297 @@ const DEV_ALLOWED_ORIGINS = Object.freeze([
 ]);
 
 const DEV_BYPASS_AUTH: AccessContext = { sub: 'dev-bypass', roles: ['admin', 'ops'], clientIds: [] };
+
+type NormalizedAuthUser = {
+  id: string;
+  email: string;
+  name?: string;
+  passwordHash: string;
+  roles: Role[];
+  clientIds: string[];
+};
+
+type ApiUser = {
+  id: string;
+  email: string;
+  name?: string;
+  roles: Role[];
+  clientIds: string[];
+};
+
+type RefreshRecord = {
+  sessionId: string;
+  user: ApiUser;
+};
+
+const APP_JWT_ISSUER = 'greenbro-app';
+const APP_JWT_AUDIENCE = 'greenbro-app';
+const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
+const REFRESH_TOKEN_PREFIX = 'auth-refresh:';
+
+let cachedJwtSecret: { secret: string; key: Uint8Array } | null = null;
+
+function getJwtSecretKey(env: Env): Uint8Array {
+  if (!cachedJwtSecret || cachedJwtSecret.secret !== env.JWT_SECRET) {
+    cachedJwtSecret = { secret: env.JWT_SECRET, key: new TextEncoder().encode(env.JWT_SECRET) };
+  }
+  return cachedJwtSecret.key;
+}
+
+function normalizeRoleList(raw: unknown): Role[] {
+  const values = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(',').map((value) => value.trim())
+      : [];
+  const set = new Set<Role>();
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const normalised = value.trim().toLowerCase();
+    if (normalised === 'admin') set.add('admin');
+    else if (normalised === 'ops') set.add('ops');
+    else if (normalised === 'client') set.add('client');
+    else if (normalised === 'contractor') set.add('contractor');
+  }
+  return [...set];
+}
+
+function normalizeClientIds(raw: unknown): string[] {
+  const values = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(',')
+      : [];
+  const set = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (trimmed) {
+      set.add(trimmed);
+    }
+  }
+  return [...set];
+}
+
+async function hashPassword(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+async function normalizeAuthUser(entry: unknown): Promise<NormalizedAuthUser | null> {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const record = entry as Record<string, unknown>;
+  const idRaw = record.id ?? record.userId ?? record.uid;
+  const emailRaw = record.email;
+  const nameRaw = record.name;
+  const rolesRaw = record.roles ?? record.role;
+  const clientsRaw = record.clientIds ?? record.clients;
+  const passHashRaw = record.password_hash ?? record.passwordHash;
+  const passRaw = record.password;
+
+  const id = typeof idRaw === 'string' && idRaw.trim().length > 0 ? idRaw.trim() : null;
+  const email = typeof emailRaw === 'string' && emailRaw.trim().length > 0 ? emailRaw.trim().toLowerCase() : null;
+  if (!id || !email) {
+    return null;
+  }
+
+  let passwordHash: string | null = typeof passHashRaw === 'string' && passHashRaw ? passHashRaw : null;
+  if (!passwordHash && typeof passRaw === 'string' && passRaw) {
+    passwordHash = await hashPassword(passRaw);
+  }
+  if (!passwordHash) {
+    return null;
+  }
+
+  const roles = normalizeRoleList(rolesRaw);
+  if (roles.length === 0) {
+    return null;
+  }
+
+  const name = typeof nameRaw === 'string' && nameRaw.trim().length > 0 ? nameRaw.trim() : undefined;
+  const clientIds = normalizeClientIds(clientsRaw);
+
+  return {
+    id,
+    email,
+    name,
+    passwordHash: passwordHash.toLowerCase(),
+    roles,
+    clientIds,
+  };
+}
+
+async function loadAuthUsers(DB: D1Database): Promise<NormalizedAuthUser[]> {
+  const raw = await getSetting(DB, 'auth_users');
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const resolved = await Promise.all(parsed.map((entry) => normalizeAuthUser(entry)));
+    return resolved.filter((user): user is NormalizedAuthUser => user !== null);
+  } catch (error) {
+    console.warn('Failed to parse auth_users setting', error);
+    return [];
+  }
+}
+
+async function authenticateUser(DB: D1Database, email: string, password: string): Promise<NormalizedAuthUser | null> {
+  const lookup = email.trim().toLowerCase();
+  if (!lookup || !password) {
+    return null;
+  }
+  const users = await loadAuthUsers(DB);
+  const user = users.find((entry) => entry.email === lookup);
+  if (!user) {
+    return null;
+  }
+  const attemptHash = await hashPassword(password);
+  return timingSafeEqual(attemptHash.toLowerCase(), user.passwordHash) ? user : null;
+}
+
+function toApiUser(user: NormalizedAuthUser): ApiUser {
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    roles: [...user.roles],
+    clientIds: [...user.clientIds],
+  };
+}
+
+function generateRefreshToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function generateSessionId(): string {
+  return crypto.randomUUID();
+}
+
+async function createAccessToken(env: Env, user: ApiUser, sessionId: string): Promise<string> {
+  const payload: Record<string, unknown> = {
+    email: user.email,
+    name: user.name,
+    roles: user.roles,
+    clientIds: user.clientIds,
+    sid: sessionId,
+  };
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+    .setIssuer(APP_JWT_ISSUER)
+    .setAudience(APP_JWT_AUDIENCE)
+    .setSubject(user.id)
+    .setIssuedAt()
+    .setExpirationTime(`${ACCESS_TOKEN_TTL_SECONDS}s`)
+    .sign(getJwtSecretKey(env));
+}
+
+async function storeRefreshToken(env: Env, token: string, record: RefreshRecord): Promise<void> {
+  try {
+    await env.CONFIG.put(`${REFRESH_TOKEN_PREFIX}${token}`, JSON.stringify(record), {
+      expirationTtl: REFRESH_TOKEN_TTL_SECONDS,
+    });
+  } catch (error) {
+    console.error('Failed to persist refresh token', error);
+  }
+}
+
+async function readRefreshRecord(env: Env, token: string): Promise<RefreshRecord | null> {
+  try {
+    const raw = await env.CONFIG.get(`${REFRESH_TOKEN_PREFIX}${token}`);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : null;
+    const userRaw = parsed.user;
+    if (!sessionId || !userRaw || typeof userRaw !== 'object') {
+      return null;
+    }
+    const userRecord = userRaw as Record<string, unknown>;
+    const id = typeof userRecord.id === 'string' ? userRecord.id : null;
+    const email = typeof userRecord.email === 'string' ? userRecord.email : null;
+    if (!id || !email) {
+      return null;
+    }
+    const name = typeof userRecord.name === 'string' ? userRecord.name : undefined;
+    const roles = normalizeRoleList(userRecord.roles);
+    if (roles.length === 0) {
+      return null;
+    }
+    const clientIds = normalizeClientIds(userRecord.clientIds);
+    return { sessionId, user: { id, email, name, roles, clientIds } };
+  } catch (error) {
+    console.warn('Failed to read refresh token', error);
+    return null;
+  }
+}
+
+async function deleteRefreshToken(env: Env, token: string): Promise<void> {
+  try {
+    await env.CONFIG.delete(`${REFRESH_TOKEN_PREFIX}${token}`);
+  } catch (error) {
+    console.warn('Failed to delete refresh token', error);
+  }
+}
+
+async function verifyAppToken(env: Env, token: string): Promise<AccessContext | null> {
+  try {
+    const { payload } = await jwtVerify(token, getJwtSecretKey(env), {
+      issuer: APP_JWT_ISSUER,
+      audience: APP_JWT_AUDIENCE,
+    });
+    const sub = typeof payload.sub === 'string' ? payload.sub : null;
+    if (!sub) {
+      return null;
+    }
+    const email = typeof payload.email === 'string' ? payload.email : undefined;
+    const name = typeof payload.name === 'string' ? payload.name : undefined;
+    const roles = normalizeRoleList((payload as any).roles);
+    if (roles.length === 0) {
+      return null;
+    }
+    const clientIds = normalizeClientIds((payload as any).clientIds);
+    return { sub, email, name, roles, clientIds };
+  } catch (error) {
+    console.warn('Invalid bearer auth token', error);
+    return null;
+  }
+}
+
+function getDevBypassUser(): ApiUser {
+  return {
+    id: DEV_BYPASS_AUTH.sub,
+    email: DEV_BYPASS_AUTH.email ?? 'dev@greenbro.test',
+    name: 'Developer Bypass',
+    roles: [...DEV_BYPASS_AUTH.roles],
+    clientIds: [...(DEV_BYPASS_AUTH.clientIds ?? [])],
+  };
+}
 
 function getAllowedOrigins(env: Env): string[] {
   const configured = (env.CORS_ALLOWED_ORIGINS ?? '')
@@ -1130,27 +1422,137 @@ app.get('/brand/logo-mono.svg', async (c) => {
   return new Response(brandLogoMonoSvg, { headers: baseHeaders });
 });
 
+app.post('/api/auth/login', async (c) => {
+  const devBypass = c.env.DEV_AUTH_BYPASS === '1';
+  let body: { email?: string; password?: string } | null = null;
+  try {
+    body = await c.req.json<{ email?: string; password?: string }>();
+  } catch {}
+
+  const email = typeof body?.email === 'string' ? body.email.trim() : '';
+  const password = typeof body?.password === 'string' ? body.password : '';
+  if (!email || !password) {
+    return c.json({ error: 'Invalid email or password' }, 401);
+  }
+
+  let user: ApiUser | null = null;
+  if (devBypass) {
+    user = getDevBypassUser();
+  } else {
+    const authenticated = await authenticateUser(c.env.DB, email, password);
+    if (!authenticated) {
+      return c.json({ error: 'Invalid email or password' }, 401);
+    }
+    user = toApiUser(authenticated);
+  }
+
+  const sessionId = generateSessionId();
+  const accessToken = await createAccessToken(c.env, user, sessionId);
+  const refreshToken = generateRefreshToken();
+  await storeRefreshToken(c.env, refreshToken, { sessionId, user });
+
+  return c.json({ user, accessToken, refreshToken });
+});
+
+app.post('/api/auth/refresh', async (c) => {
+  const devBypass = c.env.DEV_AUTH_BYPASS === '1';
+  let body: { refreshToken?: string } | null = null;
+  try {
+    body = await c.req.json<{ refreshToken?: string }>();
+  } catch {}
+
+  const provided = typeof body?.refreshToken === 'string' ? body.refreshToken.trim() : '';
+  if (!provided) {
+    return c.json({ error: 'refreshToken required' }, 400);
+  }
+
+  if (devBypass) {
+    const user = getDevBypassUser();
+    const sessionId = generateSessionId();
+    const accessToken = await createAccessToken(c.env, user, sessionId);
+    const nextRefreshToken = generateRefreshToken();
+    await storeRefreshToken(c.env, nextRefreshToken, { sessionId, user });
+    return c.json({ accessToken, refreshToken: nextRefreshToken, user });
+  }
+
+  const record = await readRefreshRecord(c.env, provided);
+  if (!record) {
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  const accessToken = await createAccessToken(c.env, record.user, record.sessionId);
+  const nextRefreshToken = generateRefreshToken();
+  await storeRefreshToken(c.env, nextRefreshToken, record);
+  await deleteRefreshToken(c.env, provided);
+
+  return c.json({ accessToken, refreshToken: nextRefreshToken, user: record.user });
+});
+
+app.post('/api/auth/logout', async (c) => {
+  const body = await c.req
+    .json<{ refreshToken?: string }>()
+    .catch(() => null);
+  const refreshToken = typeof body?.refreshToken === 'string' ? body.refreshToken.trim() : '';
+  if (refreshToken) {
+    await deleteRefreshToken(c.env, refreshToken);
+  }
+  return c.json({ ok: true });
+});
+
 app.use('/api/*', async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  if (path === '/api/auth/login' || path === '/api/auth/refresh' || path === '/api/auth/logout') {
+    await next();
+    return;
+  }
+
   if (c.env.DEV_AUTH_BYPASS === '1') {
     c.set('auth', { ...DEV_BYPASS_AUTH, roles: [...DEV_BYPASS_AUTH.roles], clientIds: [...(DEV_BYPASS_AUTH.clientIds ?? [])] });
     await next();
     return;
   }
 
-  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
-  if (!jwt) {
-    return c.text('Unauthorized (missing Access JWT)', 401);
+  let auth: AccessContext | null = null;
+  const authorization = c.req.header('Authorization');
+  if (authorization && authorization.startsWith('Bearer ')) {
+    const token = authorization.slice(7).trim();
+    if (token) {
+      auth = await verifyAppToken(c.env, token);
+    }
   }
 
-  const auth = await getAccessContext(c, jwt);
   if (!auth) {
-    return c.text('Unauthorized (invalid Access JWT)', 401);
+    const jwt = c.req.header('Cf-Access-Jwt-Assertion');
+    if (jwt) {
+      auth = await getAccessContext(c, jwt);
+    }
+  }
+
+  if (!auth) {
+    return c.text('Unauthorized', 401);
   }
   if (auth.roles.length === 0) {
     return c.text('Forbidden (no role)', 403);
   }
   c.set('auth', auth);
   await next();
+});
+
+app.get('/api/auth/me', async (c) => {
+  if (c.env.DEV_AUTH_BYPASS === '1') {
+    return c.json(getDevBypassUser());
+  }
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  return c.json({
+    id: auth.sub,
+    email: auth.email ?? auth.sub,
+    name: auth.name ?? auth.email ?? auth.sub,
+    roles: auth.roles,
+    clientIds: auth.clientIds ?? [],
+  });
 });
 
 app.use('/*', renderer);
@@ -1180,6 +1582,100 @@ app.get('/api/devices/:id/latest', async (c) => {
   const row = await DB.prepare('SELECT * FROM latest_state WHERE device_id=?').bind(id).first();
 
   return row ? c.json(row) : c.text('Not found', 404);
+});
+
+app.get('/api/devices/:id/series', async (c) => {
+  const { DB } = c.env;
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const deviceId = c.req.param('id');
+  if (!(await canAccessDevice(DB, auth, deviceId))) {
+    return c.text('Forbidden', 403);
+  }
+
+  const rangeParam = (c.req.query('range') ?? '24h').toLowerCase();
+  const rangeConfig = {
+    '24h': { window: "-24 hours", limit: 1440 },
+    '7d': { window: "-7 days", limit: 10080 },
+  } as const;
+  type RangeKey = keyof typeof rangeConfig;
+  const rangeKey = (rangeParam in rangeConfig ? (rangeParam as RangeKey) : '24h') as RangeKey;
+  const selectedRange = rangeConfig[rangeKey];
+  const rangeWindow = selectedRange.window;
+  const rangeLimit = selectedRange.limit;
+
+  const rows = await DB.prepare(
+    `SELECT ts, metrics_json, deltaT, thermalKW, cop, flowLps, compCurrentA, powerKW
+       FROM telemetry
+      WHERE device_id=? AND ts >= datetime('now', ?)
+      ORDER BY ts DESC
+      LIMIT ?`,
+  )
+    .bind(deviceId, rangeWindow, rangeLimit)
+    .all<{
+      ts: string;
+      metrics_json: string | null;
+      deltaT: number | null;
+      thermalKW: number | null;
+      cop: number | null;
+      flowLps: number | null;
+      compCurrentA: number | null;
+      powerKW: number | null;
+    }>();
+
+  const points = (rows.results ?? [])
+    .reverse()
+    .map((row) => {
+      const metrics: Record<string, number | null> = {};
+      if (row.metrics_json) {
+        try {
+          const parsed = JSON.parse(row.metrics_json) as Record<string, unknown>;
+          for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === 'number') {
+              metrics[key] = Number.isFinite(value) ? value : null;
+            } else if (value == null) {
+              metrics[key] = null;
+            }
+          }
+        } catch (error) {
+          console.warn('Failed to parse metrics_json', error);
+        }
+      }
+
+      const setMetric = (key: string, value: unknown) => {
+        if (metrics[key] != null && typeof metrics[key] === 'number') {
+          return;
+        }
+        if (value == null) {
+          if (!(key in metrics)) {
+            metrics[key] = null;
+          }
+          return;
+        }
+        const num = typeof value === 'number' ? value : Number(value);
+        if (Number.isFinite(num)) {
+          metrics[key] = num;
+        }
+      };
+
+      setMetric('delta_t', row.deltaT);
+      setMetric('deltaT', row.deltaT);
+      setMetric('cop', row.cop);
+      setMetric('thermal_kw', row.thermalKW);
+      setMetric('thermalKW', row.thermalKW);
+      setMetric('flow_lps', row.flowLps);
+      setMetric('flowLps', row.flowLps);
+      setMetric('compressor_current', row.compCurrentA);
+      setMetric('compCurrentA', row.compCurrentA);
+      setMetric('power_kw', row.powerKW);
+      setMetric('powerKW', row.powerKW);
+
+      return { timestamp: row.ts, metrics };
+    });
+
+  return c.json(points);
 });
 
 app.get('/api/devices/:id/commissioning/window', async (c) => {
@@ -1753,48 +2249,48 @@ app.post('/api/admin/settings', async (c) => {
   return c.json({ ok: true });
 });
 
-app.get('/api/admin/presets', async (c) => {
-  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
-  if (!jwt) {
-    return c.text('Unauthorized', 401);
-  }
-  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+app.get('/api/admin/archive/presets', async (c) => {
+  const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
-  const tables = ['telemetry', 'alerts', 'incidents'] as const;
-  const result: Record<string, any[]> = {};
-  for (const table of tables) {
-    const raw = await getSetting(c.env.DB, `export_presets_${table}`);
+  const table = c.req.query('table');
+  if (!table) {
+    return c.json({ presets: [] });
+  }
+  const raw = await getSetting(c.env.DB, `export_presets_${table}`);
+  let presets: unknown = [];
+  if (raw) {
     try {
-      result[table] = raw ? JSON.parse(raw) : [];
-    } catch {
-      result[table] = [];
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        presets = parsed;
+      }
+    } catch (error) {
+      console.warn('Failed to parse archive presets', error);
     }
   }
-  return c.json(result);
+  return c.json({ presets });
 });
 
-app.post('/api/admin/presets', async (c) => {
-  const jwt = c.req.header('Cf-Access-Jwt-Assertion');
-  if (!jwt) {
-    return c.text('Unauthorized', 401);
-  }
-  const auth = await verifyAccessJWT(c.env, jwt).catch(() => null);
+app.post('/api/admin/archive/presets', async (c) => {
+  const auth = c.get('auth');
   if (!auth) {
     return c.text('Unauthorized', 401);
   }
   requireRole(auth, ['admin', 'ops']);
-  const { table, presets } = await c.req.json().catch(() => ({}));
-  if (!['telemetry', 'alerts', 'incidents'].includes(String(table))) {
+  const body = await c.req.json<{ table?: string; presets?: unknown }>().catch(() => null);
+  const table = typeof body?.table === 'string' && body.table.trim().length > 0 ? body.table.trim() : null;
+  const presets = body?.presets ?? [];
+  if (!table) {
     return c.text('Bad Request', 400);
   }
-  const err = validatePresets(presets);
-  if (err) {
-    return c.json({ ok: false, error: err }, 400);
+  const errorMsg = validatePresets(presets);
+  if (errorMsg) {
+    return c.json({ ok: false, error: errorMsg }, 400);
   }
-  await setSetting(c.env.DB, `export_presets_${table}`, JSON.stringify(presets));
+  await setSetting(c.env.DB, `export_presets_${table}`, JSON.stringify(presets ?? []));
   return c.json({ ok: true });
 });
 
@@ -3409,6 +3905,37 @@ app.get('/api/overview', async (c) => {
   return c.json(data);
 });
 
+app.get('/api/overview/kpis', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const snapshot = await collectOverviewSnapshot(c.env.DB, auth, { includeSites: false, includeSeries: false });
+  const onlinePct = snapshot.totalDevices > 0 ? (100 * snapshot.onlineCount) / snapshot.totalDevices : 0;
+  return c.json({
+    online_pct: onlinePct,
+    open_alerts: snapshot.openAlerts,
+    avg_cop: snapshot.avgCop ?? 0,
+    low_dt: snapshot.lowDeltaCount,
+    updated_at: snapshot.updatedAt,
+  });
+});
+
+app.get('/api/overview/sparklines', async (c) => {
+  const auth = c.get('auth');
+  if (!auth) {
+    return c.text('Unauthorized', 401);
+  }
+  const snapshot = await collectOverviewSnapshot(c.env.DB, auth, { includeSites: false, includeSeries: true });
+  const deltaSeries = snapshot.deltaSeries
+    .map((entry) => (typeof entry.value === 'number' && Number.isFinite(entry.value) ? entry.value : null))
+    .filter((value): value is number => value != null);
+  const copSeries = snapshot.copSeries
+    .map((entry) => (typeof entry.value === 'number' && Number.isFinite(entry.value) ? entry.value : null))
+    .filter((value): value is number => value != null);
+  return c.json({ delta_t: deltaSeries, cop: copSeries });
+});
+
 app.get('/api/devices', async (c) => {
   const { DB } = c.env;
   const auth = c.get('auth');
@@ -3462,8 +3989,24 @@ app.get('/api/devices', async (c) => {
   const results = rows.results ?? [];
   const isClientOnly =
     auth && auth.roles.includes('client') && !(auth.roles.includes('admin') || auth.roles.includes('ops'));
-  const out = isClientOnly ? results.map((r) => ({ ...r, device_id: maskId(r.device_id) })) : results;
-  return c.json(out);
+
+  const devices = results.map((row: any) => {
+    const id = typeof row.device_id === 'string' ? row.device_id : String(row.device_id ?? '');
+    const online = Number(row.online) === 1;
+    const clients: string[] =
+      typeof row.clients === 'string' && row.clients.length > 0 ? row.clients.split(',') : [];
+    const baseName = typeof row.site_name === 'string' && row.site_name ? row.site_name : id;
+    return {
+      id,
+      name: isClientOnly ? maskId(id) : baseName,
+      status: online ? 'online' : 'offline',
+      siteId: (typeof row.site_id === 'string' && row.site_id) || null,
+      lastHeartbeat: typeof row.last_seen_at === 'string' ? row.last_seen_at : null,
+      clientIds: clients.filter((value: string) => value && value.length > 0),
+    };
+  });
+
+  return c.json(devices);
 });
 
 app.get('/api/regions', async (c) => {
@@ -5384,14 +5927,51 @@ const toNumber = (value: unknown): number | null => {
   return null;
 };
 
-async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<OverviewData> {
+type OverviewSnapshot = {
+  totalDevices: number;
+  onlineCount: number;
+  openAlerts: number;
+  avgCop: number | null;
+  lowDeltaCount: number;
+  updatedAt: string | null;
+  sites: OverviewData['sites'];
+  deltaSeries: OverviewData['series']['deltaT'];
+  copSeries: OverviewData['series']['cop'];
+};
+
+type OverviewSnapshotOptions = {
+  includeSites?: boolean;
+  includeSeries?: boolean;
+};
+
+const emptyOverviewSnapshot = (): OverviewSnapshot => ({
+  totalDevices: 0,
+  onlineCount: 0,
+  openAlerts: 0,
+  avgCop: null,
+  lowDeltaCount: 0,
+  updatedAt: null,
+  sites: [],
+  deltaSeries: [],
+  copSeries: [],
+});
+
+
+async function collectOverviewSnapshot(
+  DB: D1Database,
+  auth: AccessContext | undefined,
+  options: OverviewSnapshotOptions = {},
+): Promise<OverviewSnapshot> {
+  const includeSites = options.includeSites !== false;
+  const includeSeries = options.includeSeries !== false;
+
   const restricted = !!auth && (auth.roles.includes('client') || auth.roles.includes('contractor'));
   let siteFilter: string[] | null = null;
 
   if (restricted) {
     const clientIds = auth?.clientIds ?? [];
     if (clientIds.length === 0) {
-      return createEmptyOverview();
+      return emptyOverviewSnapshot();
     }
     const placeholders = clientIds.map(() => '?').join(',');
     const siteRows = await DB.prepare(
@@ -5401,9 +5981,9 @@ async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<
       .all();
     const sites = (siteRows.results ?? [])
       .map((row: any) => row.site_id as string | null)
-      .filter((siteId): siteId is string => !!siteId);
+      .filter((value): value is string => typeof value === 'string' && value.length > 0);
     if (sites.length === 0) {
-      return createEmptyOverview();
+      return emptyOverviewSnapshot();
     }
     siteFilter = [...new Set(sites)];
   }
@@ -5438,129 +6018,146 @@ async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<
     .first<{ avgCop: number | null }>()
     .catch(() => null);
 
-  const telemetryRows = await DB.prepare(
+  const updatedRow = await DB.prepare(
     siteFilter
-      ? `SELECT t.ts, t.deltaT, t.cop FROM telemetry t JOIN devices d ON d.device_id = t.device_id WHERE t.ts >= datetime('now', '-24 hours') AND d.site_id IN (${sitePlaceholder}) ORDER BY t.ts DESC LIMIT 240`
-      : `SELECT ts, deltaT, cop FROM telemetry WHERE ts >= datetime('now', '-24 hours') ORDER BY ts DESC LIMIT 240`,
+      ? `SELECT MAX(ls.updated_at) AS updated_at FROM latest_state ls JOIN devices d ON d.device_id = ls.device_id WHERE d.site_id IN (${sitePlaceholder})`
+      : `SELECT MAX(updated_at) AS updated_at FROM latest_state`,
   )
     .bind(...bindSites)
-    .all()
+    .first<{ updated_at: string | null }>()
     .catch(() => null);
 
-  const telemetry = (telemetryRows?.results ?? []).reverse();
-  const deltaSeries = telemetry.map((row: any) => ({ ts: row.ts as string, value: toNumber(row.deltaT) }));
-  const copSeries = telemetry.map((row: any) => ({ ts: row.ts as string, value: toNumber(row.cop) }));
+  const deltaSeries: OverviewData['series']['deltaT'] = [];
+  const copSeries: OverviewData['series']['cop'] = [];
 
-  const severityRows = await DB.prepare(
-    siteFilter
-      ? `SELECT d.site_id AS site_id,
-               MAX(CASE a.severity WHEN 'critical' THEN 3 WHEN 'major' THEN 2 WHEN 'minor' THEN 1 ELSE 0 END) AS severity_rank,
-               COUNT(*) AS open_alerts
-         FROM alerts a
-         JOIN devices d ON d.device_id = a.device_id
-         WHERE a.state IN ('open','ack') AND d.site_id IN (${sitePlaceholder})
-         GROUP BY d.site_id`
-      : `SELECT d.site_id AS site_id,
-               MAX(CASE a.severity WHEN 'critical' THEN 3 WHEN 'major' THEN 2 WHEN 'minor' THEN 1 ELSE 0 END) AS severity_rank,
-               COUNT(*) AS open_alerts
-         FROM alerts a
-         JOIN devices d ON d.device_id = a.device_id
-         WHERE a.state IN ('open','ack')
-         GROUP BY d.site_id`,
-  )
-    .bind(...bindSites)
-    .all()
-    .catch(() => null);
-
-  const severityMap = new Map<string, { rank: number; openAlerts: number }>();
-  for (const row of severityRows?.results ?? []) {
-    const siteId = (row as any).site_id as string | null;
-    if (!siteId) continue;
-    const rank = toNumber((row as any).severity_rank) ?? 0;
-    const openAlerts = toNumber((row as any).open_alerts) ?? 0;
-    severityMap.set(siteId, { rank, openAlerts });
-  }
-
-  const siteRows = await DB.prepare(
-    `WITH all_sites AS (
-      SELECT site_id FROM sites WHERE site_id IS NOT NULL
-      UNION
-      SELECT DISTINCT site_id FROM devices WHERE site_id IS NOT NULL
-      UNION
-      SELECT DISTINCT site_id FROM site_clients WHERE site_id IS NOT NULL
+  if (includeSeries) {
+    const telemetryRows = await DB.prepare(
+      siteFilter
+        ? `SELECT t.ts, t.deltaT, t.cop FROM telemetry t JOIN devices d ON d.device_id = t.device_id WHERE t.ts >= datetime('now','-24 hours') AND d.site_id IN (${sitePlaceholder}) ORDER BY t.ts DESC LIMIT 240`
+        : `SELECT ts, deltaT, cop FROM telemetry WHERE ts >= datetime('now', '-24 hours') ORDER BY ts DESC LIMIT 240`,
     )
-    SELECT a.site_id, s.name, s.region, s.lat, s.lon,
-           COALESCE(cnt.total_devices, 0) AS device_count,
-           COALESCE(cnt.online_devices, 0) AS online_count
-    FROM all_sites a
-    LEFT JOIN sites s ON s.site_id = a.site_id
-    LEFT JOIN (
-      SELECT site_id,
-             COUNT(*) AS total_devices,
-             SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online_devices
-      FROM devices
-      GROUP BY site_id
-    ) cnt ON cnt.site_id = a.site_id
-    ${siteFilter ? `WHERE a.site_id IN (${sitePlaceholder})` : ''}
-    ORDER BY a.site_id`,
-  )
-    .bind(...bindSites)
-    .all()
-    .catch(() => null);
+      .bind(...bindSites)
+      .all()
+      .catch(() => null);
+
+    for (const row of (telemetryRows?.results ?? []).reverse()) {
+      const ts = (row as any).ts as string;
+      deltaSeries.push({ ts, value: toNumber((row as any).deltaT) });
+      copSeries.push({ ts, value: toNumber((row as any).cop) });
+    }
+  }
 
   const sites: OverviewData['sites'] = [];
-  const seenSites = new Set<string>();
+  if (includeSites) {
+    const severityRows = await DB.prepare(
+      siteFilter
+        ? `SELECT d.site_id AS site_id,
+                 MAX(CASE a.severity WHEN 'critical' THEN 3 WHEN 'major' THEN 2 WHEN 'minor' THEN 1 ELSE 0 END) AS severity_rank,
+                 COUNT(*) AS open_alerts
+           FROM alerts a
+           JOIN devices d ON d.device_id = a.device_id
+           WHERE a.state IN ('open','ack') AND d.site_id IN (${sitePlaceholder})
+           GROUP BY d.site_id`
+        : `SELECT d.site_id AS site_id,
+                 MAX(CASE a.severity WHEN 'critical' THEN 3 WHEN 'major' THEN 2 WHEN 'minor' THEN 1 ELSE 0 END) AS severity_rank,
+                 COUNT(*) AS open_alerts
+           FROM alerts a
+           JOIN devices d ON d.device_id = a.device_id
+           WHERE a.state IN ('open','ack')
+           GROUP BY d.site_id`,
+    )
+      .bind(...bindSites)
+      .all()
+      .catch(() => null);
 
-  for (const row of siteRows?.results ?? []) {
-    const siteId = (row as any).site_id as string | null;
-    if (!siteId) continue;
-    seenSites.add(siteId);
-    const stats = severityMap.get(siteId);
-    const rank = stats?.rank ?? 0;
-    const severity: 'critical' | 'major' | 'minor' | null =
-      rank >= 3 ? 'critical' : rank >= 2 ? 'major' : rank >= 1 ? 'minor' : null;
-    const deviceCount = toNumber((row as any).device_count) ?? 0;
-    const status: 'critical' | 'major' | 'ok' | 'empty' =
-      deviceCount === 0 ? 'empty' : severity === 'critical' ? 'critical' : severity === 'major' ? 'major' : 'ok';
-    sites.push({
-      siteId,
-      name: ((row as any).name as string) ?? null,
-      region: ((row as any).region as string) ?? null,
-      lat: toNumber((row as any).lat),
-      lon: toNumber((row as any).lon),
-      deviceCount,
-      onlineCount: toNumber((row as any).online_count) ?? 0,
-      openAlerts: stats?.openAlerts ?? 0,
-      maxSeverity: severity,
-      status,
-    });
-  }
+    const severityMap = new Map<string, { rank: number; openAlerts: number }>();
+    for (const row of severityRows?.results ?? []) {
+      const siteId = (row as any).site_id as string | null;
+      if (!siteId) continue;
+      const rank = toNumber((row as any).severity_rank) ?? 0;
+      const openAlerts = toNumber((row as any).open_alerts) ?? 0;
+      severityMap.set(siteId, { rank, openAlerts });
+    }
 
-  if (siteFilter) {
-    for (const siteId of siteFilter) {
-      if (seenSites.has(siteId)) continue;
+    const siteRows = await DB.prepare(
+      `WITH all_sites AS (
+        SELECT site_id FROM sites WHERE site_id IS NOT NULL
+        UNION
+        SELECT DISTINCT site_id FROM devices WHERE site_id IS NOT NULL
+        UNION
+        SELECT DISTINCT site_id FROM site_clients WHERE site_id IS NOT NULL
+      )
+      SELECT a.site_id, s.name, s.region, s.lat, s.lon,
+             COALESCE(cnt.total_devices, 0) AS device_count,
+             COALESCE(cnt.online_devices, 0) AS online_count
+      FROM all_sites a
+      LEFT JOIN sites s ON s.site_id = a.site_id
+      LEFT JOIN (
+        SELECT site_id,
+               COUNT(*) AS total_devices,
+               SUM(CASE WHEN online=1 THEN 1 ELSE 0 END) AS online_devices
+        FROM devices
+        GROUP BY site_id
+      ) cnt ON cnt.site_id = a.site_id
+      ${siteFilter ? `WHERE a.site_id IN (${sitePlaceholder})` : ''}
+      ORDER BY a.site_id`,
+    )
+      .bind(...bindSites)
+      .all()
+      .catch(() => null);
+
+    const seenSites = new Set<string>();
+    for (const row of siteRows?.results ?? []) {
+      const siteId = (row as any).site_id as string | null;
+      if (!siteId) continue;
+      seenSites.add(siteId);
       const stats = severityMap.get(siteId);
       const rank = stats?.rank ?? 0;
       const severity: 'critical' | 'major' | 'minor' | null =
         rank >= 3 ? 'critical' : rank >= 2 ? 'major' : rank >= 1 ? 'minor' : null;
+      const deviceCount = toNumber((row as any).device_count) ?? 0;
       const status: 'critical' | 'major' | 'ok' | 'empty' =
-        severity === 'critical' ? 'critical' : severity === 'major' ? 'major' : 'empty';
+        deviceCount === 0 ? 'empty' : severity === 'critical' ? 'critical' : severity === 'major' ? 'major' : 'ok';
       sites.push({
         siteId,
-        name: null,
-        region: null,
-        lat: null,
-        lon: null,
-        deviceCount: 0,
-        onlineCount: 0,
+        name: ((row as any).name as string) ?? null,
+        region: ((row as any).region as string) ?? null,
+        lat: toNumber((row as any).lat),
+        lon: toNumber((row as any).lon),
+        deviceCount,
+        onlineCount: toNumber((row as any).online_count) ?? 0,
         openAlerts: stats?.openAlerts ?? 0,
         maxSeverity: severity,
         status,
       });
     }
-  }
 
-  sites.sort((a, b) => a.siteId.localeCompare(b.siteId));
+    if (siteFilter) {
+      for (const siteId of siteFilter) {
+        if (seenSites.has(siteId)) continue;
+        const stats = severityMap.get(siteId);
+        const rank = stats?.rank ?? 0;
+        const severity: 'critical' | 'major' | 'minor' | null =
+          rank >= 3 ? 'critical' : rank >= 2 ? 'major' : rank >= 1 ? 'minor' : null;
+        const status: 'critical' | 'major' | 'ok' | 'empty' =
+          severity === 'critical' ? 'critical' : severity === 'major' ? 'major' : 'empty';
+        sites.push({
+          siteId,
+          name: null,
+          region: null,
+          lat: null,
+          lon: null,
+          deviceCount: 0,
+          onlineCount: 0,
+          openAlerts: stats?.openAlerts ?? 0,
+          maxSeverity: severity,
+          status,
+        });
+      }
+    }
+
+    sites.sort((a, b) => a.siteId.localeCompare(b.siteId));
+  }
 
   const totalDevices = toNumber(deviceRow?.totalCount) ?? 0;
   const onlineCount = toNumber(deviceRow?.onlineCount) ?? 0;
@@ -5568,15 +6165,30 @@ async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<
   const avgCop = toNumber(avgCopRow?.avgCop);
 
   return {
-    kpis: {
-      onlinePct: totalDevices > 0 ? (100 * onlineCount) / totalDevices : 0,
-      openAlerts,
-      avgCop: avgCop ?? null,
-    },
+    totalDevices,
+    onlineCount,
+    openAlerts,
+    avgCop: avgCop ?? null,
+    lowDeltaCount: 0,
+    updatedAt: updatedRow?.updated_at ?? null,
     sites,
+    deltaSeries,
+    copSeries,
+  };
+}
+
+async function buildOverviewData(DB: D1Database, auth?: AccessContext): Promise<OverviewData> {
+  const snapshot = await collectOverviewSnapshot(DB, auth, { includeSites: true, includeSeries: true });
+  return {
+    kpis: {
+      onlinePct: snapshot.totalDevices > 0 ? (100 * snapshot.onlineCount) / snapshot.totalDevices : 0,
+      openAlerts: snapshot.openAlerts,
+      avgCop: snapshot.avgCop,
+    },
+    sites: snapshot.sites,
     series: {
-      deltaT: deltaSeries,
-      cop: copSeries,
+      deltaT: snapshot.deltaSeries,
+      cop: snapshot.copSeries,
     },
   };
 }
@@ -5603,10 +6215,10 @@ async function canAccessDevice(DB: D1Database, auth: AccessContext, deviceId: st
 
 async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | null | undefined) {
   if (!key) return false;
-  const row = await DB.prepare('SELECT key_hash, device_key_hash FROM devices WHERE device_id=?')
+  const row = await DB.prepare('SELECT key_hash FROM devices WHERE device_id=?')
     .bind(deviceId)
-    .first<{ key_hash?: string | null; device_key_hash?: string | null }>();
-  const stored = row?.key_hash ?? row?.device_key_hash;
+    .first<{ key_hash?: string | null }>();
+  const stored = row?.key_hash;
   if (!stored) return false;
   return crypto.subtle
     .digest('SHA-256', new TextEncoder().encode(key))

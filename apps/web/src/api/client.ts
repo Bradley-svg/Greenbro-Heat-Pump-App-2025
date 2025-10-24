@@ -40,14 +40,57 @@ function getFetchImpl(fetchImpl?: typeof fetch): typeof fetch {
 // ----- refresh helper (used by authFetch retry) -----
 export async function tryRefresh(fetchImpl?: typeof fetch): Promise<boolean> {
   const runFetch = getFetchImpl(fetchImpl);
+  let refreshToken: string | null = null;
   try {
-    const r = await runFetch('/api/auth/refresh', { method: 'POST' });
-    if (!r.ok) return false;
-    const j = await r
-      .json()
-      .catch(() => ({} as { token?: string | null }));
-    if (j?.token) setAuthToken(j.token);
-    return !!j?.token;
+    const stored = localStorage.getItem('greenbro-auth');
+    if (stored) {
+      const parsed = JSON.parse(stored) as { tokens?: { refreshToken?: string } };
+      if (parsed?.tokens?.refreshToken) {
+        refreshToken = parsed.tokens.refreshToken;
+      }
+    }
+  } catch {
+    refreshToken = null;
+  }
+
+  if (!refreshToken) {
+    return false;
+  }
+
+  try {
+    const response = await runFetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const data = await response.json().catch(() => null);
+    if (!data || typeof data.accessToken !== 'string') {
+      return false;
+    }
+
+    const nextRefresh = typeof data.refreshToken === 'string' ? data.refreshToken : undefined;
+    setAuthToken(data.accessToken);
+
+    try {
+      const stored = localStorage.getItem('greenbro-auth');
+      if (stored) {
+        const parsed = JSON.parse(stored) as Record<string, any>;
+        const currentTokens = (parsed.tokens as Record<string, any>) ?? {};
+        parsed.tokens = {
+          ...currentTokens,
+          accessToken: data.accessToken,
+          refreshToken: nextRefresh ?? currentTokens.refreshToken,
+        };
+        localStorage.setItem('greenbro-auth', JSON.stringify(parsed));
+      }
+    } catch {
+      /* ignore storage errors */
+    }
+
+    return true;
   } catch {
     return false;
   }

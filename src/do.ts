@@ -248,17 +248,15 @@ export class DeviceDO {
       const payload = (await req.json<AuditPayload>().catch(() => ({}))) ?? {};
       const subject = req.headers.get('x-operator-subject') ?? 'operator';
 
+      const loggedDeviceId =
+        payload && typeof (payload as Record<string, unknown>).deviceId === 'string'
+          ? ((payload as Record<string, unknown>).deviceId as string)
+          : this.state.id.toString();
+
       await this.env.DB.prepare(
         "INSERT INTO audit_log (id, ts, subject, device_id, action, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
       )
-        .bind(
-          crypto.randomUUID(),
-          nowISO,
-          subject,
-          this.state.id.toString(),
-          'command',
-          JSON.stringify(payload),
-        )
+        .bind(crypto.randomUUID(), nowISO, subject, loggedDeviceId, 'command', JSON.stringify(payload))
         .run();
 
       return new Response(JSON.stringify({ ok: true }), {
