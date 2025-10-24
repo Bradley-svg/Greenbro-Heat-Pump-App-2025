@@ -5908,14 +5908,6 @@ app.get('/admin/reports/history', async (c) => {
   );
 });
 
-function createEmptyOverview(): OverviewData {
-  return {
-    kpis: { onlinePct: 0, openAlerts: 0, avgCop: null },
-    sites: [],
-    series: { deltaT: [], cop: [] },
-  };
-}
-
 const toNumber = (value: unknown): number | null => {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : null;

@@ -17,6 +17,11 @@ const REQ: RequirementGroups = {
 export function preflight(env: EnvRecord | Env): void {
   const record = env as EnvRecord;
   const miss: string[] = [];
+  const bypassAuthRaw = record.DEV_AUTH_BYPASS;
+  const bypassAuth =
+    typeof bypassAuthRaw === 'string'
+      ? bypassAuthRaw !== '0' && bypassAuthRaw.toLowerCase() !== 'false'
+      : Boolean(bypassAuthRaw);
 
   for (const key of REQ.d1) {
     if (!record[key]) {
@@ -32,6 +37,9 @@ export function preflight(env: EnvRecord | Env): void {
 
   const hasJwks = Boolean(record.ACCESS_JWKS || record.ACCESS_JWKS_URL);
   for (const key of REQ.vars) {
+    if (key !== 'JWT_SECRET' && bypassAuth) {
+      continue;
+    }
     if (key === 'ACCESS_JWKS') {
       if (!hasJwks) {
         miss.push('VAR:ACCESS_JWKS');

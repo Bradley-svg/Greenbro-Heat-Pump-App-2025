@@ -19,7 +19,7 @@ BUILD_DATE = "2025-10-23"
 BUILD_SOURCE = "local"
 
 [triggers]
-crons = ["0 2 * * *", "*/5 * * * *"]
+crons = ["0 2 * * *", "*/5 * * * *", "15 2 1 * *"]
 
 [[queues.producers]]
 queue = "ingest-q"

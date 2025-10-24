@@ -23,6 +23,7 @@ Queue batches are processed within the same worker to hydrate D1 hot tables and 
 
 ```bash
 npm install
+npx playwright install --with-deps chromium
 
 # One-time resource provisioning
 wrangler d1 create GREENBRO_DB
@@ -50,12 +51,12 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
 
 ### Operational notes
 
-* **Cloudflare Access JWTs** – In Cloudflare Zero Trust, add both the dashboard and this API as Access applications that share the same audience (AUD). When requests pass through Access, the worker automatically reads the token from the `Cf-Access-Jwt-Assertion` header.
-* **API Shield** – Once an OpenAPI schema exists for these endpoints, enable schema validation on `/api/*` to reject malformed telemetry before it reaches the worker.
-* **Telemetry precision** – The consumer rounds temperatures to `0.1 °C` and power/COP values to `0.01`. Adjust the rounding logic in `src/queue.ts` if the charts require a different precision.
-* **Rollups & retention** – Consider adding a secondary consumer or a cron-triggered worker to aggregate one-minute rollups and archive telemetry older than 90 days to the `greenbro-reports` R2 bucket. The SQL schema separates `latest_state` (fast reads) from `telemetry` (history) to support this.
-* **Release gate parity** – Use `npm run dev:gate` to start `wrangler dev` alongside the Vite preview server (`npm run -w apps/web preview`) just like the CI release gate workflow. Run Playwright checks from a separate shell once both services report ready.
-* **Worker bundle size** – After `npm run build`, execute `npm run worker:size` to confirm no generated module exceeds Cloudflare's 1&nbsp;MiB limit. The command lists each module's size and fails if a file crosses the threshold, prompting additional code splitting.
+* **Cloudflare Access JWTs** - In Cloudflare Zero Trust, add both the dashboard and this API as Access applications that share the same audience (AUD). When requests pass through Access, the worker automatically reads the token from the `Cf-Access-Jwt-Assertion` header.
+* **API Shield** - Once an OpenAPI schema exists for these endpoints, enable schema validation on `/api/*` to reject malformed telemetry before it reaches the worker.
+* **Telemetry precision** - The consumer rounds temperatures to `0.1 degC` and power/COP values to `0.01`. Adjust the rounding logic in `src/queue.ts` if the charts require a different precision.
+* **Rollups & retention** - Consider adding a secondary consumer or a cron-triggered worker to aggregate one-minute rollups and archive telemetry older than 90 days to the `greenbro-reports` R2 bucket. The SQL schema separates `latest_state` (fast reads) from `telemetry` (history) to support this.
+* **Release gate parity** - Use `npm run dev:gate` to start `wrangler dev` alongside the Vite preview server (`npm run -w apps/web preview`) just like the CI release gate workflow. Run Playwright checks from a separate shell once both services report ready.
+* **Worker bundle size** - After `npm run build`, execute `npm run worker:size` to confirm no generated module exceeds Cloudflare's 1&nbsp;MiB limit. The command lists each module's size and fails if a file crosses the threshold, prompting additional code splitting.
 
 
 ## Alerts & Commissioning Enhancements
@@ -90,7 +91,7 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
        "site": "Cape Town POC",
        "checklist": [
          { "step": "Sensors sane", "passed": true },
-         { "step": "ΔT under load", "passed": true, "notes": "4.9°C" }
+         { "step": "Delta T under load", "passed": true, "notes": "4.9 degC" }
        ],
        "measurements": {
          "supplyC": 49.8,
@@ -101,7 +102,7 @@ The dev server relies on bindings configured in `wrangler.toml`. Populate the st
      }'
    ```
 5. SSR dashboard routes:
-   - `GET /` – KPI overview cards
-   - `GET /alerts` – Server-rendered alerts table with live refresh
-   - `GET /devices` – Server-rendered device roster with live refresh
-   - `GET /admin/sites` – Admin surface for site catalog and site↔client mapping
+   - `GET /` - KPI overview cards
+   - `GET /alerts` - Server-rendered alerts table with live refresh
+   - `GET /devices` - Server-rendered device roster with live refresh
+   - `GET /admin/sites` - Admin surface for site catalog and site+client mapping
