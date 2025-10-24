@@ -13,7 +13,8 @@ import type {
 } from './pdf';
 import type { HeartbeatPayload, IngestMessage, TelemetryPayload, Role } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
-// Device DO classes are available in src/do.ts but not required here; remove to avoid unused-import lint warnings.
+// Re-export Durable Object classes so Wrangler can bind them even though this module does not reference them directly.
+export { DeviceStateDO, DeviceDO } from './do';
 import {
   evaluateTelemetryAlerts,
   evaluateHeartbeatAlerts,

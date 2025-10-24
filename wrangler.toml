@@ -1,4 +1,4 @@
-name = "greenbro-worker"
+name = "greenbro-heat-pump-app-2025"
 main = "dist/app.mjs"
 compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
