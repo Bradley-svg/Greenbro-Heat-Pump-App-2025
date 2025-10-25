@@ -21,6 +21,7 @@
     "test:smoke": "npm run -w apps/web test:smoke",
     "test:smoke:ci": "cross-env BASE_URL=http://127.0.0.1:4173 npm run -w apps/web test:smoke -- --timeout=45000",
     "seed:ops": "node scripts/seed-post-migration.mjs",
+    "device:provision": "node scripts/device-provision.mjs",
     "contrast:budget": "node tools/contrast-budget.mjs",
     "lh:ci": "npx @lhci/cli autorun --config=./lighthouserc.json",
     "quality": "npm run axe:pdf && npm run contrast:budget",

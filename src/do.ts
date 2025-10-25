@@ -22,12 +22,23 @@ interface HeartbeatSnapshot {
   receivedAt: string;
 }
 
+interface CommandAckSnapshot {
+  status: 'applied' | 'failed' | 'expired';
+  ts: string;
+  details?: string;
+}
+
 interface CommandSnapshot {
+  id: string;
   issuedAt: string;
   actor: string;
   applied: CommandBody;
   original: CommandBody;
   clamped?: Partial<CommandBody> | null;
+  status: 'pending' | 'applied' | 'failed' | 'expired';
+  expiresAt?: string | null;
+  writeId?: string | null;
+  ack?: CommandAckSnapshot | null;
 }
 
 interface CommandBody {
@@ -41,7 +52,52 @@ interface DeviceStateSnapshot {
   commands: CommandSnapshot[];
 }
 
+function normalizeCommandSnapshot(input: unknown): CommandSnapshot {
+  const fallbackId = `legacy_${crypto.randomUUID().replace(/-/g, '')}`;
+  const raw = (input && typeof input === 'object' ? (input as any) : {}) as Record<string, unknown>;
+  const id =
+    typeof raw.id === 'string' && raw.id.length > 0
+      ? raw.id
+      : fallbackId;
+  const issuedAt =
+    typeof raw.issuedAt === 'string' && raw.issuedAt.length > 0 ? raw.issuedAt : new Date().toISOString();
+  const actor = typeof raw.actor === 'string' && raw.actor.length > 0 ? raw.actor : 'operator';
+  const applied = (raw.applied && typeof raw.applied === 'object' ? (raw.applied as CommandBody) : {}) as CommandBody;
+  const original =
+    (raw.original && typeof raw.original === 'object' ? (raw.original as CommandBody) : (applied as CommandBody)) ?? {};
+  const clamped =
+    raw.clamped && typeof raw.clamped === 'object' ? (raw.clamped as Partial<CommandBody>) : undefined;
+  const status =
+    raw.status === 'applied' || raw.status === 'failed' || raw.status === 'expired' ? (raw.status as any) : 'pending';
+  const expiresAt =
+    typeof raw.expiresAt === 'string' && raw.expiresAt.length > 0 ? (raw.expiresAt as string) : undefined;
+  const writeId = typeof raw.writeId === 'string' && raw.writeId.length > 0 ? (raw.writeId as string) : undefined;
+  const ack =
+    raw.ack && typeof raw.ack === 'object' && typeof (raw.ack as any).status === 'string' && typeof (raw.ack as any).ts === 'string'
+      ? {
+          status: (raw.ack as any).status as 'applied' | 'failed' | 'expired',
+          ts: (raw.ack as any).ts as string,
+          ...(typeof (raw.ack as any).details === 'string' ? { details: (raw.ack as any).details as string } : {}),
+        }
+      : null;
+
+  return {
+    id,
+    issuedAt,
+    actor,
+    applied,
+    original,
+    clamped: clamped ?? null,
+    status,
+    expiresAt: expiresAt ?? null,
+    writeId,
+    ack,
+  };
+}
+
 type CommandEnvelope = {
+  commandId: string;
+  expiresAt?: string;
   deviceId: string;
   actor: string;
   command: CommandBody;
@@ -62,7 +118,9 @@ export class DeviceStateDO {
       const stored = await this.state.storage.get<DeviceStateSnapshot>('snapshot');
       if (stored) {
         this.snapshot = {
-          commands: Array.isArray(stored.commands) ? stored.commands : [],
+          commands: Array.isArray(stored.commands)
+            ? stored.commands.map((cmd) => normalizeCommandSnapshot(cmd))
+            : [],
           telemetry: stored.telemetry,
           heartbeat: stored.heartbeat,
         };
@@ -120,6 +178,12 @@ export class DeviceStateDO {
 
     if (request.method === 'POST' && url.pathname === '/command') {
       const envelope = (await request.json()) as CommandEnvelope;
+      if (!envelope || typeof envelope.commandId !== 'string' || !envelope.commandId) {
+        return new Response(JSON.stringify({ error: 'missing_command_id' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
       const now = Date.now();
 
       const writesKey = 'writes';
@@ -135,14 +199,23 @@ export class DeviceStateDO {
 
       const before = await this.getLatestState(envelope.deviceId);
       const issuedAt = new Date(now).toISOString();
+      const expiresAt =
+        typeof envelope.expiresAt === 'string' && envelope.expiresAt.length > 0
+          ? envelope.expiresAt
+          : new Date(now + 30 * 60 * 1000).toISOString();
       const { applied, clamped } = clampCommand(envelope.command, envelope.limits);
 
       const record: CommandSnapshot = {
+        id: envelope.commandId,
         issuedAt,
         actor: envelope.actor,
         applied,
         original: envelope.command,
         clamped,
+        status: 'pending',
+        expiresAt,
+        writeId: envelope.commandId,
+        ack: null,
       };
       this.snapshot.commands.unshift(record);
       if (this.snapshot.commands.length > 20) {
@@ -150,7 +223,7 @@ export class DeviceStateDO {
       }
       await this.persist();
 
-      const auditId = crypto.randomUUID();
+      const auditId = envelope.commandId || crypto.randomUUID();
       await this.env.DB.prepare(
         `INSERT INTO writes (id, device_id, ts, actor, before_json, after_json, clamped_json, result)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -163,16 +236,50 @@ export class DeviceStateDO {
           JSON.stringify(before),
           JSON.stringify(applied),
           JSON.stringify(clamped ?? {}),
-          'accepted',
+          'pending',
         )
         .run();
 
       recent.push(now);
       await this.state.storage.put(writesKey, recent);
 
-      return new Response(JSON.stringify({ result: 'accepted', desired: applied, clamped: clamped ?? {} }), {
-        headers: { 'content-type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({ result: 'accepted', desired: applied, clamped: clamped ?? {}, issuedAt, writeId: auditId }),
+        {
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+    }
+
+    if (request.method === 'POST' && url.pathname === '/command/ack') {
+      const body = (await request.json().catch(() => null)) as {
+        commandId?: string;
+        status?: 'applied' | 'failed' | 'expired';
+        details?: string;
+        ackAt?: string;
+      } | null;
+      if (!body || typeof body.commandId !== 'string' || !body.commandId) {
+        return new Response(JSON.stringify({ error: 'invalid_command_id' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const snapshot = this.snapshot.commands.find((cmd) => cmd.id === body.commandId);
+      if (snapshot) {
+        const status = body.status ?? snapshot.status;
+        const ackAt =
+          typeof body.ackAt === 'string' && body.ackAt.length > 0 ? body.ackAt : new Date().toISOString();
+        snapshot.status = status;
+        snapshot.ack = {
+          status,
+          ts: ackAt,
+          ...(typeof body.details === 'string' && body.details.length > 0
+            ? { details: body.details }
+            : {}),
+        };
+        await this.persist();
+      }
+      return new Response(null, { status: 204 });
     }
 
     if (request.method === 'DELETE' && url.pathname === '/command') {

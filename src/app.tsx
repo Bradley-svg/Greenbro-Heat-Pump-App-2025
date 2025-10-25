@@ -66,7 +66,6 @@ import { audit } from './lib/audit';
 import { pruneR2Prefix } from './lib/prune';
 import { compareToIqr } from './lib/baseline';
 import { getSetting, setSetting } from './lib/settings';
-import { decodeTelemetryFromRegisters, normalizeRegisterMap, FAULT_CODES } from './lib/modbus';
 import argon2Module from 'argon2-wasm-esm/lib/argon2.js';
 const { ArgonType, hash: argon2Hash } = argon2Module;
 const DEV_BYPASS_AUTH: AccessContext = { sub: 'dev-bypass', roles: ['admin', 'ops'], clientIds: [] };
@@ -96,24 +95,6 @@ const DEV_ALLOWED_ORIGINS = Object.freeze([
   'http://localhost:8787',
   'http://127.0.0.1:8787',
 ]);
-
-const FAULT_DESCRIPTION_LOOKUP = (() => {
-  const map = new Map<string, string>();
-  for (const fault of FAULT_CODES) {
-    const normalized = fault.code.toLowerCase();
-    map.set(normalized, fault.description);
-    map.set(normalized.replace(/\s+/g, ''), fault.description);
-  }
-  return map;
-})();
-
-function lookupFaultDescription(code: string): string | undefined {
-  if (typeof code !== 'string' || code.length === 0) {
-    return undefined;
-  }
-  const normalized = code.toLowerCase();
-  return FAULT_DESCRIPTION_LOOKUP.get(normalized) ?? FAULT_DESCRIPTION_LOOKUP.get(normalized.replace(/\s+/g, ''));
-}
 
 function maskId(id: unknown): string {
   if (typeof id !== 'string' || id.length === 0) {
@@ -1517,19 +1498,165 @@ function bad(c: any, errors: unknown) {
 
 type DeviceCommandBody = { dhwSetC?: number; mode?: string };
 
+const COMMAND_TTL_MS = 30 * 60 * 1000;
+const MAX_COMMANDS_PER_POLL = 5;
+const MAX_COMMAND_WAIT_S = 20;
+
+function generateCommandId(): string {
+  return `cmd_${crypto.randomUUID().replace(/-/g, '')}`;
+}
+
+async function getDeviceContext(DB: D1Database, deviceId: string): Promise<{ profile_id: string | null } | null> {
+  return DB.prepare('SELECT profile_id FROM devices WHERE device_id=?').bind(deviceId).first();
+}
+
+async function insertDeviceCommand(
+  DB: D1Database,
+  record: {
+    commandId: string;
+    deviceId: string;
+    profileId: string | null;
+    actor: string;
+    body: DeviceCommandBody;
+    createdAt: string;
+    expiresAt: string;
+    writeId?: string | null;
+  },
+): Promise<void> {
+  await DB.prepare(
+    `INSERT INTO device_commands
+       (command_id, device_id, profile_id, actor, body_json, created_at, expires_at, status, write_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+  )
+    .bind(
+      record.commandId,
+      record.deviceId,
+      record.profileId,
+      record.actor,
+      JSON.stringify(record.body),
+      record.createdAt,
+      record.expiresAt,
+      record.writeId ?? null,
+    )
+    .run();
+}
+
+async function expireStaleCommands(DB: D1Database, deviceId?: string): Promise<void> {
+  const sql = deviceId
+    ? `UPDATE device_commands
+         SET status='expired',
+             ack_status='expired',
+             ack_detail='Expired before device acknowledgement',
+             ack_at=datetime('now')
+       WHERE status='pending' AND expires_at < datetime('now') AND device_id=?
+       RETURNING command_id, write_id`
+    : `UPDATE device_commands
+         SET status='expired',
+             ack_status='expired',
+             ack_detail='Expired before device acknowledgement',
+             ack_at=datetime('now')
+       WHERE status='pending' AND expires_at < datetime('now')
+       RETURNING command_id, write_id`;
+
+  const res = await (deviceId ? DB.prepare(sql).bind(deviceId) : DB.prepare(sql)).all<{
+    command_id: string;
+    write_id: string | null;
+  }>();
+
+  const rows = res.results ?? [];
+  if (rows.length === 0) {
+    return;
+  }
+  for (const row of rows) {
+    if (row.write_id) {
+      await DB.prepare('UPDATE writes SET result=? WHERE id=?')
+        .bind('expired', row.write_id)
+        .run()
+        .catch(() => {});
+    }
+  }
+}
+
+type PendingCommandRow = {
+  command_id: string;
+  body_json: string;
+  created_at: string;
+  expires_at: string;
+};
+
+async function fetchPendingCommands(
+  DB: D1Database,
+  deviceId: string,
+  limit: number,
+): Promise<PendingCommandRow[]> {
+  const rows = await DB.prepare(
+    `SELECT command_id, body_json, created_at, expires_at
+       FROM device_commands
+      WHERE device_id=? AND status='pending'
+      ORDER BY created_at ASC
+      LIMIT ?`,
+  )
+    .bind(deviceId, limit)
+    .all<PendingCommandRow>();
+  return rows.results ?? [];
+}
+
+async function markCommandsAttempted(DB: D1Database, commandIds: string[]): Promise<void> {
+  if (commandIds.length === 0) return;
+  const nowBatch = commandIds.map((id) =>
+    DB.prepare(
+      `UPDATE device_commands
+         SET attempts = attempts + 1,
+             last_attempt_at = datetime('now'),
+             delivered_at = COALESCE(delivered_at, datetime('now'))
+       WHERE command_id=?`,
+    ).bind(id),
+  );
+  await DB.batch(nowBatch);
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+function safeParseCommandBody(json: string): DeviceCommandBody {
+  try {
+    const parsed = JSON.parse(json) as DeviceCommandBody;
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function dispatchDeviceCommand(
   c: Context<Ctx>,
   deviceId: string,
   actor: string,
   commandBody: DeviceCommandBody,
 ): Promise<Response> {
+  const deviceContext = await getDeviceContext(c.env.DB, deviceId);
+  if (!deviceContext) {
+    return c.text('Device not registered', 404);
+  }
+
+  const commandId = generateCommandId();
+  const expiresAt = new Date(Date.now() + COMMAND_TTL_MS).toISOString();
   const envelope = {
+    commandId,
+    expiresAt,
     deviceId,
     actor,
     command: commandBody,
-    limits: {
-      ...getWriteLimits(c.env),
-    },
+    limits: getWriteLimits(c.env),
   };
   const payload = JSON.stringify(envelope);
 
@@ -1552,13 +1679,40 @@ async function dispatchDeviceCommand(
 
   const stateId = c.env.DeviceState.idFromName(deviceId);
   const stateStub = c.env.DeviceState.get(stateId);
-  const res = await stateStub.fetch('https://do/command', {
+  const stateRes = await stateStub.fetch('https://do/command', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: payload,
   });
 
-  return new Response(res.body, { status: res.status, headers: res.headers });
+  if (!stateRes.ok) {
+    return new Response(stateRes.body, { status: stateRes.status, headers: stateRes.headers });
+  }
+
+  const stateJson = await stateRes.json().catch(() => null);
+  if (!stateJson || typeof stateJson !== 'object') {
+    return c.text('Command dispatch failed', 500);
+  }
+
+  const issuedAt =
+    typeof (stateJson as any).issuedAt === 'string' ? ((stateJson as any).issuedAt as string) : new Date().toISOString();
+  const desired = (stateJson as any).desired ?? commandBody;
+  const clamped = (stateJson as any).clamped ?? {};
+  const writeId =
+    typeof (stateJson as any).writeId === 'string' ? ((stateJson as any).writeId as string) : commandId;
+
+  await insertDeviceCommand(c.env.DB, {
+    commandId,
+    deviceId,
+    profileId: deviceContext.profile_id ?? null,
+    actor,
+    body: desired as DeviceCommandBody,
+    createdAt: issuedAt,
+    expiresAt,
+    writeId,
+  });
+
+  return c.json({ ok: true, commandId, issuedAt, expiresAt, desired, clamped });
 }
 
 type Ctx = {
@@ -1946,6 +2100,14 @@ app.use('/api/*', async (c, next) => {
     await next();
     return;
   }
+  if (
+    path.startsWith('/api/ingest') ||
+    path.startsWith('/api/heartbeat') ||
+    path.startsWith('/api/device/')
+  ) {
+    await next();
+    return;
+  }
 
   if (isDevBypassActive(c.env)) {
     c.set('auth', { ...DEV_BYPASS_AUTH, roles: [...DEV_BYPASS_AUTH.roles], clientIds: [...(DEV_BYPASS_AUTH.clientIds ?? [])] });
@@ -2104,9 +2266,7 @@ app.get('/api/devices/:id/latest', async (c) => {
           continue;
         }
         const description =
-          typeof entry.description === 'string' && entry.description.length > 0
-            ? entry.description
-            : lookupFaultDescription(code);
+          typeof entry.description === 'string' && entry.description.length > 0 ? entry.description : undefined;
         const active = typeof entry.active === 'boolean' ? entry.active : true;
         faults.push({ code, description, active });
       }
@@ -2998,17 +3158,22 @@ type IngestStatus = {
   mode?: string;
   defrost?: boolean;
   online?: boolean;
+  flags?: Record<string, unknown>;
   [key: string]: unknown;
+};
+
+type IngestFault = {
+  code?: string;
+  description?: string;
+  active?: boolean;
 };
 
 type ValidIngestPayload = {
   device_id: string;
   ts: string;
-  metrics?: Record<string, unknown>;
-  registers?: Record<string, unknown> | null;
-  holding_registers?: Record<string, unknown> | null;
-  read_only_registers?: Record<string, unknown> | null;
+  metrics: Record<string, unknown>;
   status?: IngestStatus | null;
+  faults?: IngestFault[] | null;
   meta?: Record<string, unknown> | null;
 };
 
@@ -3042,6 +3207,15 @@ app.post('/api/ingest/:profileId', async (c) => {
     }
 
     const profileId = c.req.param('profileId');
+    const deviceContext = await getDeviceContext(c.env.DB, deviceId);
+    if (!deviceContext) {
+      status = 404;
+      return c.text('Unknown device', 404);
+    }
+    if (deviceContext.profile_id && deviceContext.profile_id !== profileId) {
+      status = 403;
+      return c.text('Profile mismatch', 403);
+    }
     const idemKey = await (async () => {
       const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(body)));
       return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -3052,82 +3226,78 @@ app.post('/api/ingest/:profileId', async (c) => {
       return c.json({ ok: true, deduped: true });
     }
 
-    const rawMetrics: Record<string, unknown> =
-      payload.metrics && typeof payload.metrics === 'object' ? (payload.metrics as Record<string, unknown>) : {};
+    const rawMetrics = payload.metrics ?? {};
     const rawStatus: IngestStatus =
       typeof payload.status === 'object' && payload.status ? (payload.status as IngestStatus) : {};
-    const registerSources = [
-      payload.registers,
-      payload.holding_registers,
-      payload.read_only_registers,
-    ] as Array<Record<string | number, unknown> | null | undefined>;
-    const registerSnapshot: Record<number, number> = {};
-    for (const source of registerSources) {
-      if (source && typeof source === 'object') {
-        Object.assign(registerSnapshot, normalizeRegisterMap(source));
-      }
-    }
-    const decoded = Object.keys(registerSnapshot).length > 0 ? decodeTelemetryFromRegisters(registerSnapshot) : null;
 
-    const toNumber = (value: unknown): number | undefined =>
-      typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-
-    const telemetryMetrics: TelemetryPayload['metrics'] = {
-      tankC: toNumber((rawMetrics as any).tankC ?? (rawMetrics as any).tank_c),
-      supplyC: toNumber(
-        (rawMetrics as any).outlet_temp_c ?? (rawMetrics as any).supplyC ?? (rawMetrics as any).supply_c,
-      ),
-      returnC: toNumber(
-        (rawMetrics as any).return_temp_c ?? (rawMetrics as any).returnC ?? (rawMetrics as any).return_c,
-      ),
-      ambientC: toNumber((rawMetrics as any).ambient_c ?? (rawMetrics as any).ambientC),
-      flowLps: (() => {
-        const lps = toNumber((rawMetrics as any).flowLps ?? (rawMetrics as any).flow_lps);
-        if (lps != null) return lps;
-        const lpm = toNumber((rawMetrics as any).flow_lpm);
-        return lpm != null ? lpm / 60 : undefined;
-      })(),
-      compCurrentA: toNumber((rawMetrics as any).compCurrentA ?? (rawMetrics as any).compressor_a),
-      eevSteps: toNumber((rawMetrics as any).eevSteps ?? (rawMetrics as any).eev_steps),
-      powerKW: toNumber((rawMetrics as any).powerKW ?? (rawMetrics as any).power_kw),
-    };
-
-    if (decoded) {
-      for (const [key, value] of Object.entries(decoded.metrics)) {
-        if (typeof value === 'number' && telemetryMetrics[key as keyof TelemetryPayload['metrics']] == null) {
-          telemetryMetrics[key as keyof TelemetryPayload['metrics']] = value;
+    const readNumber = (...keys: Array<string>): number | undefined => {
+      for (const key of keys) {
+        const value = (rawMetrics as Record<string, unknown>)[key];
+        if (value == null) continue;
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          return value;
+        }
+        if (typeof value === 'string') {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
         }
       }
+      return undefined;
+    };
+
+    const telemetryMetrics: TelemetryPayload['metrics'] = {
+      supplyC: readNumber('supply_c', 'supplyC', 'outlet_temp_c'),
+      returnC: readNumber('return_c', 'returnC', 'inlet_temp_c'),
+      tankC: readNumber('tank_c', 'tankC'),
+      ambientC: readNumber('ambient_c', 'ambientC'),
+      flowLps: (() => {
+        const lps = readNumber('flow_lps', 'flowLps');
+        if (lps != null) return lps;
+        const lpm = readNumber('flow_lpm', 'flowLpm');
+        return lpm != null ? lpm / 60 : undefined;
+      })(),
+      compCurrentA: readNumber('compressor_a', 'compCurrentA'),
+      eevSteps: readNumber('eev_steps', 'eevSteps'),
+      powerKW: readNumber('power_kw', 'powerKW'),
+    };
+
+    if (telemetryMetrics.supplyC == null || telemetryMetrics.returnC == null) {
+      status = 400;
+      return c.text('Missing supply_c or return_c metrics', 400);
     }
 
-    let statusFlags = normalizeFlagMap((rawStatus as { flags?: unknown }).flags);
-
+    let statusFlags = normalizeFlagMap(rawStatus.flags);
     const telemetryStatus: TelemetryPayload['status'] = {
       mode: typeof rawStatus.mode === 'string' ? rawStatus.mode : undefined,
       defrost: typeof rawStatus.defrost === 'boolean' ? rawStatus.defrost : undefined,
       online: typeof rawStatus.online === 'boolean' ? rawStatus.online : undefined,
     };
-
-    if (decoded) {
-      telemetryStatus.mode = telemetryStatus.mode ?? decoded.status.mode;
-      telemetryStatus.defrost =
-        typeof telemetryStatus.defrost === 'boolean' ? telemetryStatus.defrost : decoded.status.defrost;
-      telemetryStatus.online =
-        typeof telemetryStatus.online === 'boolean' ? telemetryStatus.online : decoded.status.online;
-      if (decoded.status.flags) {
-        statusFlags = statusFlags ?? {};
-        for (const [groupKey, groupValue] of Object.entries(decoded.status.flags)) {
-          statusFlags[groupKey] = { ...(statusFlags[groupKey] ?? {}), ...groupValue };
-        }
-      }
-    }
-
     if (statusFlags && Object.keys(statusFlags).length > 0) {
       telemetryStatus.flags = statusFlags;
     }
 
-    const telemetryFaults =
-      decoded && decoded.faults.length > 0 ? decoded.faults.map((fault) => ({ ...fault })) : undefined;
+    const telemetryFaults = Array.isArray(payload.faults)
+      ? payload.faults
+          .map((fault) => {
+            if (!fault || typeof fault.code !== 'string') {
+              return null;
+            }
+            const trimmed = fault.code.trim();
+            if (!trimmed) {
+              return null;
+            }
+            const active =
+              typeof fault.active === 'boolean' ? fault.active : fault.active == null ? true : Boolean(fault.active);
+            const description =
+              typeof fault.description === 'string' && fault.description.trim().length > 0
+                ? fault.description.trim()
+                : undefined;
+            return { code: trimmed, active, ...(description ? { description } : {}) };
+          })
+          .filter((fault): fault is { code: string; active: boolean; description?: string } => fault !== null)
+      : undefined;
 
     const telemetry: TelemetryPayload = {
       deviceId,
@@ -3393,6 +3563,13 @@ app.post('/api/heartbeat/:profileId', async (c) => {
 
   const profileId = c.req.param('profileId');
   const heartbeat: HeartbeatPayload = { deviceId, ts: timestamp, rssi: rssi ?? undefined };
+  const deviceContext = await getDeviceContext(c.env.DB, deviceId);
+  if (!deviceContext) {
+    return c.text('Unknown device', 404);
+  }
+  if (deviceContext.profile_id && deviceContext.profile_id !== profileId) {
+    return c.text('Profile mismatch', 403);
+  }
 
   if (c.env.INGEST_Q) {
     await c.env.INGEST_Q.send({ type: 'heartbeat', profileId, body: heartbeat });
@@ -3401,6 +3578,157 @@ app.post('/api/heartbeat/:profileId', async (c) => {
   }
 
   return c.json({ ok: true, queued: true });
+});
+
+app.post('/api/device/:deviceId/commands/poll', async (c) => {
+  const started = Date.now();
+  const deviceId = c.req.param('deviceId');
+  let status = 500;
+  try {
+    const ok = await verifyDeviceKey(c.env.DB, deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
+    if (!ok) {
+      status = 403;
+      return c.text('Forbidden', 403);
+    }
+
+    const body = (await c.req.json().catch(() => ({}))) as { max?: number; wait_s?: number; last_ack?: string };
+    const max = clampInt(body?.max, 1, MAX_COMMANDS_PER_POLL, 1);
+    const waitS = clampInt(body?.wait_s, 0, MAX_COMMAND_WAIT_S, 0);
+
+    await expireStaleCommands(c.env.DB, deviceId);
+
+    const deadline = Date.now() + waitS * 1000;
+    let commands = await fetchPendingCommands(c.env.DB, deviceId, max);
+    while (commands.length === 0 && waitS > 0 && Date.now() < deadline) {
+      await sleep(1000);
+      await expireStaleCommands(c.env.DB, deviceId);
+      commands = await fetchPendingCommands(c.env.DB, deviceId, max);
+    }
+
+    if (commands.length === 0) {
+      status = 204;
+      return new Response(null, { status: 204 });
+    }
+
+    await markCommandsAttempted(
+      c.env.DB,
+      commands.map((cmd) => cmd.command_id),
+    );
+
+    const response = {
+      commands: commands.map((cmd) => ({
+        id: cmd.command_id,
+        ts: cmd.created_at,
+        expires_at: cmd.expires_at,
+        body: safeParseCommandBody(cmd.body_json),
+      })),
+    };
+
+    status = 200;
+    return c.json(response);
+  } catch (error) {
+    console.error('command poll failed', error);
+    status = 500;
+    return c.text('Internal Server Error', 500);
+  } finally {
+    const duration = Date.now() - started;
+    await logOpsMetric(c.env.DB, '/api/device/commands/poll', status, duration, deviceId);
+  }
+});
+
+app.post('/api/device/:deviceId/commands/:commandId/ack', async (c) => {
+  const started = Date.now();
+  const deviceId = c.req.param('deviceId');
+  const commandId = c.req.param('commandId');
+  let status = 500;
+  try {
+    const ok = await verifyDeviceKey(c.env.DB, deviceId, c.req.header('X-GREENBRO-DEVICE-KEY'));
+    if (!ok) {
+      status = 403;
+      return c.text('Forbidden', 403);
+    }
+
+    const body = (await c.req.json().catch(() => null)) as {
+      status?: string;
+      details?: string;
+      applied_at?: string;
+    } | null;
+    if (!body || (body.status !== 'applied' && body.status !== 'failed')) {
+      status = 400;
+      return c.text('Bad Request', 400);
+    }
+
+    await expireStaleCommands(c.env.DB, deviceId);
+
+    const row = await c.env.DB
+      .prepare('SELECT status, write_id FROM device_commands WHERE command_id=? AND device_id=?')
+      .bind(commandId, deviceId)
+      .first<{ status: string; write_id: string | null }>();
+    if (!row) {
+      status = 404;
+      return c.text('Not Found', 404);
+    }
+    if (row.status === 'applied' || row.status === 'failed') {
+      status = 409;
+      return c.text('Conflict', 409);
+    }
+    if (row.status === 'expired') {
+      status = 404;
+      return c.text('Not Found', 404);
+    }
+
+    const ackStatus = body.status === 'applied' ? 'applied' : 'failed';
+    const detail =
+      typeof body.details === 'string' && body.details.trim().length > 0 ? body.details.trim() : null;
+    const ackAt =
+      typeof body.applied_at === 'string' && body.applied_at.length > 0
+        ? body.applied_at
+        : new Date().toISOString();
+
+    await c.env.DB
+      .prepare(
+        `UPDATE device_commands
+           SET status=?, ack_status=?, ack_detail=?, ack_at=?
+         WHERE command_id=?`,
+      )
+      .bind(ackStatus, ackStatus, detail, ackAt, commandId)
+      .run();
+
+    if (row.write_id) {
+      await c.env.DB
+        .prepare('UPDATE writes SET result=? WHERE id=?')
+        .bind(ackStatus, row.write_id)
+        .run()
+        .catch(() => {});
+    }
+
+    try {
+      const stateId = c.env.DeviceState.idFromName(deviceId);
+      const stateStub = c.env.DeviceState.get(stateId);
+      await stateStub.fetch('https://do/command/ack', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          commandId,
+          status: ackStatus,
+          details: detail ?? undefined,
+          ackAt,
+        }),
+      });
+    } catch (error) {
+      console.warn('device state ack propagate failed', error);
+    }
+
+    status = 200;
+    return c.json({ ok: true });
+  } catch (error) {
+    console.error('command ack failed', error);
+    status = 500;
+    return c.text('Internal Server Error', 500);
+  } finally {
+    const duration = Date.now() - started;
+    await logOpsMetric(c.env.DB, '/api/device/commands/ack', status, duration, deviceId);
+  }
 });
 
 app.get('/api/commissioning/settings', async (c) => {
@@ -7747,6 +8075,9 @@ async function runFastBurnJob(env: Env) {
   } catch (error) {
     console.error('fast burn monitor error', error);
   }
+  await expireStaleCommands(env.DB).catch((error) => {
+    console.error('command expiry sweep error', error);
+  });
 }
 
 async function runNightlyJobs(env: Env) {
@@ -7789,6 +8120,13 @@ async function runHousekeepingJobs(env: Env) {
   try {
     await pruneR2Prefix(env.REPORTS, 'provisioning/', 180);
   } catch {}
+  try {
+    await env.DB
+      .prepare("DELETE FROM device_commands WHERE status != 'pending' AND ack_at < datetime('now','-365 days')")
+      .run();
+  } catch (error) {
+    console.error('device command prune error', error);
+  }
 }
 
 type CronHandler = (env: Env, evt: ScheduledEvent) => Promise<void>;

@@ -7,41 +7,56 @@ addFormats(ajv);
 export const IngestSchema = {
   $id: 'gb:ingest-v1',
   type: 'object',
-  required: ['device_id', 'ts'],
+  required: ['device_id', 'ts', 'metrics'],
   additionalProperties: false,
-  anyOf: [
-    { required: ['metrics'] },
-    { required: ['registers'] },
-    { required: ['holding_registers'] },
-    { required: ['read_only_registers'] },
-  ],
   properties: {
     device_id: { type: 'string', minLength: 1 },
     ts: { type: 'string', format: 'date-time' },
     metrics: {
       type: 'object',
-      additionalProperties: { type: 'number' },
+      required: ['supply_c', 'return_c'],
       properties: {
-        outlet_temp_c: { type: 'number' },
-        return_temp_c: { type: 'number' },
-        ambient_c: { type: 'number' },
-        compressor_a: { type: 'number' },
-        flow_lpm: { type: 'number' },
+        supply_c: { type: ['number', 'string'] },
+        return_c: { type: ['number', 'string'] },
+        tank_c: { type: ['number', 'string'] },
+        ambient_c: { type: ['number', 'string'] },
+        flow_lps: { type: ['number', 'string'] },
+        flow_lpm: { type: ['number', 'string'] },
+        power_kw: { type: ['number', 'string'] },
+        compressor_a: { type: ['number', 'string'] },
+        eev_steps: { type: ['number', 'string'] }
+      },
+      additionalProperties: { type: ['number', 'string', 'null'] },
+    },
+    status: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        mode: { type: 'string' },
+        defrost: { type: 'boolean' },
+        online: { type: 'boolean' },
+        flags: {
+          type: 'object',
+          additionalProperties: {
+            type: 'object',
+            additionalProperties: { type: 'boolean' },
+          },
+        },
       },
     },
-    registers: {
-      type: 'object',
-      additionalProperties: { type: 'number' },
+    faults: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['code'],
+        additionalProperties: false,
+        properties: {
+          code: { type: 'string', minLength: 1 },
+          description: { type: 'string' },
+          active: { type: 'boolean' },
+        },
+      },
     },
-    holding_registers: {
-      type: 'object',
-      additionalProperties: { type: 'number' },
-    },
-    read_only_registers: {
-      type: 'object',
-      additionalProperties: { type: 'number' },
-    },
-    status: { type: 'object', additionalProperties: true },
     meta: { type: 'object', additionalProperties: true },
   },
 } as const;
