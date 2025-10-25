@@ -104,7 +104,7 @@ type CommandEnvelope = {
   limits: { minC: number; maxC: number };
 };
 
-export class DeviceStateDO {
+export class DeviceStateSQLiteDO {
   private readonly state: DurableObjectState;
   private readonly env: Env;
   private snapshot: DeviceStateSnapshot = { commands: [] };
@@ -324,7 +324,7 @@ export class DeviceStateDO {
   }
 }
 
-export class DeviceDO {
+export class DeviceSQLiteDO {
   private readonly state: DurableObjectState;
   private readonly env: Env;
 

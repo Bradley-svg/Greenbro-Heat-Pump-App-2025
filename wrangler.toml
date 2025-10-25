@@ -5,11 +5,6 @@ compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
 minify = true
 
-routes = [
-  { pattern = "api.greenbro.co.za", custom_domain = true },
-  { pattern = "dash.greenbro.co.za", custom_domain = true }
-]
-
 [build]
 command = "npm run build"
 
@@ -18,23 +13,15 @@ BUILD_SHA = "__BUILD_SHA__"
 BUILD_DATE = "__BUILD_DATE__"
 BUILD_SOURCE = "__BUILD_SOURCE__"
 
-[triggers]
-crons = ["0 2 * * *", "*/5 * * * *", "15 2 1 * *"]
-
+[[migrations]]
+tag = "v1-do-sqlite"
+new_sqlite_classes = ["DeviceStateSQLiteDO", "DeviceSQLiteDO"]
 
 [durable_objects]
 bindings = [
-  { name = "DeviceState", class_name = "DeviceStateDO" },
-  { name = "DEVICE_DO", class_name = "DeviceDO" }
+  { name = "DeviceState", class_name = "DeviceStateSQLiteDO" },
+  { name = "DEVICE_DO", class_name = "DeviceSQLiteDO" }
 ]
-
-[[migrations]]
-tag = "v1-device-state"
-new_classes = ["DeviceStateDO"]
-
-[[migrations]]
-tag = "v2-device"
-new_classes = ["DeviceDO"]
 
 [[d1_databases]]
 binding = "DB"
@@ -58,6 +45,7 @@ binding = "CONFIG"
 id = "e9509ebd5bbb487e8e1698db35bfa439"
 
 [env.staging]
+name = "greenbro-heat-pump-app-2025-staging2"
 vars.ACCESS_AUD = "558e7450465163f7be473dcb75d5cea6d786f7143f3fcfe4dc658049c47c5e0b"
 vars.ACCESS_ISS = "https://bradleyayliffl.cloudflareaccess.com"
 vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/certs"
@@ -86,13 +74,20 @@ bucket_name = "greenbro-archive-staging"
 binding = "CONFIG"
 id = "e9509ebd5bbb487e8e1698db35bfa439"
 
+[env.staging.triggers]
+crons = []
+
 [env.staging.durable_objects]
 bindings = [
-  { name = "DeviceState", class_name = "DeviceStateDO" },
-  { name = "DEVICE_DO", class_name = "DeviceDO" }
+  { name = "DeviceState", class_name = "DeviceStateSQLiteDO" },
+  { name = "DEVICE_DO", class_name = "DeviceSQLiteDO" }
 ]
 
 [env.production]
+routes = [
+  { pattern = "api.greenbro.co.za", custom_domain = true },
+  { pattern = "dash.greenbro.co.za", custom_domain = true }
+]
 vars.ACCESS_AUD = "965324499988b497906c949af33be0c457edff0b9ac3edf8d287825b7d7af78d"
 vars.ACCESS_ISS = "https://bradleyayliffl.cloudflareaccess.com"
 vars.ACCESS_JWKS = "https://bradleyayliffl.cloudflareaccess.com/cdn-cgi/access/certs"
@@ -121,8 +116,11 @@ bucket_name = "greenbro-archive"
 binding = "CONFIG"
 id = "14ee885ce1ab45738c2619bd56a11361"
 
+[env.production.triggers]
+crons = ["0 2 * * *", "*/5 * * * *", "15 2 1 * *"]
+
 [env.production.durable_objects]
 bindings = [
-  { name = "DeviceState", class_name = "DeviceStateDO" },
-  { name = "DEVICE_DO", class_name = "DeviceDO" }
+  { name = "DeviceState", class_name = "DeviceStateSQLiteDO" },
+  { name = "DEVICE_DO", class_name = "DeviceSQLiteDO" }
 ]

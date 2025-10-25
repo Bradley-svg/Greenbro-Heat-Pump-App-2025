@@ -14,7 +14,7 @@ import type {
 import type { HeartbeatPayload, IngestMessage, TelemetryPayload, Role } from './types';
 import { verifyAccessJWT, requireRole, type AccessContext } from './rbac';
 // Re-export Durable Object classes so Wrangler can bind them even though this module does not reference them directly.
-export { DeviceStateDO, DeviceDO } from './do';
+export { DeviceStateSQLiteDO, DeviceSQLiteDO } from './do';
 import {
   evaluateTelemetryAlerts,
   evaluateHeartbeatAlerts,
