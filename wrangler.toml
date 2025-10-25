@@ -55,14 +55,7 @@ bucket_name = "greenbro-archive"
 
 [[kv_namespaces]]
 binding = "CONFIG"
-id = "14ee885ce1ab45738c2619bd56a11361"
-
-[[queues.producers]]
-binding = "INGEST_Q"
-queue = "ingest-q"
-
-[[queues.consumers]]
-queue = "ingest-q"
+id = "e9509ebd5bbb487e8e1698db35bfa439"
 
 [env.staging]
 vars.ACCESS_AUD = "558e7450465163f7be473dcb75d5cea6d786f7143f3fcfe4dc658049c47c5e0b"
@@ -79,19 +72,19 @@ database_name = "GREENBRO_DB_STAGING"
 
 [[env.staging.r2_buckets]]
 binding = "REPORTS"
-bucket_name = "greenbro-reports"
+bucket_name = "greenbro-reports-staging"
 
 [[env.staging.r2_buckets]]
 binding = "BRAND"
-bucket_name = "greenbro-brand"
+bucket_name = "greenbro-brand-staging"
 
 [[env.staging.r2_buckets]]
 binding = "ARCHIVE"
-bucket_name = "greenbro-archive"
+bucket_name = "greenbro-archive-staging"
 
 [[env.staging.kv_namespaces]]
 binding = "CONFIG"
-id = "14ee885ce1ab45738c2619bd56a11361"
+id = "e9509ebd5bbb487e8e1698db35bfa439"
 
 [env.staging.durable_objects]
 bindings = [
@@ -126,7 +119,7 @@ bucket_name = "greenbro-archive"
 
 [[env.production.kv_namespaces]]
 binding = "CONFIG"
-id = "e9509ebd5bbb487e8e1698db35bfa439"
+id = "14ee885ce1ab45738c2619bd56a11361"
 
 [env.production.durable_objects]
 bindings = [

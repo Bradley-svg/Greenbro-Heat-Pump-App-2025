@@ -8021,22 +8021,27 @@ async function processTelemetryInline(
   receivedAt: string,
 ): Promise<void> {
   void receivedAt;
-  await baseQueueHandler(
-    {
-      messages: [
-        {
-          body: { type: 'telemetry', profileId: telemetry.deviceId, body: telemetry },
-          ack: () => {},
-          retry: () => {},
-        },
-      ],
-    } as unknown as MessageBatch<IngestMessage>,
-    env,
-    {
-      waitUntil: (promise: Promise<unknown>) => promise,
-      passThroughOnException: () => {},
-    } as ExecutionContext,
-  );
+  try {
+    await baseQueueHandler(
+      {
+        messages: [
+          {
+            body: { type: 'telemetry', profileId: telemetry.deviceId, body: telemetry },
+            ack: () => {},
+            retry: () => {},
+          },
+        ],
+      } as unknown as MessageBatch<IngestMessage>,
+      env,
+      {
+        waitUntil: (promise: Promise<unknown>) => promise,
+        passThroughOnException: () => {},
+      } as ExecutionContext,
+    );
+  } catch (error) {
+    console.error('inline telemetry processing failed', { deviceId: telemetry.deviceId }, error);
+    throw error;
+  }
 }
 
 async function processHeartbeatInline(
@@ -8045,22 +8050,27 @@ async function processHeartbeatInline(
   receivedAt: string,
 ): Promise<void> {
   void receivedAt;
-  await baseQueueHandler(
-    {
-      messages: [
-        {
-          body: { type: 'heartbeat', profileId: heartbeat.deviceId, body: heartbeat },
-          ack: () => {},
-          retry: () => {},
-        },
-      ],
-    } as unknown as MessageBatch<IngestMessage>,
-    env,
-    {
-      waitUntil: (promise: Promise<unknown>) => promise,
-      passThroughOnException: () => {},
-    } as ExecutionContext,
-  );
+  try {
+    await baseQueueHandler(
+      {
+        messages: [
+          {
+            body: { type: 'heartbeat', profileId: heartbeat.deviceId, body: heartbeat },
+            ack: () => {},
+            retry: () => {},
+          },
+        ],
+      } as unknown as MessageBatch<IngestMessage>,
+      env,
+      {
+        waitUntil: (promise: Promise<unknown>) => promise,
+        passThroughOnException: () => {},
+      } as ExecutionContext,
+    );
+  } catch (error) {
+    console.error('inline heartbeat processing failed', { deviceId: heartbeat.deviceId }, error);
+    throw error;
+  }
 }
 
 export async function queue(batch: MessageBatch<IngestMessage>, env: Env, ctx: ExecutionContext) {

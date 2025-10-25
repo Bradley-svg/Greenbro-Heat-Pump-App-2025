@@ -22,7 +22,7 @@ export interface Env {
   ARCHIVE: R2Bucket;
 
   // Queues
-  INGEST_Q: Queue<IngestMessage>;
+  INGEST_Q?: Queue<IngestMessage>;
 
   // Durable Objects
   DeviceState: DurableObjectNamespace;
