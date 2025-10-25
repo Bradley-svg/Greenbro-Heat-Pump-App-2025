@@ -1,4 +1,4 @@
-name = "greenbro-heat-pump-app-2025"
+name = "test"
 account_id = "0bee3514d14fef8558ccaf0bf2b72eb1"
 main = "dist/app.mjs"
 compatibility_date = "2025-10-01"
