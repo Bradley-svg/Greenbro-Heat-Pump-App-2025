@@ -9,6 +9,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "migrate": "wrangler d1 migrations apply GREENBRO_DB",
+    "prebuild": "node scripts/clean-dist.mjs",
     "build": "esbuild src/app.tsx --bundle --format=esm --outdir=dist --out-extension:.js=.mjs --splitting --chunk-names=chunks/[name]-[hash] --platform=browser --define:process.env.NODE_ENV=\\\"production\\\" --conditions=worker",
     "copy-guard": "node scripts/copy-guard.mjs",
     "brand-audit": "node scripts/brand-audit.mjs",

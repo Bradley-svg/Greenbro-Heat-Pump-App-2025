@@ -27,8 +27,8 @@ The worker binds the configuration namespace as `CONFIG`.
 
 | Environment | Binding  | Namespace ID                           |
 |-------------|----------|-----------------------------------------|
-| Default / Production | `CONFIG` | `14ee885ce1ab45738c2619bd56a11361` |
-| Staging     | `CONFIG` | `e9509ebd5bbb487e8e1698db35bfa439`      |
+| Default / Production | `CONFIG` | `e9509ebd5bbb487e8e1698db35bfa439` |
+| Staging     | `CONFIG` | `14ee885ce1ab45738c2619bd56a11361`      |
 
 To work with the namespace inside the worker:
 
@@ -71,6 +71,6 @@ The worker both produces to and consumes from `ingest-q`, so the queue is declar
 | Access application | Public hostname / pattern                                                     | AUD tag                                                              | Notes |
 |--------------------|-------------------------------------------------------------------------------|----------------------------------------------------------------------|-------|
 | `greenbro-heat-pump-app-2025 - Cloudflare Workers` | `*-greenbro-heat-pump-app-2025.bradleyayliffl.workers.dev`                  | `558e7450465163f7be473dcb75d5cea6d786f7143f3fcfe4dc658049c47c5e0b` | Primary API & dashboard worker (mirrors `ACCESS_AUD` binding). |
-| `greeenbro-heat-pump-monitoring-2025 - Cloudflare Workers` | `*-greeenbro-heat-pump-monitoring-2025.bradleyayliffl.workers.dev` | `965324499988b497906c949af33be0c457edff0b9ac3edf8d287825b7d7af78d` | Wildcard access application for monitoring endpoints. |
+| `greenbro-heat-pump-monitoring-2025 - Cloudflare Workers` | `*-greenbro-heat-pump-monitoring-2025.bradleyayliffl.workers.dev` | `965324499988b497906c949af33be0c457edff0b9ac3edf8d287825b7d7af78d` | Wildcard access application for monitoring endpoints. |
 
 Ensure the `ACCESS_AUD`, `ACCESS_ISS`, and `ACCESS_JWKS` bindings in `wrangler.toml` match these values before deploying. Rotate secrets (for example `JWT_SECRET`) with `wrangler secret put ...` as usual.

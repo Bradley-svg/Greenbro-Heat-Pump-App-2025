@@ -1728,22 +1728,16 @@ type Ctx = {
 
 const app = new Hono<Ctx>();
 
-// Temporary global error handler to surface unexpected runtime errors during tests.
-// This logs the full error and returns a 500 so we can see server-side stack traces
-// instead of the current 503 fallback. Remove or adjust after debugging.
+// Global error handler that logs sanitized diagnostics and shields stack traces from clients.
 app.onError((err, c) => {
-  try {
-    console.error('Unhandled request error:', err instanceof Error ? err.stack ?? err.message : err);
-  } catch (logErr) {
-    // best-effort logging
-    console.error('Failed to log error', logErr);
+  const details =
+    err instanceof Error
+      ? { name: err.name, message: err.message }
+      : { name: 'Error', message: typeof err === 'string' ? err : 'Unknown error' };
+  console.error('Unhandled request error', details);
+  if (c && typeof c.text === 'function') {
+    return c.text('Internal Server Error', 500);
   }
-  try {
-    // If we have a Hono context, return a 500 text response; otherwise return a raw Response.
-    if (c && typeof c.text === 'function') {
-      return c.text('Internal Server Error', 500);
-    }
-  } catch {}
   return new Response('Internal Server Error', { status: 500 });
 });
 
@@ -3309,14 +3303,15 @@ app.post('/api/ingest/:profileId', async (c) => {
       telemetry.faults = telemetryFaults;
     }
 
-    if (c.env.INGEST_Q) {
+    const enqueued = Boolean(c.env.INGEST_Q);
+    if (enqueued) {
       await c.env.INGEST_Q.send({ type: 'telemetry', profileId, body: telemetry });
     } else {
       await processTelemetryInline(c.env, telemetry, payload.ts);
     }
 
-    status = 200;
-    return c.json({ ok: true, queued: true });
+    status = enqueued ? 202 : 200;
+    return c.json({ ok: true, queued: enqueued }, status);
   } catch (error) {
     console.error('Failed to ingest telemetry', error);
     status = 500;
@@ -3571,13 +3566,14 @@ app.post('/api/heartbeat/:profileId', async (c) => {
     return c.text('Profile mismatch', 403);
   }
 
-  if (c.env.INGEST_Q) {
+  const enqueued = Boolean(c.env.INGEST_Q);
+  if (enqueued) {
     await c.env.INGEST_Q.send({ type: 'heartbeat', profileId, body: heartbeat });
   } else {
     await processHeartbeatInline(c.env, heartbeat, timestamp);
   }
 
-  return c.json({ ok: true, queued: true });
+  return c.json({ ok: true, queued: enqueued }, enqueued ? 202 : 200);
 });
 
 app.post('/api/device/:deviceId/commands/poll', async (c) => {
@@ -3689,9 +3685,9 @@ app.post('/api/device/:deviceId/commands/:commandId/ack', async (c) => {
       .prepare(
         `UPDATE device_commands
            SET status=?, ack_status=?, ack_detail=?, ack_at=?
-         WHERE command_id=?`,
+         WHERE command_id=? AND device_id=?`,
       )
-      .bind(ackStatus, ackStatus, detail, ackAt, commandId)
+      .bind(ackStatus, ackStatus, detail, ackAt, commandId, deviceId)
       .run();
 
     if (row.write_id) {
@@ -7158,6 +7154,34 @@ async function canAccessDevice(DB: D1Database, auth: AccessContext, deviceId: st
   return !!row;
 }
 
+const textEncoder = new TextEncoder();
+
+function hexToUint8Array(hex: string): Uint8Array | null {
+  if (hex.length % 2 !== 0) {
+    return null;
+  }
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    const value = Number.parseInt(hex.slice(i, i + 2), 16);
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    out[i / 2] = value;
+  }
+  return out;
+}
+
+function timingSafeEqualBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a[i]! ^ b[i]!;
+  }
+  return diff === 0;
+}
+
 async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | null | undefined) {
   if (!key) return false;
   const row = await DB.prepare('SELECT key_hash FROM devices WHERE device_id=?')
@@ -7165,10 +7189,10 @@ async function verifyDeviceKey(DB: D1Database, deviceId: string, key: string | n
     .first<{ key_hash?: string | null }>();
   const stored = row?.key_hash;
   if (!stored) return false;
-  return crypto.subtle
-    .digest('SHA-256', new TextEncoder().encode(key))
-    .then((buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join(''))
-    .then((digest) => digest === stored);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', textEncoder.encode(key)));
+  const storedBytes = hexToUint8Array(stored.toLowerCase());
+  if (!storedBytes) return false;
+  return timingSafeEqualBytes(digest, storedBytes);
 }
 
 async function isDuplicate(DB: D1Database, key: string) {

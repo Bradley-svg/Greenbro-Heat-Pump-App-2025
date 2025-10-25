@@ -40,7 +40,7 @@ wrangler queues create ingest-q
 npm run migrate
 
 # Configure worker secrets
-wrangler secret put ACCESS_JWKS_URL
+wrangler secret put ACCESS_JWKS
 wrangler secret put ACCESS_AUD
 wrangler secret put WRITE_MIN_C
 wrangler secret put WRITE_MAX_C
@@ -50,7 +50,7 @@ wrangler secret put JWT_SECRET
 npm run dev
 ```
 
-The dev server relies on bindings configured in `wrangler.toml`. Populate the stub IDs emitted by the resource provisioning commands above and provide secrets (e.g. `ACCESS_JWKS_URL`, `ACCESS_AUD`) with `wrangler secret put ...` before invoking authenticated routes.
+The dev server relies on bindings configured in `wrangler.toml`. Populate the stub IDs emitted by the resource provisioning commands above and provide secrets (e.g. `ACCESS_JWKS`, `ACCESS_AUD`) with `wrangler secret put ...` before invoking authenticated routes.
 
 ### Seeding initial data
 

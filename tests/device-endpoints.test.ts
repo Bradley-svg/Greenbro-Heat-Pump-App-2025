@@ -59,6 +59,10 @@ type CommandRow = {
   write_id?: string | null;
 };
 
+function normalizeSql(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim();
+}
+
 class MockD1Database {
   devices = new Map<string, DeviceRow>();
   deviceCommands = new Map<string, CommandRow>();
@@ -77,8 +81,8 @@ class MockD1Database {
   }
 
   async _run(sql: string, args: unknown[]) {
-    const normalized = sql.trim();
-    if (normalized.includes('INSERT INTO device_commands')) {
+    const normalized = normalizeSql(sql);
+    if (normalized.startsWith('INSERT INTO device_commands')) {
       const [commandId, deviceId, profileId, actor, bodyJson, createdAt, expiresAt, writeId] = args as [
         string,
         string,
@@ -117,15 +121,16 @@ class MockD1Database {
       return { success: true };
     }
     if (normalized.startsWith('UPDATE device_commands SET status=?, ack_status')) {
-      const [status, ackStatus, detail, ackAt, commandId] = args as [
+      const [status, ackStatus, detail, ackAt, commandId, deviceId] = args as [
         CommandStatus,
         CommandStatus,
         string | null,
         string,
         string,
+        string,
       ];
       const row = this.deviceCommands.get(commandId);
-      if (row) {
+      if (row && row.device_id === deviceId) {
         row.status = status;
         row.ack_status = ackStatus;
         row.ack_detail = detail ?? null;
@@ -166,7 +171,7 @@ class MockD1Database {
   }
 
   async _first<T>(sql: string, args: unknown[]): Promise<T | null> {
-    const normalized = sql.trim();
+    const normalized = normalizeSql(sql);
     if (normalized.startsWith('SELECT key_hash FROM devices')) {
       const [id] = args as [string];
       const row = this.devices.get(id);
@@ -189,11 +194,21 @@ class MockD1Database {
       }
       return null;
     }
+    if (normalized.startsWith("SELECT name FROM sqlite_master WHERE type='table'")) {
+      const nameFromArg =
+        args.length > 0 && typeof args[0] === 'string' && args[0].length > 0 ? (args[0] as string) : null;
+      const match = normalized.match(/name\s*=\s*'([^']+)'/);
+      const target = nameFromArg ?? (match ? match[1] : null);
+      if (!target) {
+        return null;
+      }
+      return ({ name: target } as unknown) as T;
+    }
     return null;
   }
 
   async _all<T>(sql: string, args: unknown[]): Promise<{ results: T[] }> {
-    const normalized = sql.trim();
+    const normalized = normalizeSql(sql);
     if (normalized.startsWith('UPDATE device_commands') && normalized.includes("status='expired'")) {
       const rows: Array<{ command_id: string; write_id: string | null }> = [];
       const now = Date.now();

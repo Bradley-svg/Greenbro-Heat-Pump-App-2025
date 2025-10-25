@@ -5,6 +5,16 @@ import { decodeJwt } from 'jose';
 import worker from '../src/app';
 import type { Env, ExecutionContext } from '../src/types/env';
 
+type AuthUserRowData = {
+  id: string;
+  email: string;
+  name: string | null;
+  password_hash: string;
+  password_salt: string | null;
+  roles: string;
+  client_ids: string | null;
+};
+
 class MockStatement {
   #sql: string;
   #db: MockAuthDB;
@@ -37,6 +47,9 @@ class MockStatement {
 
 class MockAuthDB {
   settings = new Map<string, string>();
+  tables = new Set<string>(['auth_users']);
+  authUsersById = new Map<string, AuthUserRowData>();
+  authUsersByEmail = new Map<string, AuthUserRowData>();
   runs: Array<{ sql: string; args: unknown[] }> = [];
 
   setSetting(key: string, value: string) {
@@ -48,16 +61,80 @@ class MockAuthDB {
   }
 
   recordRun(sql: string, args: unknown[]) {
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+    if (normalized.startsWith('INSERT INTO auth_users')) {
+      const [id, email, passwordHash, passwordSalt, name, roles, clientIds] = args as [
+        string,
+        string,
+        string,
+        string | null,
+        string | null,
+        string,
+        string | null,
+      ];
+      this.setAuthUser({
+        id,
+        email: email.toLowerCase(),
+        name: name ?? null,
+        password_hash: passwordHash,
+        password_salt: passwordSalt ?? null,
+        roles,
+        client_ids: clientIds ?? null,
+      });
+    } else if (normalized.startsWith('UPDATE auth_users SET password_hash=?, password_salt=? WHERE id=?')) {
+      const [passwordHash, passwordSalt, id] = args as [string, string | null, string];
+      const existing = this.authUsersById.get(id);
+      if (existing) {
+        this.setAuthUser({
+          ...existing,
+          password_hash: passwordHash,
+          password_salt: passwordSalt ?? null,
+        });
+      }
+    } else if (normalized.startsWith('DELETE FROM settings WHERE key=?')) {
+      const [key] = args as [string];
+      this.settings.delete(key);
+    }
     this.runs.push({ sql, args });
   }
 
+  private setAuthUser(row: AuthUserRowData) {
+    this.authUsersById.set(row.id, row);
+    this.authUsersByEmail.set(row.email, row);
+  }
+
   async handleFirst<T>(sql: string, args: unknown[]): Promise<T | null> {
-    if (sql.startsWith('SELECT value FROM settings WHERE key=?')) {
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+    if (normalized.startsWith('SELECT value FROM settings WHERE key=?')) {
       const key = String(args[0] ?? '');
       const value = this.settings.has(key) ? this.settings.get(key)! : null;
       return (value == null ? null : ({ value } as T));
     }
-    if (sql === 'SELECT 1') {
+    if (normalized.startsWith("SELECT name FROM sqlite_master WHERE type='table'")) {
+      let target: string | null = null;
+      if (args.length > 0 && typeof args[0] === 'string') {
+        target = args[0] as string;
+      }
+      if (!target) {
+        const literal = normalized.match(/name\s*=\s*'([^']+)'/);
+        target = literal ? literal[1] : null;
+      }
+      if (target) {
+        return (this.tables.has(target) ? ({ name: target } as T) : null);
+      }
+      const first = this.tables.values().next();
+      return first.done ? null : (({ name: first.value } as unknown) as T);
+    }
+    if (
+      normalized.startsWith(
+        'SELECT id, email, name, password_hash, password_salt, roles, client_ids FROM auth_users WHERE email=?',
+      )
+    ) {
+      const lookup = String(args[0] ?? '').toLowerCase();
+      const row = this.authUsersByEmail.get(lookup);
+      return (row ? ({ ...row } as unknown) : null) as T | null;
+    }
+    if (normalized === 'SELECT 1') {
       return ({ 1: 1 } as unknown) as T;
     }
     throw new Error(`Unexpected first() query: ${sql}`);
